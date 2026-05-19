@@ -14,6 +14,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #dz strong{color:rgba(255,255,255,.8);font-size:20px;font-family:system-ui,sans-serif;}
 #dz p{color:rgba(255,255,255,.38);font-size:14px;text-align:center;line-height:1.8;font-family:system-ui,sans-serif;}
 #fi{display:none;}
+#fiadd{display:none;}
 #viewer{display:none;flex-direction:column;width:100vw;height:100vh;}
 #stage{position:relative;flex:1;overflow:hidden;background:#000;}
 .sl{position:absolute;inset:0;opacity:0;}
@@ -24,6 +25,8 @@ html,body{background:#000;height:100%;overflow:hidden;}
 .fe{animation:fdi .7s ease forwards;}
 .fl{animation:fdo .7s ease forwards;}
 .vb{position:absolute;top:12px;left:12px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:4px 10px;border-radius:5px;z-index:2;pointer-events:none;display:flex;align-items:center;gap:5px;font-family:system-ui,sans-serif;}
+#fnov{position:absolute;bottom:12px;right:12px;background:rgba(0,0,0,.55);color:rgba(255,255,255,.75);font-size:11px;padding:4px 10px;border-radius:4px;z-index:3;font-family:system-ui,sans-serif;pointer-events:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:opacity .2s;}
+#fnov.hidden{opacity:0;pointer-events:none;}
 #cpanel{display:none;flex-direction:column;gap:8px;padding:11px 16px;background:rgba(6,6,6,.99);border-top:.5px solid rgba(255,255,255,.08);}
 #cpanel.show{display:flex;}
 .cr{display:flex;align-items:center;gap:10px;}
@@ -63,8 +66,11 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #plpanel.open{right:0;}
 #plhdr{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:.5px solid rgba(255,255,255,.08);flex-shrink:0;}
 #plhdr span{color:#fff;font-size:13px;font-weight:600;font-family:system-ui,sans-serif;}
+#plhdr-btns{display:flex;align-items:center;gap:5px;}
 #plhdr button{background:transparent;border:none;color:rgba(255,255,255,.45);cursor:pointer;font-size:16px;padding:2px 6px;line-height:1;}
 #plhdr button:hover{color:#fff;}
+#pladd{font-size:12px!important;padding:2px 8px!important;border:.5px solid rgba(255,255,255,.2)!important;border-radius:4px!important;}
+#plshuffle{font-size:12px!important;padding:2px 8px!important;border:.5px solid rgba(255,255,255,.2)!important;border-radius:4px!important;}
 #pllist{flex:1;overflow-y:auto;padding:8px;}
 #pllist::-webkit-scrollbar{width:3px;}
 #pllist::-webkit-scrollbar-track{background:transparent;}
@@ -170,9 +176,12 @@ html,body{background:#000;height:100%;overflow:hidden;}
   <p>JPG &nbsp;·&nbsp; PNG &nbsp;·&nbsp; WEBP &nbsp;·&nbsp; MP4 &nbsp;·&nbsp; MOV<br>click to select files &nbsp;·&nbsp; or drag &amp; drop an album folder</p>
 </div>
 <input type="file" id="fi" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
+<input type="file" id="fiadd" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
 
 <div id="viewer">
-  <div id="stage"></div>
+  <div id="stage">
+    <div id="fnov"></div>
+  </div>
 
   <div id="cpanel">
     <div class="cr"><span class="clbl">Brightness</span><input type="range" id="cpb" min="0" max="200" value="100" step="1" oninput="applyColor()"><span class="cv" id="cvb">100%</span><button class="crst" onclick="rcol('b')">reset</button></div>
@@ -240,6 +249,12 @@ html,body{background:#000;height:100%;overflow:hidden;}
     <button class="cb" id="bmv" title="Mirror Vertical">
       <svg viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><path d="M7 16l5 4 5-4M7 8l5-4 5 4"/></svg>
     </button>
+    <button class="cb" id="brcw" title="Rotate CW">
+      <svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>
+    </button>
+    <button class="cb" id="brccw" title="Rotate CCW">
+      <svg viewBox="0 0 24 24"><path d="M3 2v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>
+    </button>
     <div class="sp"></div>
     <select class="cs" id="dsel" title="Default photo duration">
       <option value="3000">3s</option>
@@ -261,6 +276,9 @@ html,body{background:#000;height:100%;overflow:hidden;}
     <button class="cb" id="bkb" title="Ken Burns settings">
       <svg viewBox="0 0 24 24"><path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"/></svg>
     </button>
+    <button class="cb" id="bfname" title="Toggle Filename" class="on">
+      <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
     <button class="cb" id="bked" title="Keyboard shortcuts">
       <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
     </button>
@@ -279,7 +297,11 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <div id="plpanel">
   <div id="plhdr">
     <span>Playlist</span>
-    <button id="plclose">✕</button>
+    <div id="plhdr-btns">
+      <button id="pladd" title="Add more files">Add +</button>
+      <button id="plshuffle" title="Shuffle playlist">&#x1F500;</button>
+      <button id="plclose">✕</button>
+    </div>
   </div>
   <div id="pllist"></div>
   <div id="plfuture">
@@ -306,9 +328,14 @@ html,body{background:#000;height:100%;overflow:hidden;}
         <label class="kbtog"><input type="checkbox" id="kbena" checked><span class="kbtog-sl"></span></label>
       </div>
       <div class="kbrow">
-        <span class="kblbl">Intensity</span>
-        <input type="range" id="kbint" min="0" max="200" value="100" step="1">
-        <span class="kbval" id="kbintv">100%</span>
+        <span class="kblbl">Zoom Intensity</span>
+        <input type="range" id="kbzint" min="0" max="200" value="100" step="1">
+        <span class="kbval" id="kbzintv">100%</span>
+      </div>
+      <div class="kbrow">
+        <span class="kblbl">Pan Intensity</span>
+        <input type="range" id="kbpint" min="0" max="200" value="100" step="1">
+        <span class="kbval" id="kbpintv">100%</span>
       </div>
       <div class="kbrow">
         <span class="kblbl">Direction</span>
@@ -316,6 +343,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
           <option value="mix">Mix (Zoom In &amp; Out)</option>
           <option value="in">Zoom In Only</option>
           <option value="out">Zoom Out Only</option>
+          <option value="random">Random</option>
         </select>
       </div>
       <div class="kbrow">
@@ -357,7 +385,8 @@ dz.onclick = () => fi.click();
 let items = [], sls = [], tws = [], cur = 0, playing = true,
     tmr = null, ptmr = null, ps = null, kbId = null,
     zoom = 1, panX = 0, panY = 0, muted = false, vol = 1,
-    mirrorX = false, mirrorY = false, ctrlsVisible = true;
+    mirrorX = false, mirrorY = false, rotation = 0, ctrlsVisible = true,
+    showFilename = true;
 
 const SPDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3]; let si = 3;
 const KB = [
@@ -374,7 +403,7 @@ const KB_LABELS = [
   'Zoom In · Pan ↔',   'Zoom Out · Drift ↖',
 ];
 
-let kbEnabled = true, kbIntensity = 1.0, kbDirection = 'mix', kbEasing = 'ease';
+let kbEnabled = true, kbZoomInt = 1.0, kbPanInt = 1.0, kbDirection = 'mix', kbEasing = 'ease';
 
 function getKBPreset(i) {
   if (!kbEnabled) return null;
@@ -384,13 +413,18 @@ function getKBPreset(i) {
   if (typeof override === 'number' && override >= 0) {
     idx = override;
   } else {
-    const pools = {mix:[0,1,2,3,4,5], in:[0,2,4], out:[1,3,5]};
-    const pool = pools[kbDirection] || pools.mix;
-    idx = pool[i % pool.length];
+    if (kbDirection === 'random') {
+      idx = Math.floor(Math.random() * KB.length);
+    } else {
+      const pools = {mix:[0,1,2,3,4,5], in:[0,2,4], out:[1,3,5]};
+      const pool = pools[kbDirection] || pools.mix;
+      idx = pool[i % pool.length];
+    }
   }
   const b = KB[idx];
-  const q = kbIntensity;
-  return {fs:1+(b.fs-1)*q, ts:1+(b.ts-1)*q, fx:b.fx*q, fy:b.fy*q, tx:b.tx*q, ty:b.ty*q};
+  const qz = kbZoomInt;
+  const qp = kbPanInt;
+  return {fs:1+(b.fs-1)*qz, ts:1+(b.ts-1)*qz, fx:b.fx*qp, fy:b.fy*qp, tx:b.tx*qp, ty:b.ty*qp};
 }
 
 function kbEase(t) {
@@ -413,6 +447,9 @@ const FNS = [
   {id:'mirrorH', label:'Mirror H',       def:'h'},
   {id:'mirrorV', label:'Mirror V',       def:'v'},
   {id:'hidectl', label:'Hide Controls',  def:'c'},
+  {id:'rotCW',   label:'Rotate CW',      def:'r'},
+  {id:'rotCCW',  label:'Rotate CCW',     def:'R'},
+  {id:'fname',   label:'Toggle Filename',def:'n'},
 ];
 let keyMap = {}; FNS.forEach(f => keyMap[f.id] = f.def);
 
@@ -459,8 +496,10 @@ function applyKBNow() {
 
 function renderKBModal() {
   g('kbena').checked = kbEnabled;
-  g('kbint').value = Math.round(kbIntensity * 100);
-  g('kbintv').textContent = Math.round(kbIntensity * 100) + '%';
+  g('kbzint').value = Math.round(kbZoomInt * 100);
+  g('kbzintv').textContent = Math.round(kbZoomInt * 100) + '%';
+  g('kbpint').value = Math.round(kbPanInt * 100);
+  g('kbpintv').textContent = Math.round(kbPanInt * 100) + '%';
   g('kbdir').value = kbDirection;
   g('kbeas').value = kbEasing;
   const list = g('kbslidelist'); list.innerHTML = '';
@@ -504,9 +543,14 @@ g('kbclose').onclick = toggleKBModal;
 g('kbmodal').addEventListener('click', e => { if (e.target === g('kbmodal')) toggleKBModal(); });
 
 g('kbena').onchange = () => { kbEnabled = g('kbena').checked; applyKBNow(); };
-g('kbint').oninput = function () {
-  kbIntensity = parseInt(this.value) / 100;
-  g('kbintv').textContent = this.value + '%';
+g('kbzint').oninput = function () {
+  kbZoomInt = parseInt(this.value) / 100;
+  g('kbzintv').textContent = this.value + '%';
+  applyKBNow();
+};
+g('kbpint').oninput = function () {
+  kbPanInt = parseInt(this.value) / 100;
+  g('kbpintv').textContent = this.value + '%';
   applyKBNow();
 };
 g('kbdir').onchange = () => { kbDirection = g('kbdir').value; applyKBNow(); };
@@ -580,9 +624,13 @@ function doPan(dx, dy) { const s = 8 / zoom; panX += dx * s; panY += dy * s; sta
 function resetPan() { panX = 0; panY = 0; staticT(); }
 window.doPan = doPan; window.resetPan = resetPan;
 
-function mirrorPrefix() {
+/* ── Media transform prefix (rotation + mirror) ── */
+function mediaPrefix() {
+  const parts = [];
+  if (rotation !== 0) parts.push(`rotate(${rotation}deg)`);
   const mx = mirrorX ? -1 : 1, my = mirrorY ? -1 : 1;
-  return (mx !== 1 || my !== 1) ? `scale(${mx},${my}) ` : '';
+  if (mx !== 1 || my !== 1) parts.push(`scale(${mx},${my})`);
+  return parts.length ? parts.join(' ') + ' ' : '';
 }
 
 function staticT() {
@@ -591,7 +639,7 @@ function staticT() {
   if (!m) return;
   const p = getKBPreset(cur);
   const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
-  m.style.transform = `${mirrorPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
 }
 g('bzo').onclick = () => changeZoom(-0.25);
 g('bzi').onclick = () => changeZoom(0.25);
@@ -601,6 +649,22 @@ function toggleMirrorH() { mirrorX = !mirrorX; g('bmh').classList.toggle('on', m
 function toggleMirrorV() { mirrorY = !mirrorY; g('bmv').classList.toggle('on', mirrorY); staticT(); }
 g('bmh').onclick = toggleMirrorH;
 g('bmv').onclick = toggleMirrorV;
+
+/* ── Rotate ── */
+function rotateClockwise() { rotation = (rotation + 90) % 360; staticT(); }
+function rotateCounter()   { rotation = (rotation - 90 + 360) % 360; staticT(); }
+g('brcw').onclick = rotateClockwise;
+g('brccw').onclick = rotateCounter;
+
+/* ── Filename overlay ── */
+function toggleFilename() {
+  showFilename = !showFilename;
+  g('fnov').classList.toggle('hidden', !showFilename);
+  g('bfname').classList.toggle('on', showFilename);
+}
+// Initialize bfname .on class to match showFilename = true
+g('bfname').classList.add('on');
+g('bfname').onclick = toggleFilename;
 
 /* ── Hide / show controls ── */
 function toggleControls() {
@@ -617,11 +681,17 @@ dz.addEventListener('dragleave', () => dz.classList.remove('over'));
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); load(e.dataTransfer.files); });
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
 
+g('fiadd').onchange = function () { if (this.files.length) addMoreFiles(this.files); this.value = ''; };
+g('pladd').onclick = () => g('fiadd').click();
+g('plshuffle').onclick = shufflePlaylist;
+
 g('bru').onclick = function () {
   clearTimeout(tmr); clearInterval(ptmr);
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
-  items = []; sls = []; tws = []; stage.innerHTML = ''; g('tstrip').innerHTML = '';
+  items = []; sls = []; tws = [];
+  [...stage.children].forEach(c => { if (c.id !== 'fnov') c.remove(); });
+  g('tstrip').innerHTML = '';
   viewer.style.display = 'none'; dz.style.display = 'flex'; fi.value = '';
   if (!ctrlsVisible) toggleControls();
   closePL();
@@ -646,6 +716,37 @@ function load(files) {
   dz.style.display = 'none'; viewer.style.display = 'flex';
 }
 
+function addMoreFiles(files) {
+  const acc = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+  if (!acc.length) return;
+  const tmp = []; let done = 0;
+  acc.forEach((f, i) => {
+    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    if (type === 'image') {
+      const p = new Image();
+      p.onload = () => { tmp[i] = {url, type, w: p.naturalWidth, h: p.naturalHeight, name: f.name}; if (++done === acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.src = url;
+    } else {
+      const p = document.createElement('video'); p.preload = 'metadata';
+      const fin = () => { tmp[i] = {url, type, w: p.videoWidth || 1920, h: p.videoHeight || 1080, name: f.name}; if (++done === acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+    }
+  });
+}
+
+function finishAdd(newItems) {
+  newItems.forEach(it => items.push(it));
+  rebuildSlides(cur);
+}
+
+function shufflePlaylist() {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  rebuildSlides(0);
+}
+
 function makeImg(item) {
   const img = document.createElement('img'); img.src = item.url; img.draggable = false;
   img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;';
@@ -659,7 +760,8 @@ function makeVid(item) {
 }
 
 function buildSlideDOM() {
-  stage.innerHTML = ''; sls = []; tws = []; g('tstrip').innerHTML = '';
+  [...stage.children].forEach(c => { if (c.id !== 'fnov') c.remove(); });
+  sls = []; tws = []; g('tstrip').innerHTML = '';
   items.forEach((item, i) => {
     const sl = document.createElement('div'); sl.className = 'sl';
     const med = item.type === 'video' ? makeVid(item) : makeImg(item);
@@ -684,6 +786,7 @@ function buildSlideDOM() {
 function build(its) {
   items = its; buildSlideDOM();
   cur = 0; playing = true; zoom = 1; panX = 0; panY = 0; si = 3;
+  rotation = 0;
   mirrorX = false; mirrorY = false; g('bmh').classList.remove('on'); g('bmv').classList.remove('on');
   updZoom(); updSpd(); updPlayBtn(); applyColor(); showSlide(0); schedNext();
 }
@@ -823,6 +926,7 @@ function showSlide(i) {
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === i ? ' at' : ''); });
   tws[i]?.querySelector('img,video')?.scrollIntoView?.({behavior: 'smooth', block: 'nearest', inline: 'nearest'});
   g('sc').textContent = (i + 1) + '/' + sls.length;
+  g('fnov').textContent = items[i]?.name || '';
   pauseVids();
   if (isV(i)) { playCurVid(); startVProg(i); } else { startKB(i); startProg(); }
   updPlCur();
@@ -834,7 +938,7 @@ function startKB(i) {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const p = getKBPreset(i);
   if (!p) {
-    img.style.transform = `${mirrorPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
+    img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
     return;
   }
   const dur = getEDur(i); let st = null;
@@ -843,7 +947,7 @@ function startKB(i) {
     const t = Math.min((ts - st) / dur, 1), e = kbEase(t);
     const sc = (p.fs + (p.ts - p.fs) * e) * zoom;
     const kx = p.fx + (p.tx - p.fx) * e, ky = p.fy + (p.ty - p.fy) * e;
-    img.style.transform = `${mirrorPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+    img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
     if (t < 1) kbId = requestAnimationFrame(step);
   }
   kbId = requestAnimationFrame(step);
@@ -880,6 +984,7 @@ function goTo(i) {
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === cur ? ' at' : ''); });
   tws[cur]?.querySelector('img,video')?.scrollIntoView?.({behavior: 'smooth', block: 'nearest', inline: 'nearest'});
   g('sc').textContent = (cur + 1) + '/' + sls.length;
+  g('fnov').textContent = items[cur]?.name || '';
   pauseVids();
   if (isV(cur)) { playCurVid(); startVProg(cur); }
   else { startKB(cur); startProg(); if (playing) schedNext(); }
@@ -983,6 +1088,9 @@ document.addEventListener('keydown', e => {
   else if (k.toLowerCase() === keyMap.mirrorH.toLowerCase()) toggleMirrorH();
   else if (k.toLowerCase() === keyMap.mirrorV.toLowerCase()) toggleMirrorV();
   else if (k.toLowerCase() === keyMap.hidectl.toLowerCase()) toggleControls();
+  else if (k === keyMap.rotCW) rotateClockwise();
+  else if (k === keyMap.rotCCW) rotateCounter();
+  else if (k.toLowerCase() === keyMap.fname.toLowerCase()) toggleFilename();
 });
 </script>
 </body>
