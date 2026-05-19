@@ -114,6 +114,40 @@ html,body{background:#000;height:100%;overflow:hidden;}
 /* Floating show-controls button */
 #showctrl{display:none;position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.78);border:.5px solid rgba(255,255,255,.3);color:#fff;padding:7px 20px;border-radius:20px;cursor:pointer;z-index:50;font-size:12px;font-family:system-ui,sans-serif;white-space:nowrap;}
 #showctrl.visible{display:block;}
+
+/* Ken Burns modal */
+#kbmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:200;align-items:center;justify-content:center;}
+#kbmodal.open{display:flex;}
+#kbbody{background:#111;border:.5px solid rgba(255,255,255,.15);border-radius:8px;padding:20px 24px;width:460px;max-height:84vh;overflow-y:auto;font-family:system-ui,sans-serif;}
+#kbbody::-webkit-scrollbar{width:3px;}
+#kbbody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);}
+#kbbody h3{color:#fff;font-size:13px;font-weight:600;margin-bottom:14px;}
+.kbsec{margin-bottom:16px;}
+.kbsec-title{font-size:10px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;}
+.kbrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:.5px solid rgba(255,255,255,.06);}
+.kblbl{font-size:12px;color:rgba(255,255,255,.55);flex:1;}
+.kbval{font-size:11px;color:rgba(255,255,255,.45);width:36px;text-align:right;flex-shrink:0;}
+.kbrow input[type=range]{flex:1;accent-color:#fff;cursor:pointer;height:3px;}
+.kbrow select{font-size:12px;background:#1a1a1a;border:.5px solid rgba(255,255,255,.2);border-radius:4px;color:#fff;padding:3px 6px;cursor:pointer;font-family:system-ui,sans-serif;}
+/* toggle switch */
+.kbtog{position:relative;width:34px;height:18px;flex-shrink:0;}
+.kbtog input{opacity:0;width:0;height:0;}
+.kbtog-sl{position:absolute;inset:0;background:rgba(255,255,255,.18);border-radius:9px;cursor:pointer;transition:background .2s;}
+.kbtog-sl:before{content:'';position:absolute;width:12px;height:12px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s;}
+.kbtog input:checked+.kbtog-sl{background:rgba(255,255,255,.55);}
+.kbtog input:checked+.kbtog-sl:before{transform:translateX(16px);}
+/* per-slide list */
+#kbslidelist{display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;padding-right:4px;}
+#kbslidelist::-webkit-scrollbar{width:3px;}
+#kbslidelist::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);}
+.kbsli{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.03);border:.5px solid rgba(255,255,255,.07);}
+.kbsli.kbslicur{border-color:rgba(255,255,255,.22);background:rgba(255,255,255,.07);}
+.kbsli-thumb{width:44px;height:28px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#1a1a1a;}
+.kbsli-name{flex:1;font-size:11px;color:rgba(255,255,255,.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kbsli-sel{font-size:11px;background:#1a1a1a;border:.5px solid rgba(255,255,255,.18);border-radius:4px;color:rgba(255,255,255,.75);padding:3px 5px;cursor:pointer;font-family:system-ui,sans-serif;flex-shrink:0;}
+.kbempty{font-size:11px;color:rgba(255,255,255,.25);padding:12px 0;text-align:center;}
+#kbclose{margin-top:16px;padding:7px 22px;background:rgba(255,255,255,.09);border:.5px solid rgba(255,255,255,.22);border-radius:5px;color:#fff;cursor:pointer;font-size:12px;font-family:system-ui,sans-serif;}
+#kbclose:hover{background:rgba(255,255,255,.18);}
 </style>
 </head>
 <body>
@@ -224,6 +258,9 @@ html,body{background:#000;height:100%;overflow:hidden;}
     <button class="cb" id="bplt" title="Playlist">
       <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     </button>
+    <button class="cb" id="bkb" title="Ken Burns settings">
+      <svg viewBox="0 0 24 24"><path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"/></svg>
+    </button>
     <button class="cb" id="bked" title="Keyboard shortcuts">
       <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
     </button>
@@ -255,6 +292,47 @@ html,body{background:#000;height:100%;overflow:hidden;}
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.3)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
       <span>Sync with Music Beats</span><span class="soon">Soon</span>
     </div>
+  </div>
+</div>
+
+<!-- Ken Burns modal -->
+<div id="kbmodal">
+  <div id="kbbody">
+    <h3>Ken Burns Effect</h3>
+    <div class="kbsec">
+      <div class="kbsec-title">Global Settings</div>
+      <div class="kbrow">
+        <span class="kblbl">Enable Ken Burns</span>
+        <label class="kbtog"><input type="checkbox" id="kbena" checked><span class="kbtog-sl"></span></label>
+      </div>
+      <div class="kbrow">
+        <span class="kblbl">Intensity</span>
+        <input type="range" id="kbint" min="0" max="200" value="100" step="1">
+        <span class="kbval" id="kbintv">100%</span>
+      </div>
+      <div class="kbrow">
+        <span class="kblbl">Direction</span>
+        <select id="kbdir">
+          <option value="mix">Mix (Zoom In &amp; Out)</option>
+          <option value="in">Zoom In Only</option>
+          <option value="out">Zoom Out Only</option>
+        </select>
+      </div>
+      <div class="kbrow">
+        <span class="kblbl">Easing</span>
+        <select id="kbeas">
+          <option value="ease">Ease In-Out (default)</option>
+          <option value="linear">Linear</option>
+          <option value="in">Ease In</option>
+          <option value="out">Ease Out</option>
+        </select>
+      </div>
+    </div>
+    <div class="kbsec">
+      <div class="kbsec-title">Per Slide Override</div>
+      <div id="kbslidelist"></div>
+    </div>
+    <button id="kbclose">Close</button>
   </div>
 </div>
 
@@ -290,6 +368,37 @@ const KB = [
   {fs:1.0,ts:1.1,fx:-4,fy:0,tx:4,ty:0},
   {fs:1.1,ts:1.0,fx:4,fy:2,tx:-2,ty:-2}
 ];
+const KB_LABELS = [
+  'Zoom In · Drift ↖', 'Zoom Out · Drift ↘',
+  'Zoom In · Drift ↗', 'Zoom Out · Drift ↙',
+  'Zoom In · Pan ↔',   'Zoom Out · Drift ↖',
+];
+
+let kbEnabled = true, kbIntensity = 1.0, kbDirection = 'mix', kbEasing = 'ease';
+
+function getKBPreset(i) {
+  if (!kbEnabled) return null;
+  const override = items[i]?.kbPreset;
+  if (override === -1) return null;
+  let idx;
+  if (typeof override === 'number' && override >= 0) {
+    idx = override;
+  } else {
+    const pools = {mix:[0,1,2,3,4,5], in:[0,2,4], out:[1,3,5]};
+    const pool = pools[kbDirection] || pools.mix;
+    idx = pool[i % pool.length];
+  }
+  const b = KB[idx];
+  const q = kbIntensity;
+  return {fs:1+(b.fs-1)*q, ts:1+(b.ts-1)*q, fx:b.fx*q, fy:b.fy*q, tx:b.tx*q, ty:b.ty*q};
+}
+
+function kbEase(t) {
+  if (kbEasing === 'linear') return t;
+  if (kbEasing === 'in')     return t * t;
+  if (kbEasing === 'out')    return t * (2 - t);
+  return t < .5 ? 2*t*t : -1+(4-2*t)*t; // ease-in-out
+}
 
 /* ── Keyboard mapping ── */
 const FNS = [
@@ -342,6 +451,66 @@ function toggleKeyEditor() {
 g('bked').onclick = toggleKeyEditor;
 g('kedclose').onclick = toggleKeyEditor;
 g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(); });
+
+/* ── Ken Burns modal ── */
+function applyKBNow() {
+  if (!isV(cur)) { startKB(cur); startProg(); if (playing) { clearTimeout(tmr); schedNext(); } }
+}
+
+function renderKBModal() {
+  g('kbena').checked = kbEnabled;
+  g('kbint').value = Math.round(kbIntensity * 100);
+  g('kbintv').textContent = Math.round(kbIntensity * 100) + '%';
+  g('kbdir').value = kbDirection;
+  g('kbeas').value = kbEasing;
+  const list = g('kbslidelist'); list.innerHTML = '';
+  const imgs = items.filter(it => it.type === 'image');
+  if (!imgs.length) {
+    const em = document.createElement('div'); em.className = 'kbempty';
+    em.textContent = 'No image slides loaded yet.'; list.appendChild(em); return;
+  }
+  items.forEach((item, i) => {
+    if (item.type !== 'image') return;
+    const row = document.createElement('div');
+    row.className = 'kbsli' + (i === cur ? ' kbslicur' : '');
+    const thumb = document.createElement('img'); thumb.src = item.url; thumb.className = 'kbsli-thumb';
+    const name = document.createElement('span'); name.className = 'kbsli-name';
+    name.textContent = item.name || 'Slide ' + (i + 1);
+    const sel = document.createElement('select'); sel.className = 'kbsli-sel';
+    const opts = [['auto','Auto (global)'],[-1,'Off (Static)'],...KB_LABELS.map((l,idx)=>[idx,l])];
+    opts.forEach(([v, t]) => {
+      const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
+      const cur_kbp = item.kbPreset;
+      if ((cur_kbp === undefined && v === 'auto') || (cur_kbp !== undefined && String(cur_kbp) === String(v))) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.onchange = () => {
+      const val = sel.value;
+      item.kbPreset = val === 'auto' ? undefined : parseInt(val);
+      if (i === cur) applyKBNow();
+    };
+    row.appendChild(thumb); row.appendChild(name); row.appendChild(sel);
+    list.appendChild(row);
+  });
+}
+
+function toggleKBModal() {
+  const open = g('kbmodal').classList.toggle('open');
+  g('bkb').classList.toggle('on', open);
+  if (open) renderKBModal();
+}
+g('bkb').onclick = toggleKBModal;
+g('kbclose').onclick = toggleKBModal;
+g('kbmodal').addEventListener('click', e => { if (e.target === g('kbmodal')) toggleKBModal(); });
+
+g('kbena').onchange = () => { kbEnabled = g('kbena').checked; applyKBNow(); };
+g('kbint').oninput = function () {
+  kbIntensity = parseInt(this.value) / 100;
+  g('kbintv').textContent = this.value + '%';
+  applyKBNow();
+};
+g('kbdir').onchange = () => { kbDirection = g('kbdir').value; applyKBNow(); };
+g('kbeas').onchange = () => { kbEasing = g('kbeas').value; applyKBNow(); };
 
 /* ── Color: LUT for gamma + highlights + shadows ── */
 function buildLUT(gv, hl, sh) {
@@ -418,8 +587,11 @@ function mirrorPrefix() {
 
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const p = KB[cur % KB.length], m = sls[cur]?.querySelector('img,video');
-  if (m) m.style.transform = `${mirrorPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${p.tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${p.ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  const m = sls[cur]?.querySelector('img,video');
+  if (!m) return;
+  const p = getKBPreset(cur);
+  const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
+  m.style.transform = `${mirrorPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
 }
 g('bzo').onclick = () => changeZoom(-0.25);
 g('bzi').onclick = () => changeZoom(0.25);
@@ -578,6 +750,24 @@ function renderPlaylist() {
       sel.onchange = e => { e.stopPropagation(); item.customDur = parseInt(sel.value); };
       sel.onclick = e => e.stopPropagation();
       durRow.appendChild(lbl); durRow.appendChild(sel); info.appendChild(durRow);
+
+      const kbRow = document.createElement('div'); kbRow.className = 'pldurrow';
+      const kblbl = document.createElement('span'); kblbl.className = 'pldlbl'; kblbl.textContent = 'KB:';
+      const kbsel = document.createElement('select'); kbsel.className = 'pldsel';
+      [['auto','Auto'],[-1,'Off'],...KB_LABELS.map((l,idx)=>[idx,l.split('·')[0].trim()])].forEach(([v,t]) => {
+        const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
+        const ov = item.kbPreset;
+        if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
+        kbsel.appendChild(opt);
+      });
+      kbsel.onchange = e => {
+        e.stopPropagation();
+        const val = kbsel.value;
+        item.kbPreset = val === 'auto' ? undefined : parseInt(val);
+        if (i === cur) applyKBNow();
+      };
+      kbsel.onclick = e => e.stopPropagation();
+      kbRow.appendChild(kblbl); kbRow.appendChild(kbsel); info.appendChild(kbRow);
     }
 
     const del = document.createElement('button'); del.className = 'pldel'; del.textContent = '✕';
@@ -642,10 +832,15 @@ function startKB(i) {
   if (isV(i)) return;
   const img = sls[i]?.querySelector('img'); if (!img) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const p = KB[i % KB.length], dur = getEDur(i); let st = null;
+  const p = getKBPreset(i);
+  if (!p) {
+    img.style.transform = `${mirrorPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
+    return;
+  }
+  const dur = getEDur(i); let st = null;
   function step(ts) {
     if (!st) st = ts;
-    const t = Math.min((ts - st) / dur, 1), e = t < .5 ? 2*t*t : -1+(4-2*t)*t;
+    const t = Math.min((ts - st) / dur, 1), e = kbEase(t);
     const sc = (p.fs + (p.ts - p.fs) * e) * zoom;
     const kx = p.fx + (p.tx - p.fx) * e, ky = p.fy + (p.ty - p.fy) * e;
     img.style.transform = `${mirrorPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
