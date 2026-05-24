@@ -161,6 +161,8 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #watchbadge{display:none;position:fixed;top:12px;right:12px;background:rgba(0,0,0,.55);color:rgba(255,255,255,.5);font-size:10px;padding:3px 10px;border-radius:10px;z-index:4;font-family:system-ui,sans-serif;letter-spacing:.05em;}
 #toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,.97);border:.5px solid rgba(255,255,255,.18);color:rgba(255,255,255,.85);font-size:12px;font-family:system-ui,sans-serif;padding:10px 18px;border-radius:8px;z-index:600;pointer-events:none;opacity:0;transition:opacity .25s;max-width:80vw;text-align:center;line-height:1.5;}
 #toast.show{opacity:1;}
+#toast button{display:inline-block;margin-top:8px;background:rgba(220,60,60,.25);border:.5px solid rgba(220,60,60,.6);color:rgba(255,110,110,1);font-size:11px;padding:5px 14px;border-radius:5px;cursor:pointer;font-family:system-ui,sans-serif;pointer-events:auto;}
+#toast button:hover{background:rgba(220,60,60,.45);}
 #watchbadge.show{display:block;}
 
 /* Ken Burns modal */
@@ -445,7 +447,12 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <script>
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
-dz.onclick = () => fi.click();
+const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: { 'image/*': [], 'video/mp4': ['.mp4'], 'video/quicktime': ['.mov'], 'video/webm': ['.webm'] } }] };
+dz.onclick = async () => {
+  if ('showOpenFilePicker' in window) {
+    try { processHandles(await window.showOpenFilePicker(PICKER_OPTS)); } catch(e) { if (e.name !== 'AbortError') fi.click(); }
+  } else { fi.click(); }
+};
 
 /* ── State ── */
 let items = [], sls = [], tws = [], cur = 0, playing = true,
@@ -976,7 +983,16 @@ g('ctx-remove').onclick = () => {
 g('ctx-del').onclick = () => {
   ctxmenu.style.display = 'none';
   const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+  const fname = item.name || '';
+  pendingDeleteItem = item.fileHandle ? item : null;
   removeItem(items.indexOf(item), true);
+  if (fname) {
+    if (pendingDeleteItem) {
+      showToast(`<b style="color:#fff">${fname}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Removed from playlist.</span><br><button onclick="confirmDeleteFile()">Delete File from Disk</button>`);
+    } else {
+      showToast(`<b style="color:#fff">${fname}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Removed from playlist. To delete the file, remove it from your file system manually.</span>`);
+    }
+  }
 };
 
 /* ── File loading ── */
@@ -985,7 +1001,11 @@ dz.addEventListener('dragleave', () => dz.classList.remove('over'));
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); load(e.dataTransfer.files); });
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
 g('fiadd').onchange = function() { if (this.files.length) addMoreFiles(this.files); this.value = ''; };
-g('pladd').onclick = () => g('fiadd').click();
+g('pladd').onclick = async () => {
+  if ('showOpenFilePicker' in window) {
+    try { addHandles(await window.showOpenFilePicker(PICKER_OPTS)); } catch(e) { if (e.name !== 'AbortError') g('fiadd').click(); }
+  } else { g('fiadd').click(); }
+};
 g('plshuffle').onclick = shufflePlaylist;
 
 g('bru').onclick = function() {
@@ -1034,6 +1054,44 @@ function addMoreFiles(files) {
     } else {
       const p = document.createElement('video'); p.preload = 'metadata';
       const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+    }
+  });
+}
+
+async function processHandles(handles) {
+  const acc = [];
+  for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
+  if (!acc.length) return;
+  const tmp = []; let done = 0;
+  acc.forEach(({h, f}, i) => {
+    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    if (type === 'image') {
+      const p = new Image();
+      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) build(tmp.filter(Boolean)); };
+      p.src = url;
+    } else {
+      const p = document.createElement('video'); p.preload = 'metadata';
+      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name,fileHandle:h}; if (++done===acc.length) build(tmp.filter(Boolean)); };
+      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+    }
+  });
+  dz.style.display = 'none'; viewer.style.display = 'flex';
+}
+async function addHandles(handles) {
+  const acc = [];
+  for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
+  if (!acc.length) return;
+  const tmp = []; let done = 0;
+  acc.forEach(({h, f}, i) => {
+    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    if (type === 'image') {
+      const p = new Image();
+      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.src = url;
+    } else {
+      const p = document.createElement('video'); p.preload = 'metadata';
+      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name,fileHandle:h}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
       p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
     }
   });
@@ -1480,13 +1538,20 @@ document.addEventListener('keydown', e => {
   const t = e.target.tagName;
   if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
 
-  /* Delete = remove from playlist + clear LS, show manual-delete hint */
+  /* Delete = remove from playlist + clear LS, then offer file deletion */
   if (e.key === 'Delete') {
     e.preventDefault();
     const mi = getMediaItems(), item = mi[cur]; if (!item) return;
     const fname = item.name || '';
+    pendingDeleteItem = item.fileHandle ? item : null;
     removeItem(items.indexOf(item), true);
-    if (fname) showToast(`<b style="color:#fff">${fname}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Removed from playlist. To delete the file, remove it from your file system manually.</span>`);
+    if (fname) {
+      if (pendingDeleteItem) {
+        showToast(`<b style="color:#fff">${fname}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Removed from playlist.</span><br><button onclick="confirmDeleteFile()">Delete File from Disk</button>`);
+      } else {
+        showToast(`<b style="color:#fff">${fname}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Removed from playlist. To delete the file, remove it from your file system manually.</span>`);
+      }
+    }
     return;
   }
   if (e.key === 'Backspace') {
@@ -1529,6 +1594,18 @@ function showToast(html, dur = 5000) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), dur);
 }
+let pendingDeleteItem = null;
+window.confirmDeleteFile = async function() {
+  const item = pendingDeleteItem; if (!item?.fileHandle) return;
+  pendingDeleteItem = null;
+  g('toast').classList.remove('show');
+  try {
+    const perm = await item.fileHandle.requestPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') { showToast('Permission denied — delete the file manually.', 4000); return; }
+    await item.fileHandle.remove();
+    showToast(`<b style="color:#fff">${item.name}</b> deleted from disk.`, 3000);
+  } catch(e) { showToast(`Could not delete: ${e.message}`, 4000); }
+};
 </script>
 <div id="toast"></div>
 </body>
