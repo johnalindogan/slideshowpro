@@ -36,7 +36,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #fnov.hidden{opacity:0;pointer-events:none;}
 
 /* Max Mode companion panel (same file cloned) */
-#maxcomp{display:none;position:absolute;overflow:hidden;z-index:1;}
+#maxcomp,#maxcomp2{display:none;position:absolute;overflow:hidden;z-index:1;}
 /* Horizontal Max Mode: portrait on landscape screen — left/right split */
 #stage.hmax .sl.on{right:auto!important;bottom:auto!important;left:0!important;top:0!important;width:50%!important;height:100%!important;}
 #stage.hmax #maxcomp{display:block;left:50%;top:0;width:50%;height:100%;}
@@ -45,6 +45,16 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #stage.vmax .sl.on{right:auto!important;left:0!important;top:0!important;width:100%!important;height:50%!important;}
 #stage.vmax #maxcomp{display:block;left:0;top:50%;width:100%;height:50%;}
 #stage.vmax .sl.on img,#stage.vmax .sl.on video,#stage.vmax #maxcomp img,#stage.vmax #maxcomp video{object-fit:cover!important;}
+/* Same Side 3: 3-panel left/right */
+#stage.hmax3 .sl.on{right:auto!important;bottom:auto!important;left:33.333%!important;top:0!important;width:33.333%!important;height:100%!important;}
+#stage.hmax3 #maxcomp{display:block;left:0;top:0;width:33.333%;height:100%;}
+#stage.hmax3 #maxcomp2{display:block;left:66.667%;top:0;width:33.333%;height:100%;}
+#stage.hmax3 .sl.on img,#stage.hmax3 .sl.on video,#stage.hmax3 #maxcomp img,#stage.hmax3 #maxcomp video,#stage.hmax3 #maxcomp2 img,#stage.hmax3 #maxcomp2 video{object-fit:cover!important;}
+/* Same Side 3: 3-panel top/bottom */
+#stage.vmax3 .sl.on{right:auto!important;left:0!important;top:33.333%!important;width:100%!important;height:33.333%!important;}
+#stage.vmax3 #maxcomp{display:block;left:0;top:0;width:100%;height:33.333%;}
+#stage.vmax3 #maxcomp2{display:block;left:0;top:66.667%;width:100%;height:33.333%;}
+#stage.vmax3 .sl.on img,#stage.vmax3 .sl.on video,#stage.vmax3 #maxcomp img,#stage.vmax3 #maxcomp video,#stage.vmax3 #maxcomp2 img,#stage.vmax3 #maxcomp2 video{object-fit:cover!important;}
 
 #cpanel{display:none;flex-direction:column;gap:8px;padding:11px 16px;background:rgba(6,6,6,.99);border-top:.5px solid rgba(255,255,255,.08);}
 #cpanel.show{display:flex;}
@@ -246,6 +256,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
     <div id="fnov"></div>
     <div id="watchbadge">WATCH MODE · F5 or Esc to exit</div>
     <div id="maxcomp"></div>
+    <div id="maxcomp2"></div>
   </div>
 
   <div id="cpanel">
@@ -500,8 +511,8 @@ let items = [], sls = [], tws = [], cur = 0, playing = true,
 let selectedItems = new Set(), lastClickedMI = -1;
 let reversePlay = false, watchMode = false, preWatchCtrlsVis = true;
 let hMaxEnabled = false, vMaxEnabled = false;
-let maxPreset = 2; // 1=SameSide2, 2=KBLeft, 3=KBRight
-const MAX_PRESET_LABELS = ['Same Side 2', 'KB Left', 'KB Right'];
+let maxPreset = 2; // 1=SameSide2, 2=KBLeft, 3=KBRight, 4=SameSide3
+const MAX_PRESET_LABELS = ['Same Side 2', 'KB Left', 'KB Right', 'Same Side 3'];
 let dragSrcItemsIdx = null;
 
 /* Mouse drag state */
@@ -830,7 +841,11 @@ document.addEventListener('mousemove', e => {
     if (!lDragMoved && Math.hypot(dx,dy) < 4) return;
     lDragMoved = true; stage.classList.add('ldrag');
     if (lDragOnComp) {
-      compPanX = lDragPX + dx / compZoom; compPanY = lDragPY + dy / compZoom; updCompT();
+      const isVmax = stage.classList.contains('vmax');
+      const isMirror = maxPreset === 1 || maxPreset === 4;
+      const mdx = (isMirror && !isVmax) ? -dx : dx;
+      const mdy = (isMirror && isVmax) ? -dy : dy;
+      compPanX = lDragPX + mdx / compZoom; compPanY = lDragPY + mdy / compZoom; updCompT();
     } else { panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom; staticT(); }
   } else if (midDrag) {
     panX = midStartPX + (e.clientX - midStartX) / zoom;
@@ -863,7 +878,6 @@ function mediaPrefix() {
 }
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   const m = sls[cur]?.querySelector('img,video'); if (!m) return;
   const p = getKBPreset(cur);
   const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
@@ -937,7 +951,7 @@ g('brev').onclick = () => { reversePlay = !reversePlay; g('brev').classList.togg
 
 /* ── Horizontal / Vertical Max Mode + Presets ── */
 function cycleMaxPreset() {
-  maxPreset = maxPreset % 3 + 1; // 1→2→3→1
+  maxPreset = maxPreset % 4 + 1; // 1→2→3→4→1
   const on = hMaxEnabled || vMaxEnabled;
   if (!on) { hMaxEnabled = true; g('bhmax').classList.add('on'); } // auto-enable H if nothing on
   showMaxCompanion(cur);
@@ -951,23 +965,31 @@ function getActiveMaxMode(i) {
   if (!hMaxEnabled && !vMaxEnabled) return null;
   const mi = getMediaItems(), item = mi[i]; if (!item) return null;
   const sw = window.innerWidth, sh = window.innerHeight;
-  if (hMaxEnabled && sw > sh && item.h > item.w) return 'hmax';
-  if (vMaxEnabled && sh > sw && item.w > item.h) return 'vmax';
+  if (hMaxEnabled && sw > sh && item.h > item.w) return maxPreset === 4 ? 'hmax3' : 'hmax';
+  if (vMaxEnabled && sh > sw && item.w > item.h) return maxPreset === 4 ? 'vmax3' : 'vmax';
   return null;
 }
 
 function updCompT() {
   if (compKbId) return; // KB Right is managing its own transform
   const m = g('maxcomp').querySelector('img,video'); if (!m) return;
-  const isVmax = stage.classList.contains('vmax');
-  const mirror = maxPreset === 1 ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
-  m.style.transform = `${mirror}scale(${compZoom.toFixed(4)}) translate(${compPanX.toFixed(1)}px,${compPanY.toFixed(1)}px)`;
+  const isVmax = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
+  const isMirror = maxPreset === 1 || maxPreset === 4;
+  const mirror = isMirror ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
+  const t = `${mirror}scale(${compZoom.toFixed(4)}) translate(${compPanX.toFixed(1)}px,${compPanY.toFixed(1)}px)`;
+  m.style.transform = t;
+  if (maxPreset === 4) {
+    const m2 = g('maxcomp2')?.querySelector('img,video'); if (m2) m2.style.transform = t;
+  }
 }
 function isInCompanion(cx, cy) {
-  if (!stage.classList.contains('hmax') && !stage.classList.contains('vmax')) return false;
+  const cl = stage.classList;
   const r = stage.getBoundingClientRect();
-  if (stage.classList.contains('hmax')) return cx > r.left + r.width / 2;
-  return cy > r.top + r.height / 2;
+  if (cl.contains('hmax3')) { const third = r.width / 3; return cx < r.left + third || cx > r.left + 2 * third; }
+  if (cl.contains('vmax3')) { const third = r.height / 3; return cy < r.top + third || cy > r.top + 2 * third; }
+  if (cl.contains('hmax')) return cx > r.left + r.width / 2;
+  if (cl.contains('vmax')) return cy > r.top + r.height / 2;
+  return false;
 }
 function startCompKB(i) {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
@@ -985,14 +1007,7 @@ function startCompKB(i) {
   }
   compKbId = requestAnimationFrame(step);
 }
-function showMaxCompanion(curIdx) {
-  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
-  stage.classList.remove('hmax','vmax');
-  const mc = g('maxcomp'); mc.innerHTML = '';
-  const mode = getActiveMaxMode(curIdx);
-  if (!mode) return;
-  const mi = getMediaItems(), item = mi[curIdx]; if (!item) return;
-  compZoom = 1; compPanX = 0; compPanY = 0;
+function makeCompMed(item) {
   let med;
   if (item.type === 'video') {
     med = document.createElement('video');
@@ -1002,11 +1017,27 @@ function showMaxCompanion(curIdx) {
     med = document.createElement('img'); med.src = item.url; med.draggable = false;
   }
   med.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:center center;';
-  // SameSide2: companion is mirrored
-  if (maxPreset === 1) {
-    med.style.transform = mode === 'vmax' ? 'scaleY(-1)' : 'scaleX(-1)';
-  }
+  return med;
+}
+function showMaxCompanion(curIdx) {
+  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
+  stage.classList.remove('hmax','vmax','hmax3','vmax3');
+  const mc = g('maxcomp'); mc.innerHTML = '';
+  const mc2 = g('maxcomp2'); if (mc2) mc2.innerHTML = '';
+  const mode = getActiveMaxMode(curIdx);
+  if (!mode) return;
+  const mi = getMediaItems(), item = mi[curIdx]; if (!item) return;
+  compZoom = 1; compPanX = 0; compPanY = 0;
+  const isMirrorMode = mode === 'vmax' || mode === 'vmax3';
+  const mirrorTransform = isMirrorMode ? 'scaleY(-1)' : 'scaleX(-1)';
+  const med = makeCompMed(item);
+  if (maxPreset === 1 || maxPreset === 4) med.style.transform = mirrorTransform;
   mc.appendChild(med);
+  if (maxPreset === 4 && mc2) {
+    const med2 = makeCompMed(item);
+    med2.style.transform = mirrorTransform;
+    mc2.appendChild(med2);
+  }
   stage.classList.add(mode);
   // KBRight: run KB animation on companion
   if (maxPreset === 3 && item.type !== 'video') startCompKB(curIdx);
@@ -1238,9 +1269,9 @@ g('bru').onclick = function() {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
   items = []; sls = []; tws = []; selectedItems.clear(); lastClickedMI = -1;
-  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp') c.remove(); });
+  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
   g('tstrip').innerHTML = '';
-  stage.classList.remove('hmax','vmax');
+  stage.classList.remove('hmax','vmax','hmax3','vmax3');
   viewer.style.display = 'none'; dz.style.display = 'flex'; fi.value = '';
   if (!ctrlsVisible) toggleControls();
   if (watchMode) toggleWatchMode();
@@ -1353,7 +1384,7 @@ function makeVid(item) {
 }
 
 function buildSlideDOM() {
-  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp') c.remove(); });
+  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
   sls = []; tws = []; g('tstrip').innerHTML = '';
   getMediaItems().forEach((item, i) => {
     const sl = document.createElement('div'); sl.className = 'sl';
@@ -1631,12 +1662,11 @@ function startKB(i) {
   if (isV(i)) return;
   const img = sls[i]?.querySelector('img'); if (!img) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   const p = getKBPreset(i);
-  // SameSide2 (preset 1) or KBRight (preset 3): main slide is static
-  if (getActiveMaxMode(i) && (maxPreset === 1 || maxPreset === 3)) {
-    const sc = p ? p.fs * zoom : zoom, kx = p ? p.fx : 0, ky = p ? p.fy : 0;
-    img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  // SameSide2 (preset 1), SameSide3 (preset 4), or KBRight (preset 3): main slide is static
+  if (getActiveMaxMode(i) && (maxPreset === 1 || maxPreset === 3 || maxPreset === 4)) {
+    const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
+    img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
     return;
   }
   if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
@@ -1680,7 +1710,7 @@ function goTo(i) {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   const len = getMediaItems().length;
   sls.forEach(s => s.classList.remove('companion'));
-  stage.classList.remove('hmax','vmax');
+  stage.classList.remove('hmax','vmax','hmax3','vmax3');
   sls[cur].classList.remove('on'); sls[cur].classList.add('fl');
   cur = (i + len) % len;
   applySlideSettings(cur);
