@@ -419,13 +419,13 @@ html,body{background:#000;height:100%;overflow:hidden;}
       </div>
       <div class="kbrow">
         <span class="kblbl">Zoom Intensity</span>
-        <input type="range" id="kbzint" min="0" max="500" value="100" step="1">
-        <span class="kbval" id="kbzintv">100%</span>
+        <input type="range" id="kbzint" min="0" max="500" value="400" step="1">
+        <span class="kbval" id="kbzintv">400%</span>
       </div>
       <div class="kbrow">
         <span class="kblbl">Pan Intensity</span>
-        <input type="range" id="kbpint" min="0" max="500" value="100" step="1">
-        <span class="kbval" id="kbpintv">100%</span>
+        <input type="range" id="kbpint" min="0" max="500" value="400" step="1">
+        <span class="kbval" id="kbpintv">400%</span>
       </div>
       <div class="kbrow">
         <span class="kblbl">Direction</span>
@@ -539,7 +539,7 @@ const KB_LABELS = [
   'Zoom In · Drift ↗','Zoom Out · Drift ↙',
   'Zoom In · Pan ↔','Zoom Out · Drift ↖',
 ];
-let kbEnabled = true, kbZoomInt = 1.0, kbPanInt = 1.0, kbDirection = 'mix', kbEasing = 'ease';
+let kbEnabled = true, kbZoomInt = 4.0, kbPanInt = 4.0, kbDirection = 'mix', kbEasing = 'ease';
 
 /* ── Media helpers ── */
 function getMediaItems() { return items.filter(it => it.type !== 'folder' && !it.unavailable); }
