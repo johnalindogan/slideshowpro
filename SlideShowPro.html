@@ -8,11 +8,18 @@
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#000;height:100%;overflow:hidden;}
 #app{display:flex;flex-direction:column;width:100vw;height:100vh;background:#000;}
-#dz{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:2rem;cursor:pointer;background:#0d0d0d;border:1.5px dashed rgba(255,255,255,.18);transition:background .2s;}
-#dz:hover,#dz.over{background:#181818;border-color:rgba(255,255,255,.4);}
-#dz svg{opacity:.3;}
-#dz strong{color:rgba(255,255,255,.8);font-size:20px;font-family:system-ui,sans-serif;}
-#dz p{color:rgba(255,255,255,.38);font-size:14px;text-align:center;line-height:1.8;font-family:system-ui,sans-serif;}
+#dz{flex:1;display:flex;align-items:center;justify-content:center;background:#0a0a0a;transition:background .2s;}
+#dz.over{background:#181818;}
+#landing{display:flex;flex-direction:column;align-items:center;gap:32px;}
+#llogo{font-size:34px;font-weight:700;color:rgba(255,255,255,.9);font-family:system-ui,sans-serif;letter-spacing:-.03em;}
+#llogo span{color:rgba(255,255,255,.3);}
+#lbtns{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
+#lbtns button{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px 32px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;color:#fff;font-size:13px;font-family:system-ui,sans-serif;cursor:pointer;min-width:148px;transition:background .15s,border-color .15s;line-height:1.4;}
+#lbtns button:hover:not(:disabled){background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.28);}
+#lbtns button:disabled{opacity:.3;cursor:default;}
+#lbtns button svg{width:30px;height:30px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.75;}
+#lsinfo{font-size:10px;color:rgba(255,255,255,.38);max-width:148px;text-align:center;}
+#ldrophint{font-size:12px;color:rgba(255,255,255,.18);font-family:system-ui,sans-serif;letter-spacing:.02em;}
 #fi,#fiadd,#fiplist{display:none;}
 #viewer{display:none;flex-direction:column;width:100vw;height:100vh;}
 #stage{position:relative;flex:1;overflow:hidden;background:#000;cursor:default;}
@@ -210,12 +217,25 @@ html,body{background:#000;height:100%;overflow:hidden;}
 
 <div id="app">
 <div id="dz">
-  <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="2" y="2" width="20" height="20" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.5"/>
-    <polyline points="21 15 16 10 5 21"/><path d="M16 8 l2-2 2 2"/>
-  </svg>
-  <strong>Drop photos or videos here</strong>
-  <p>JPG &nbsp;·&nbsp; PNG &nbsp;·&nbsp; WEBP &nbsp;·&nbsp; MP4 &nbsp;·&nbsp; MOV<br>click to select files &nbsp;·&nbsp; or drag &amp; drop an album folder</p>
+  <div id="landing">
+    <div id="llogo">SlideShow<span>Pro</span></div>
+    <div id="lbtns">
+      <button id="lbopen">
+        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        Open Files
+      </button>
+      <button id="lbplist">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Open Playlist
+      </button>
+      <button id="lbcont" disabled>
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Continue from Last
+        <span id="lsinfo"></span>
+      </button>
+    </div>
+    <p id="ldrophint">or drop files here</p>
+  </div>
 </div>
 <input type="file" id="fi" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
 <input type="file" id="fiadd" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
@@ -448,10 +468,26 @@ html,body{background:#000;height:100%;overflow:hidden;}
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
 const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: { 'image/*': [], 'video/mp4': ['.mp4'], 'video/quicktime': ['.mov'], 'video/webm': ['.webm'] } }] };
-dz.onclick = async () => {
+async function openFilePicker() {
   if ('showOpenFilePicker' in window) {
     try { processHandles(await window.showOpenFilePicker(PICKER_OPTS)); } catch(e) { if (e.name !== 'AbortError') fi.click(); }
   } else { fi.click(); }
+}
+let landingPlaylistMode = false;
+g('lbopen').onclick = () => openFilePicker();
+g('lbplist').onclick = async () => {
+  if ('showOpenFilePicker' in window) {
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: 'SlideShowPro Playlist', accept: { 'application/json': ['.json'] } }] });
+      restoreFromSnapshotFile(await h.getFile());
+    } catch(e) { if (e.name !== 'AbortError') { landingPlaylistMode = true; g('fiplist').click(); } }
+  } else { landingPlaylistMode = true; g('fiplist').click(); }
+};
+g('lbcont').onclick = async () => {
+  try {
+    const snap = JSON.parse(localStorage.getItem('ssp_autosave') || 'null');
+    if (snap) await restoreFromSnapshot(snap); else showToast('No saved session found.', 3000);
+  } catch(e) { showToast('Could not restore last session.', 4000); }
 };
 
 /* ── State ── */
@@ -493,7 +529,7 @@ const KB_LABELS = [
 let kbEnabled = true, kbZoomInt = 1.0, kbPanInt = 1.0, kbDirection = 'mix', kbEasing = 'ease';
 
 /* ── Media helpers ── */
-function getMediaItems() { return items.filter(it => it.type !== 'folder'); }
+function getMediaItems() { return items.filter(it => it.type !== 'folder' && !it.unavailable); }
 function nextMI() { const len = getMediaItems().length; return reversePlay ? (cur - 1 + len) % len : (cur + 1) % len; }
 
 /* ── Per-item localStorage ── */
@@ -950,6 +986,7 @@ function removeItem(itemsIdx, clearLS) {
   selectedItems.clear();
   const cnt = getMediaItems().length;
   if (!cnt) { g('bru').click(); } else { rebuildSlides(Math.min(cur, cnt - 1)); }
+  autoSave();
 }
 
 /* ── Context menu ── */
@@ -995,6 +1032,156 @@ g('ctx-del').onclick = () => {
   }
 };
 
+/* ── IndexedDB handle store ── */
+function openHandleDB() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('SSP_v1', 1);
+    r.onupgradeneeded = e => e.target.result.createObjectStore('handles', { keyPath: 'name' });
+    r.onsuccess = e => res(e.target.result);
+    r.onerror = rej;
+  });
+}
+async function saveHandleIDB(name, handle) {
+  const db = await openHandleDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('handles', 'readwrite');
+    tx.objectStore('handles').put({ name, handle });
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function getHandleIDB(name) {
+  const db = await openHandleDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('handles', 'readonly');
+    const r = tx.objectStore('handles').get(name);
+    r.onsuccess = () => res(r.result?.handle || null);
+    r.onerror = rej;
+  });
+}
+
+/* ── Auto-save ── */
+function getPlaylistSnapshot() {
+  return {
+    sspVersion: 1, savedAt: Date.now(),
+    items: items.map(it => {
+      if (it.type === 'folder') return { type:'folder', name:it.name, open:it.open !== false };
+      return { type:it.type, name:it.name, clr:it.clr, rotation:it.rotation,
+               mirrorX:it.mirrorX, mirrorY:it.mirrorY, zoom:it.zoom, panX:it.panX,
+               panY:it.panY, customDur:it.customDur, kbPreset:it.kbPreset };
+    })
+  };
+}
+let autoSaveTimer = null;
+function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
+function autoSave() {
+  clearTimeout(autoSaveTimer);
+  try { localStorage.setItem('ssp_autosave', JSON.stringify(getPlaylistSnapshot())); } catch(e) {}
+  getMediaItems().forEach(it => { if (it.fileHandle) saveHandleIDB(it.name, it.fileHandle).catch(() => {}); });
+}
+window.addEventListener('beforeunload', autoSave);
+
+/* ── Landing screen info ── */
+function formatRelTime(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' hr ago';
+  return Math.floor(s / 86400) + ' d ago';
+}
+function updLandingInfo() {
+  const btn = g('lbcont'), info = g('lsinfo');
+  const raw = localStorage.getItem('ssp_autosave');
+  if (!raw) { btn.disabled = true; info.textContent = ''; return; }
+  try {
+    const snap = JSON.parse(raw);
+    const mc = (snap.items || []).filter(it => it.type !== 'folder').length;
+    const fc = (snap.items || []).filter(it => it.type === 'folder').length;
+    const when = snap.savedAt ? formatRelTime(snap.savedAt) : '';
+    btn.disabled = false;
+    info.textContent = `${mc} file${mc!==1?'s':''}${fc ? ` · ${fc} folder${fc!==1?'s':''}` : ''} · ${when}`;
+  } catch(e) { btn.disabled = true; info.textContent = ''; }
+}
+
+/* ── Restore from snapshot ── */
+function migrateSnapshot(data) {
+  if (!data.sspVersion && data.version === 2) data.sspVersion = 1;
+  if (!data.sspVersion) data.sspVersion = 1;
+  return data;
+}
+async function restoreFromSnapshotFile(file) {
+  try {
+    const text = await file.text();
+    const snap = JSON.parse(text);
+    if (!snap.items) { showToast('Invalid playlist file.', 4000); return; }
+    await restoreFromSnapshot(snap);
+  } catch(e) { showToast('Could not load playlist.', 4000); }
+}
+async function restoreFromSnapshot(snap) {
+  snap = migrateSnapshot(snap);
+  if (!snap?.items?.length) return;
+  const entries = snap.items;
+  const mediaEntries = entries.filter(it => it.type !== 'folder');
+  if (!mediaEntries.length) {
+    const sk = entries.map(it => ({type:'folder',name:it.name,open:it.open!==false,id:Math.random()}));
+    build(sk); return;
+  }
+  const resolved = await Promise.all(mediaEntries.map(async entry => {
+    let handle = null;
+    try { handle = await getHandleIDB(entry.name); } catch(e) {}
+    if (handle) {
+      try {
+        let perm = await handle.queryPermission({ mode: 'read' });
+        if (perm === 'prompt') perm = await handle.requestPermission({ mode: 'read' });
+        if (perm !== 'granted') handle = null;
+      } catch(e) { handle = null; }
+    }
+    return { entry, handle };
+  }));
+  dz.style.display = 'none'; viewer.style.display = 'flex';
+  const total = resolved.filter(r => r.handle).length;
+  let unavailCount = 0;
+  if (total === 0) {
+    const sk = entries.map(it => it.type === 'folder'
+      ? {type:'folder',name:it.name,open:it.open!==false,id:Math.random()}
+      : {...it, url:'', unavailable:true});
+    build(sk);
+    showToast('No files could be restored — re-open files or open a playlist.', 7000);
+    return;
+  }
+  const resolvedByName = new Map(resolved.map(r => [r.entry.name, r]));
+  const finalItems = entries.map(it => {
+    if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open!==false,id:Math.random()};
+    const r = resolvedByName.get(it.name);
+    if (!r?.handle) { unavailCount++; return {...it, url:'', unavailable:true}; }
+    return null;
+  });
+  let done = 0;
+  resolved.forEach(({entry, handle}) => {
+    if (!handle) return;
+    (async () => {
+      const f = await handle.getFile();
+      const url = URL.createObjectURL(f);
+      const type = f.type.startsWith('video/') ? 'video' : 'image';
+      const origIdx = entries.indexOf(entry);
+      const finish = (w, h) => {
+        finalItems[origIdx] = {...entry, url, type, w, h, fileHandle: handle};
+        done++;
+        if (done === total) {
+          build(finalItems.filter(Boolean));
+          if (unavailCount > 0) showToast(`${unavailCount} file${unavailCount>1?'s':''} unavailable — handles lost or permission denied.`, 5000);
+        }
+      };
+      if (type === 'image') {
+        const p = new Image(); p.onload = () => finish(p.naturalWidth, p.naturalHeight); p.onerror = () => finish(1920, 1080); p.src = url;
+      } else {
+        const p = document.createElement('video'); p.preload = 'metadata';
+        const fin = () => finish(p.videoWidth||1920, p.videoHeight||1080);
+        p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+      }
+    })();
+  });
+}
+
 /* ── File loading ── */
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
@@ -1020,6 +1207,7 @@ g('bru').onclick = function() {
   if (!ctrlsVisible) toggleControls();
   if (watchMode) toggleWatchMode();
   closePL();
+  updLandingInfo();
 };
 
 function load(files) {
@@ -1100,6 +1288,7 @@ async function addHandles(handles) {
 function finishAdd(newItems) {
   newItems.forEach(it => { initItem(it); items.push(it); });
   rebuildSlides(cur);
+  autoSave();
 }
 
 function shufflePlaylist() {
@@ -1109,6 +1298,7 @@ function shufflePlaylist() {
   }
   selectedItems.clear();
   rebuildSlides(0);
+  autoSave();
 }
 
 /* ── Slide DOM ── */
@@ -1159,6 +1349,7 @@ function build(its) {
   updSpd(); updPlayBtn();
   applySlideSettings(0);
   showSlide(0); schedNext();
+  autoSave();
 }
 
 function rebuildSlides(newCur) {
@@ -1238,8 +1429,10 @@ function renderPlaylist() {
     else { thumb = document.createElement('img'); }
     thumb.src = item.url; thumb.className = 'plthumb';
 
+    if (item.unavailable) div.style.opacity = '0.38';
     const info = document.createElement('div'); info.className = 'plinfo';
-    const name = document.createElement('span'); name.className = 'plname'; name.textContent = item.name || ('Slide '+(thisMI+1));
+    const name = document.createElement('span'); name.className = 'plname';
+    name.textContent = (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1)));
     info.appendChild(name);
 
     if (item.type === 'image') {
@@ -1317,6 +1510,7 @@ function dropItemsAt(srcIdx, tgtIdx, after) {
     items.splice(after ? tgt + 1 : tgt, 0, moved);
   }
   rebuildSlides(cur);
+  schedAutoSave();
 }
 
 g('plnewfolder').onclick = () => {
@@ -1329,14 +1523,19 @@ g('plnewfolder').onclick = () => {
 /* ── Save / Load Playlist ── */
 g('plsave').onclick = savePlaylist;
 g('plload').onclick = () => g('fiplist').click();
-g('fiplist').onchange = function() { if (this.files[0]) loadPlaylistJSON(this.files[0]); this.value = ''; };
+g('fiplist').onchange = function() {
+  if (!this.files[0]) return;
+  if (landingPlaylistMode) { landingPlaylistMode = false; restoreFromSnapshotFile(this.files[0]); }
+  else { loadPlaylistJSON(this.files[0]); }
+  this.value = '';
+};
 
 function savePlaylist() {
   const data = items.map(it => {
     if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open};
     return {type:it.type,name:it.name,clr:it.clr,rotation:it.rotation,mirrorX:it.mirrorX,mirrorY:it.mirrorY,zoom:it.zoom,panX:it.panX,panY:it.panY,customDur:it.customDur,kbPreset:it.kbPreset};
   });
-  const blob = new Blob([JSON.stringify({version:2,items:data},null,2)],{type:'application/json'});
+  const blob = new Blob([JSON.stringify({sspVersion:1,version:2,items:data},null,2)],{type:'application/json'});
   const a = document.createElement('a'); a.download = 'SlideShowPro_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
 }
 
@@ -1588,6 +1787,8 @@ document.addEventListener('keydown', e => {
   else if (k === keyMap.rotCCW) rotateCounter();
   else if (k.toLowerCase() === keyMap.fname.toLowerCase()) toggleFilename();
 });
+updLandingInfo();
+
 let toastTimer = null;
 function showToast(html, dur = 5000) {
   const el = g('toast'); el.innerHTML = html; el.classList.add('show');
