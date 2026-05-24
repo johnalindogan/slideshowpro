@@ -16,7 +16,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 #fi,#fiadd,#fiplist{display:none;}
 #viewer{display:none;flex-direction:column;width:100vw;height:100vh;}
 #stage{position:relative;flex:1;overflow:hidden;background:#000;cursor:default;}
-#stage.mid-drag{cursor:grab;}
+#stage.ldrag{cursor:grabbing;}
 .sl{position:absolute;inset:0;opacity:0;}
 .sl img,.sl video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;}
 .sl.on{opacity:1;}
@@ -27,6 +27,18 @@ html,body{background:#000;height:100%;overflow:hidden;}
 .vb{position:absolute;top:12px;left:12px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;padding:4px 10px;border-radius:5px;z-index:2;pointer-events:none;display:flex;align-items:center;gap:5px;font-family:system-ui,sans-serif;}
 #fnov{position:absolute;bottom:12px;right:12px;background:rgba(0,0,0,.55);color:rgba(255,255,255,.75);font-size:11px;padding:4px 10px;border-radius:4px;z-index:3;font-family:system-ui,sans-serif;pointer-events:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:opacity .2s;}
 #fnov.hidden{opacity:0;pointer-events:none;}
+
+/* Horizontal Max Mode: 2 portrait images side by side */
+#stage.hmax .sl.on,#stage.hmax .sl.companion{right:auto!important;bottom:auto!important;height:100%!important;}
+#stage.hmax .sl.on{left:0!important;top:0!important;width:50%!important;}
+#stage.hmax .sl.companion{left:50%!important;top:0!important;width:50%!important;opacity:1!important;animation:none!important;}
+#stage.hmax .sl img,#stage.hmax .sl video{object-fit:cover!important;}
+/* Vertical Max Mode: 2 landscape images top/bottom */
+#stage.vmax .sl.on,#stage.vmax .sl.companion{right:auto!important;left:0!important;width:100%!important;}
+#stage.vmax .sl.on{top:0!important;height:50%!important;}
+#stage.vmax .sl.companion{top:50%!important;height:50%!important;opacity:1!important;animation:none!important;}
+#stage.vmax .sl img,#stage.vmax .sl video{object-fit:cover!important;}
+
 #cpanel{display:none;flex-direction:column;gap:8px;padding:11px 16px;background:rgba(6,6,6,.99);border-top:.5px solid rgba(255,255,255,.08);}
 #cpanel.show{display:flex;}
 #cpanel-lbl{font-size:10px;color:rgba(255,255,255,.3);font-family:system-ui,sans-serif;padding-bottom:4px;border-bottom:.5px solid rgba(255,255,255,.07);margin-bottom:2px;}
@@ -107,6 +119,14 @@ html,body{background:#000;height:100%;overflow:hidden;}
 .pldel{padding:3px 6px;font-size:11px;border-radius:4px;flex-shrink:0;border:.5px solid rgba(255,255,255,.15);background:transparent;color:rgba(255,255,255,.4);cursor:pointer;line-height:1;}
 .pldel:hover{color:#fff;border-color:rgba(255,255,255,.4);}
 
+/* Context menu */
+#ctxmenu{display:none;position:fixed;z-index:500;background:rgba(15,15,15,.97);border:.5px solid rgba(255,255,255,.18);border-radius:7px;padding:4px;font-family:system-ui,sans-serif;min-width:170px;box-shadow:0 8px 32px rgba(0,0,0,.6);}
+.ctxi{padding:6px 12px;font-size:12px;color:rgba(255,255,255,.75);cursor:pointer;border-radius:4px;}
+.ctxi:hover{background:rgba(255,255,255,.1);color:#fff;}
+.ctxi.danger{color:rgba(255,90,90,.85);}
+.ctxi.danger:hover{background:rgba(255,60,60,.15);color:rgb(255,100,100);}
+.ctxsep{height:.5px;background:rgba(255,255,255,.1);margin:3px 4px;}
+
 /* Future modules */
 #plfuture{padding:12px 14px;border-top:.5px solid rgba(255,255,255,.07);flex-shrink:0;}
 .pflbl{font-size:9px;color:rgba(255,255,255,.25);font-family:system-ui,sans-serif;margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em;}
@@ -136,6 +156,10 @@ html,body{background:#000;height:100%;overflow:hidden;}
 /* Floating show-controls button */
 #showctrl{display:none;position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.78);border:.5px solid rgba(255,255,255,.3);color:#fff;padding:7px 20px;border-radius:20px;cursor:pointer;z-index:50;font-size:12px;font-family:system-ui,sans-serif;white-space:nowrap;}
 #showctrl.visible{display:block;}
+
+/* Watch mode badge */
+#watchbadge{display:none;position:fixed;top:12px;right:12px;background:rgba(0,0,0,.55);color:rgba(255,255,255,.5);font-size:10px;padding:3px 10px;border-radius:10px;z-index:4;font-family:system-ui,sans-serif;letter-spacing:.05em;}
+#watchbadge.show{display:block;}
 
 /* Ken Burns modal */
 #kbmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:200;align-items:center;justify-content:center;}
@@ -196,6 +220,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <div id="viewer">
   <div id="stage">
     <div id="fnov"></div>
+    <div id="watchbadge">WATCH MODE · F5 or Esc to exit</div>
   </div>
 
   <div id="cpanel">
@@ -223,6 +248,9 @@ html,body{background:#000;height:100%;overflow:hidden;}
     <button class="cb" id="bne" title="Next">
       <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
     </button>
+    <button class="cb" id="brev" title="Reverse Playback">
+      <svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+    </button>
     <div id="pbw"><div id="pb"></div></div>
     <span class="lb" id="sc">1/1</span>
     <div class="sp"></div>
@@ -231,18 +259,18 @@ html,body{background:#000;height:100%;overflow:hidden;}
     </button>
     <input type="range" id="vsl" min="0" max="1" step="0.05" value="1" title="Volume">
     <div class="sp"></div>
-    <button class="cb" id="bsd" title="Slower">
+    <button class="cb" id="bsd" title="Slower (−5%)">
       <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
     </button>
-    <span class="lb" id="slb">1×</span>
-    <button class="cb" id="bsu" title="Faster">
+    <span class="lb" id="slb" title="Playback speed (click to reset)" style="cursor:pointer;min-width:42px;">100%</span>
+    <button class="cb" id="bsu" title="Faster (+5%)">
       <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     </button>
     <div class="sp"></div>
     <button class="cb" id="bzo" title="Zoom out">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
     </button>
-    <span class="lb" id="zlb">100%</span>
+    <span class="lb" id="zlb" title="Zoom (click to reset)" style="cursor:pointer;">100%</span>
     <button class="cb" id="bzi" title="Zoom in">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
     </button>
@@ -291,6 +319,12 @@ html,body{background:#000;height:100%;overflow:hidden;}
     </button>
     <button class="cb" id="bkb" title="Ken Burns settings">
       <svg viewBox="0 0 24 24"><path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"/></svg>
+    </button>
+    <button class="cb" id="bhmax" title="Horizontal Max Mode (2 images side by side for portrait media on landscape screen)">
+      <svg viewBox="0 0 24 24"><rect x="2" y="3" width="9" height="18" rx="1.5"/><rect x="13" y="3" width="9" height="18" rx="1.5"/></svg>
+    </button>
+    <button class="cb" id="bvmax" title="Vertical Max Mode (2 images top/bottom for landscape media on portrait screen)">
+      <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="9" rx="1.5"/><rect x="2" y="13" width="20" height="9" rx="1.5"/></svg>
     </button>
     <button class="cb on" id="bfname" title="Toggle Filename">
       <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -349,12 +383,12 @@ html,body{background:#000;height:100%;overflow:hidden;}
       </div>
       <div class="kbrow">
         <span class="kblbl">Zoom Intensity</span>
-        <input type="range" id="kbzint" min="0" max="200" value="100" step="1">
+        <input type="range" id="kbzint" min="0" max="500" value="100" step="1">
         <span class="kbval" id="kbzintv">100%</span>
       </div>
       <div class="kbrow">
         <span class="kblbl">Pan Intensity</span>
-        <input type="range" id="kbpint" min="0" max="200" value="100" step="1">
+        <input type="range" id="kbpint" min="0" max="500" value="100" step="1">
         <span class="kbval" id="kbpintv">100%</span>
       </div>
       <div class="kbrow">
@@ -394,6 +428,14 @@ html,body{background:#000;height:100%;overflow:hidden;}
   </div>
 </div>
 
+<!-- Context menu -->
+<div id="ctxmenu">
+  <div class="ctxi" id="ctx-dup">Duplicate in playlist</div>
+  <div class="ctxsep"></div>
+  <div class="ctxi" id="ctx-remove">Remove from playlist</div>
+  <div class="ctxi danger" id="ctx-del">Delete file (clears settings)</div>
+</div>
+
 <!-- Floating restore button -->
 <button id="showctrl">Show Controls</button>
 
@@ -410,11 +452,19 @@ let items = [], sls = [], tws = [], cur = 0, playing = true,
     ctrlsVisible = true, showFilename = true;
 
 let selectedItems = new Set(), lastClickedMI = -1;
-let midDrag = false, midStartX = 0, midStartY = 0, midStartPX = 0, midStartPY = 0;
+let reversePlay = false, watchMode = false, preWatchCtrlsVis = true;
+let hMaxEnabled = false, vMaxEnabled = false;
 let dragSrcItemsIdx = null;
 
+/* Mouse drag state */
+let lDrag = false, lDragStartX = 0, lDragStartY = 0, lDragPX = 0, lDragPY = 0, lDragMoved = false;
+let midDrag = false, midStartX = 0, midStartY = 0, midStartPX = 0, midStartPY = 0;
+
 const CLR_DEF = {b:100,c:100,s:100,h:0,hl:0,sh:0,g:100};
-const SPDS = [0.25,0.5,0.75,1,1.25,1.5,2,3]; let si = 3;
+
+/* Speed: 5–500% in steps of 5 */
+let spd = 100;
+const SPD_STEP = 5, SPD_MIN = 5, SPD_MAX = 500;
 
 const KB = [
   {fs:1.0,ts:1.15,fx:0,fy:0,tx:-3,ty:-3},
@@ -433,6 +483,7 @@ let kbEnabled = true, kbZoomInt = 1.0, kbPanInt = 1.0, kbDirection = 'mix', kbEa
 
 /* ── Media helpers ── */
 function getMediaItems() { return items.filter(it => it.type !== 'folder'); }
+function nextMI() { const len = getMediaItems().length; return reversePlay ? (cur - 1 + len) % len : (cur + 1) % len; }
 
 /* ── Per-item localStorage ── */
 function lsKey(name) { return 'ssp|' + name; }
@@ -446,6 +497,9 @@ function loadItemLS(item) {
     if (d.rotation !== undefined) item.rotation = d.rotation;
     if (d.mirrorX !== undefined) item.mirrorX = d.mirrorX;
     if (d.mirrorY !== undefined) item.mirrorY = d.mirrorY;
+    if (d.zoom !== undefined) item.zoom = d.zoom;
+    if (d.panX !== undefined) item.panX = d.panX;
+    if (d.panY !== undefined) item.panY = d.panY;
   } catch(e) {}
 }
 
@@ -453,10 +507,9 @@ function saveItemLS(item) {
   if (!item.name) return;
   try {
     localStorage.setItem(lsKey(item.name), JSON.stringify({
-      clr: item.clr,
-      rotation: item.rotation,
-      mirrorX: item.mirrorX,
-      mirrorY: item.mirrorY
+      clr: item.clr, rotation: item.rotation,
+      mirrorX: item.mirrorX, mirrorY: item.mirrorY,
+      zoom: item.zoom, panX: item.panX, panY: item.panY
     }));
   } catch(e) {}
 }
@@ -464,32 +517,28 @@ function saveItemLS(item) {
 function initItem(item) {
   if (item.type === 'folder') return;
   item.clr = {...CLR_DEF};
-  item.rotation = 0;
-  item.mirrorX = false;
-  item.mirrorY = false;
+  item.rotation = 0; item.mirrorX = false; item.mirrorY = false;
+  item.zoom = 1; item.panX = 0; item.panY = 0;
   loadItemLS(item);
 }
 
 /* ── KB preset ── */
 function getKBPreset(i) {
   if (!kbEnabled) return null;
-  const mi = getMediaItems();
-  const override = mi[i]?.kbPreset;
+  const override = getMediaItems()[i]?.kbPreset;
   if (override === -1) return null;
   let idx;
   if (typeof override === 'number' && override >= 0) {
     idx = override;
+  } else if (kbDirection === 'random') {
+    idx = Math.floor(Math.random() * KB.length);
   } else {
-    if (kbDirection === 'random') {
-      idx = Math.floor(Math.random() * KB.length);
-    } else {
-      const pools = {mix:[0,1,2,3,4,5],in:[0,2,4],out:[1,3,5]};
-      const pool = pools[kbDirection] || pools.mix;
-      idx = pool[i % pool.length];
-    }
+    const pools = {mix:[0,1,2,3,4,5],in:[0,2,4],out:[1,3,5]};
+    const pool = pools[kbDirection] || pools.mix;
+    idx = pool[i % pool.length];
   }
   const b = KB[idx];
-  return {fs:1+(b.fs-1)*kbZoomInt, ts:1+(b.ts-1)*kbZoomInt, fx:b.fx*kbPanInt, fy:b.fy*kbPanInt, tx:b.tx*kbPanInt, ty:b.ty*kbPanInt};
+  return {fs:1+(b.fs-1)*kbZoomInt,ts:1+(b.ts-1)*kbZoomInt,fx:b.fx*kbPanInt,fy:b.fy*kbPanInt,tx:b.tx*kbPanInt,ty:b.ty*kbPanInt};
 }
 
 function kbEase(t) {
@@ -506,7 +555,7 @@ const FNS = [
   {id:'play',    label:'Play / Pause',    def:' '},
   {id:'zoomIn',  label:'Zoom In',         def:'+'},
   {id:'zoomOut', label:'Zoom Out',        def:'-'},
-  {id:'panRst',  label:'Reset Pan',       def:'0'},
+  {id:'panRst',  label:'Reset Pan/Zoom',  def:'0'},
   {id:'fullscr', label:'Fullscreen',      def:'f'},
   {id:'mute',    label:'Mute',            def:'m'},
   {id:'mirrorH', label:'Mirror H',        def:'h'},
@@ -522,7 +571,6 @@ function keyLabel(k) {
   if (k === ' ') return 'Space';
   return {ArrowRight:'→',ArrowLeft:'←',ArrowUp:'↑',ArrowDown:'↓'}[k] || k;
 }
-
 let listeningEl = null, listeningId = null;
 
 function renderKeyEditor() {
@@ -545,11 +593,7 @@ function renderKeyEditor() {
     list.appendChild(row);
   });
 }
-
-function toggleKeyEditor() {
-  const open = g('keditor').classList.toggle('open');
-  if (open) renderKeyEditor();
-}
+function toggleKeyEditor() { const open = g('keditor').classList.toggle('open'); if (open) renderKeyEditor(); }
 g('bked').onclick = toggleKeyEditor;
 g('kedclose').onclick = toggleKeyEditor;
 g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(); });
@@ -558,51 +602,34 @@ g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) tog
 function applyKBNow() {
   if (!isV(cur)) { startKB(cur); startProg(); if (playing) { clearTimeout(tmr); schedNext(); } }
 }
-
 function renderKBModal() {
   g('kbena').checked = kbEnabled;
-  g('kbzint').value = Math.round(kbZoomInt * 100);
-  g('kbzintv').textContent = Math.round(kbZoomInt * 100) + '%';
-  g('kbpint').value = Math.round(kbPanInt * 100);
-  g('kbpintv').textContent = Math.round(kbPanInt * 100) + '%';
-  g('kbdir').value = kbDirection;
-  g('kbeas').value = kbEasing;
+  g('kbzint').value = Math.round(kbZoomInt * 100); g('kbzintv').textContent = Math.round(kbZoomInt * 100) + '%';
+  g('kbpint').value = Math.round(kbPanInt * 100); g('kbpintv').textContent = Math.round(kbPanInt * 100) + '%';
+  g('kbdir').value = kbDirection; g('kbeas').value = kbEasing;
   const list = g('kbslidelist'); list.innerHTML = '';
   const mi = getMediaItems();
-  const imgs = mi.filter(it => it.type === 'image');
-  if (!imgs.length) {
+  if (!mi.filter(it => it.type === 'image').length) {
     const em = document.createElement('div'); em.className = 'kbempty';
     em.textContent = 'No image slides loaded yet.'; list.appendChild(em); return;
   }
   mi.forEach((item, i) => {
     if (item.type !== 'image') return;
-    const row = document.createElement('div');
-    row.className = 'kbsli' + (i === cur ? ' kbslicur' : '');
+    const row = document.createElement('div'); row.className = 'kbsli' + (i === cur ? ' kbslicur' : '');
     const thumb = document.createElement('img'); thumb.src = item.url; thumb.className = 'kbsli-thumb';
-    const name = document.createElement('span'); name.className = 'kbsli-name';
-    name.textContent = item.name || ('Slide ' + (i + 1));
+    const name = document.createElement('span'); name.className = 'kbsli-name'; name.textContent = item.name || ('Slide '+(i+1));
     const sel = document.createElement('select'); sel.className = 'kbsli-sel';
-    const opts = [['auto','Auto (global)'],[-1,'Off (Static)'],...KB_LABELS.map((l,idx)=>[idx,l])];
-    opts.forEach(([v,t]) => {
+    [['auto','Auto (global)'],[-1,'Off (Static)'],...KB_LABELS.map((l,idx)=>[idx,l])].forEach(([v,t]) => {
       const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
       const ov = item.kbPreset;
       if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
       sel.appendChild(opt);
     });
-    sel.onchange = () => {
-      item.kbPreset = sel.value === 'auto' ? undefined : parseInt(sel.value);
-      if (i === cur) applyKBNow();
-    };
-    row.appendChild(thumb); row.appendChild(name); row.appendChild(sel);
-    list.appendChild(row);
+    sel.onchange = () => { item.kbPreset = sel.value === 'auto' ? undefined : parseInt(sel.value); if (i === cur) applyKBNow(); };
+    row.appendChild(thumb); row.appendChild(name); row.appendChild(sel); list.appendChild(row);
   });
 }
-
-function toggleKBModal() {
-  const open = g('kbmodal').classList.toggle('open');
-  g('bkb').classList.toggle('on', open);
-  if (open) renderKBModal();
-}
+function toggleKBModal() { const open = g('kbmodal').classList.toggle('open'); g('bkb').classList.toggle('on', open); if (open) renderKBModal(); }
 g('bkb').onclick = toggleKBModal;
 g('kbclose').onclick = toggleKBModal;
 g('kbmodal').addEventListener('click', e => { if (e.target === g('kbmodal')) toggleKBModal(); });
@@ -612,27 +639,23 @@ g('kbpint').oninput = function() { kbPanInt = parseInt(this.value)/100; g('kbpin
 g('kbdir').onchange = () => { kbDirection = g('kbdir').value; applyKBNow(); };
 g('kbeas').onchange = () => { kbEasing = g('kbeas').value; applyKBNow(); };
 
-/* ── Color: LUT ── */
+/* ── Color ── */
 function buildLUT(gv, hl, sh) {
   const n = 16, vals = [];
   for (let i = 0; i <= n; i++) {
-    const v = i / n;
-    let r = gv !== 1 ? Math.pow(Math.max(0, v), 1/gv) : v;
-    const sw = v < 0.5 ? Math.pow(1 - v*2, 2) : 0;
-    r += sw * sh * 0.45;
-    const hw = v > 0.5 ? Math.pow((v-0.5)*2, 2) : 0;
-    r += hw * hl * 0.45;
-    vals.push(Math.max(0, Math.min(1, r)).toFixed(4));
+    const v = i/n; let r = gv !== 1 ? Math.pow(Math.max(0,v), 1/gv) : v;
+    const sw = v < 0.5 ? Math.pow(1-v*2,2) : 0; r += sw * sh * 0.45;
+    const hw = v > 0.5 ? Math.pow((v-0.5)*2,2) : 0; r += hw * hl * 0.45;
+    vals.push(Math.max(0,Math.min(1,r)).toFixed(4));
   }
   return vals.join(' ');
 }
-
 function applyColorToStage(clr) {
   const gv = clr.g/100, hl = clr.hl/100, sh = clr.sh/100;
-  g('cpb').value = clr.b; g('cvb').textContent = clr.b + '%';
-  g('cpc').value = clr.c; g('cvc').textContent = clr.c + '%';
-  g('cps').value = clr.s; g('cvs').textContent = clr.s + '%';
-  g('cph').value = clr.h; g('cvh').textContent = clr.h + '°';
+  g('cpb').value = clr.b; g('cvb').textContent = clr.b+'%';
+  g('cpc').value = clr.c; g('cvc').textContent = clr.c+'%';
+  g('cps').value = clr.s; g('cvs').textContent = clr.s+'%';
+  g('cph').value = clr.h; g('cvh').textContent = clr.h+'°';
   g('cpg').value = clr.g; g('cvg').textContent = gv.toFixed(1);
   g('cphl').value = clr.hl; g('cvhl').textContent = (clr.hl >= 0 ? '+' : '') + clr.hl;
   g('cpsh').value = clr.sh; g('cvsh').textContent = (clr.sh >= 0 ? '+' : '') + clr.sh;
@@ -642,19 +665,13 @@ function applyColorToStage(clr) {
   });
   stage.style.filter = `url(#gf) brightness(${clr.b/100}) contrast(${clr.c/100}) hue-rotate(${clr.h}deg) saturate(${clr.s/100})`;
 }
-
 function applyColor() {
   const mi = getMediaItems(), item = mi[cur]; if (!item) return;
-  item.clr = {
-    b: parseInt(g('cpb').value), c: parseInt(g('cpc').value),
-    s: parseInt(g('cps').value), h: parseInt(g('cph').value),
-    g: parseInt(g('cpg').value), hl: parseInt(g('cphl').value), sh: parseInt(g('cpsh').value)
-  };
+  item.clr = {b:+g('cpb').value,c:+g('cpc').value,s:+g('cps').value,h:+g('cph').value,g:+g('cpg').value,hl:+g('cphl').value,sh:+g('cpsh').value};
   saveItemLS(item);
   applyColorToStage(item.clr);
 }
 window.applyColor = applyColor;
-
 function rcol(t) {
   const m = {b:['cpb',100],c:['cpc',100],s:['cps',100],h:['cph',0],g:['cpg',100],hl:['cphl',0],sh:['cpsh',0]};
   g(m[t][0]).value = m[t][1]; applyColor();
@@ -667,9 +684,13 @@ function applySlideSettings(i) {
   rotation = item.rotation || 0;
   mirrorX = item.mirrorX || false;
   mirrorY = item.mirrorY || false;
+  zoom = item.zoom != null ? item.zoom : 1;
+  panX = item.panX || 0;
+  panY = item.panY || 0;
   g('bmh').classList.toggle('on', mirrorX);
   g('bmv').classList.toggle('on', mirrorY);
   g('cpanel-fname').textContent = item.name || '';
+  updZoom();
 }
 
 /* ── Volume ── */
@@ -683,25 +704,95 @@ function updMute() {
 g('bmu').onclick = () => { muted = !muted; updMute(); applyVol(); };
 g('vsl').oninput = function() { vol = parseFloat(this.value); if (muted && vol > 0) { muted = false; updMute(); } applyVol(); };
 
-/* ── Speed ── */
-function updSpd() { g('slb').textContent = getSpd() + '×'; sls.forEach(sl => { const v = sl.querySelector('video'); if (v) v.playbackRate = getSpd(); }); }
-g('bsd').onclick = () => { if (si > 0) { si--; updSpd(); } };
-g('bsu').onclick = () => { if (si < SPDS.length - 1) { si++; updSpd(); } };
+/* ── Speed (5–500%, step 5) ── */
+function getSpd() { return spd / 100; }
+function updSpd() {
+  g('slb').textContent = spd + '%';
+  sls.forEach(sl => { const v = sl.querySelector('video'); if (v) v.playbackRate = getSpd(); });
+}
+g('bsd').onclick = () => { spd = Math.max(SPD_MIN, spd - SPD_STEP); updSpd(); };
+g('bsu').onclick = () => { spd = Math.min(SPD_MAX, spd + SPD_STEP); updSpd(); };
+g('slb').onclick = () => { spd = 100; updSpd(); };
 
 const isV = i => getMediaItems()[i]?.type === 'video';
 const getDur = () => parseInt(g('dsel').value);
 const getItemDur = i => getMediaItems()[i != null ? i : cur]?.customDur ?? getDur();
-const getSpd = () => SPDS[si];
 const getEDur = i => getItemDur(i != null ? i : cur) / getSpd();
 
 /* ── Zoom / Pan ── */
 function updZoom() { g('zlb').textContent = Math.round(zoom * 100) + '%'; }
-function changeZoom(d) { zoom = Math.max(0.5, Math.min(4, zoom + d)); updZoom(); staticT(); }
-function doPan(dx, dy) { const s = 8 / zoom; panX += dx * s; panY += dy * s; staticT(); }
-function resetPan() { panX = 0; panY = 0; staticT(); }
+function changeZoom(d) {
+  zoom = Math.max(0.1, Math.min(10, zoom + d)); updZoom();
+  const item = getMediaItems()[cur];
+  if (item) { item.zoom = zoom; saveItemLS(item); }
+  staticT();
+}
+function doPan(dx, dy) {
+  const s = 8 / zoom; panX += dx * s; panY += dy * s;
+  const item = getMediaItems()[cur];
+  if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+  staticT();
+}
+function resetPan() {
+  zoom = 1; panX = 0; panY = 0; updZoom();
+  const item = getMediaItems()[cur];
+  if (item) { item.zoom = 1; item.panX = 0; item.panY = 0; saveItemLS(item); }
+  staticT();
+}
 window.doPan = doPan; window.resetPan = resetPan;
+g('bzo').onclick = () => changeZoom(-0.15);
+g('bzi').onclick = () => changeZoom(0.15);
+g('zlb').onclick = () => resetPan();
 
-/* ── Transform (rotation + mirror prefix) ── */
+/* ── Mouse: scroll = zoom, left drag = pan, middle drag = pan, right = context menu ── */
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  changeZoom(e.deltaY < 0 ? 0.15 : -0.15);
+}, {passive: false});
+
+stage.addEventListener('mousedown', e => {
+  if (e.button === 0) {
+    if (e.target.closest('button,a,select,input')) return;
+    lDrag = true; lDragMoved = false;
+    lDragStartX = e.clientX; lDragStartY = e.clientY;
+    lDragPX = panX; lDragPY = panY;
+  } else if (e.button === 1) {
+    e.preventDefault();
+    midDrag = true;
+    midStartX = e.clientX; midStartY = e.clientY;
+    midStartPX = panX; midStartPY = panY;
+  }
+});
+document.addEventListener('mousemove', e => {
+  if (lDrag) {
+    const dx = e.clientX - lDragStartX, dy = e.clientY - lDragStartY;
+    if (!lDragMoved && Math.hypot(dx,dy) < 4) return;
+    lDragMoved = true;
+    stage.classList.add('ldrag');
+    panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom;
+    staticT();
+  } else if (midDrag) {
+    panX = midStartPX + (e.clientX - midStartX) / zoom;
+    panY = midStartPY + (e.clientY - midStartY) / zoom;
+    staticT();
+  }
+});
+document.addEventListener('mouseup', e => {
+  if (e.button === 0 && lDrag) {
+    lDrag = false; stage.classList.remove('ldrag');
+    if (lDragMoved) {
+      const item = getMediaItems()[cur];
+      if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+    }
+    lDragMoved = false;
+  } else if (e.button === 1 && midDrag) {
+    midDrag = false;
+    const item = getMediaItems()[cur];
+    if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+  }
+});
+
+/* ── Transform (rotation + mirror) ── */
 function mediaPrefix() {
   const parts = [];
   if (rotation !== 0) parts.push(`rotate(${rotation}deg)`);
@@ -709,56 +800,23 @@ function mediaPrefix() {
   if (mx !== 1 || my !== 1) parts.push(`scale(${mx},${my})`);
   return parts.length ? parts.join(' ') + ' ' : '';
 }
-
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const m = sls[cur]?.querySelector('img,video');
-  if (!m) return;
+  const m = sls[cur]?.querySelector('img,video'); if (!m) return;
   const p = getKBPreset(cur);
   const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
   m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
 }
-g('bzo').onclick = () => changeZoom(-0.25);
-g('bzi').onclick = () => changeZoom(0.25);
-
-/* ── Mouse: shift+scroll zoom, middle-button drag pan ── */
-stage.addEventListener('wheel', e => {
-  if (!e.shiftKey) return;
-  e.preventDefault();
-  changeZoom(e.deltaY < 0 ? 0.15 : -0.15);
-}, {passive: false});
-
-stage.addEventListener('mousedown', e => {
-  if (e.button !== 1) return;
-  e.preventDefault();
-  midDrag = true;
-  midStartX = e.clientX; midStartY = e.clientY;
-  midStartPX = panX; midStartPY = panY;
-  stage.classList.add('mid-drag');
-});
-document.addEventListener('mousemove', e => {
-  if (!midDrag) return;
-  panX = midStartPX + (e.clientX - midStartX) / zoom;
-  panY = midStartPY + (e.clientY - midStartY) / zoom;
-  staticT();
-});
-document.addEventListener('mouseup', e => {
-  if (e.button === 1 && midDrag) { midDrag = false; stage.classList.remove('mid-drag'); }
-});
 
 /* ── Mirror ── */
 function toggleMirrorH() {
-  mirrorX = !mirrorX;
-  g('bmh').classList.toggle('on', mirrorX);
-  const item = getMediaItems()[cur];
-  if (item) { item.mirrorX = mirrorX; saveItemLS(item); }
+  mirrorX = !mirrorX; g('bmh').classList.toggle('on', mirrorX);
+  const item = getMediaItems()[cur]; if (item) { item.mirrorX = mirrorX; saveItemLS(item); }
   staticT();
 }
 function toggleMirrorV() {
-  mirrorY = !mirrorY;
-  g('bmv').classList.toggle('on', mirrorY);
-  const item = getMediaItems()[cur];
-  if (item) { item.mirrorY = mirrorY; saveItemLS(item); }
+  mirrorY = !mirrorY; g('bmv').classList.toggle('on', mirrorY);
+  const item = getMediaItems()[cur]; if (item) { item.mirrorY = mirrorY; saveItemLS(item); }
   staticT();
 }
 g('bmh').onclick = toggleMirrorH;
@@ -767,14 +825,12 @@ g('bmv').onclick = toggleMirrorV;
 /* ── Rotate ── */
 function rotateClockwise() {
   rotation = (rotation + 90) % 360;
-  const item = getMediaItems()[cur];
-  if (item) { item.rotation = rotation; saveItemLS(item); }
+  const item = getMediaItems()[cur]; if (item) { item.rotation = rotation; saveItemLS(item); }
   staticT();
 }
 function rotateCounter() {
   rotation = (rotation - 90 + 360) % 360;
-  const item = getMediaItems()[cur];
-  if (item) { item.rotation = rotation; saveItemLS(item); }
+  const item = getMediaItems()[cur]; if (item) { item.rotation = rotation; saveItemLS(item); }
   staticT();
 }
 g('brcw').onclick = rotateClockwise;
@@ -797,6 +853,100 @@ function toggleControls() {
 g('bhide').onclick = toggleControls;
 g('showctrl').onclick = () => { if (!ctrlsVisible) toggleControls(); };
 
+/* ── Watch Mode (F5) ── */
+function toggleWatchMode() {
+  watchMode = !watchMode;
+  if (watchMode) {
+    preWatchCtrlsVis = ctrlsVisible;
+    if (ctrlsVisible) { ctrlsVisible = false; [g('ctrls'),g('tstrip'),g('cpanel')].forEach(el => el.style.display = 'none'); }
+    g('showctrl').classList.remove('visible');
+    g('watchbadge').classList.add('show');
+    closePL();
+    app.requestFullscreen?.().catch(() => {});
+  } else {
+    if (preWatchCtrlsVis) { ctrlsVisible = true; [g('ctrls'),g('tstrip')].forEach(el => el.style.display = ''); }
+    g('watchbadge').classList.remove('show');
+    document.exitFullscreen?.();
+  }
+}
+
+/* ── Reverse Playback ── */
+g('brev').onclick = () => { reversePlay = !reversePlay; g('brev').classList.toggle('on', reversePlay); };
+
+/* ── Horizontal / Vertical Max Mode ── */
+g('bhmax').onclick = () => { hMaxEnabled = !hMaxEnabled; g('bhmax').classList.toggle('on', hMaxEnabled); showMaxCompanion(cur); };
+g('bvmax').onclick = () => { vMaxEnabled = !vMaxEnabled; g('bvmax').classList.toggle('on', vMaxEnabled); showMaxCompanion(cur); };
+
+function getActiveMaxMode(i) {
+  if (!hMaxEnabled && !vMaxEnabled) return null;
+  const mi = getMediaItems(), item = mi[i]; if (!item) return null;
+  const sw = window.innerWidth, sh = window.innerHeight;
+  if (hMaxEnabled && sw > sh && item.h > item.w) return 'hmax';
+  if (vMaxEnabled && sh > sw && item.w > item.h) return 'vmax';
+  return null;
+}
+
+function showMaxCompanion(curIdx) {
+  sls.forEach(s => s.classList.remove('companion'));
+  stage.classList.remove('hmax','vmax');
+  const mode = getActiveMaxMode(curIdx);
+  if (!mode || sls.length < 2) return;
+  const len = sls.length;
+  const compIdx = reversePlay ? (curIdx - 1 + len) % len : (curIdx + 1) % len;
+  if (compIdx === curIdx) return;
+  sls[compIdx].classList.add('companion');
+  stage.classList.add(mode);
+  const compMedia = sls[compIdx].querySelector('img,video');
+  if (compMedia) compMedia.style.transform = 'scale(1)';
+}
+
+window.addEventListener('resize', () => { if (sls.length) showMaxCompanion(cur); });
+
+/* ── Remove item from playlist helper ── */
+function removeItem(itemsIdx, clearLS) {
+  const mi = getMediaItems(), item = items[itemsIdx];
+  if (!item) return;
+  if (clearLS && item.name) localStorage.removeItem(lsKey(item.name));
+  items.splice(itemsIdx, 1);
+  selectedItems.clear();
+  const cnt = getMediaItems().length;
+  if (!cnt) { g('bru').click(); } else { rebuildSlides(Math.min(cur, cnt - 1)); }
+}
+
+/* ── Context menu ── */
+const ctxmenu = g('ctxmenu');
+stage.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (!getMediaItems().length) return;
+  ctxmenu.style.left = '-9999px'; ctxmenu.style.top = '-9999px';
+  ctxmenu.style.display = 'block';
+  const r = ctxmenu.getBoundingClientRect();
+  ctxmenu.style.left = Math.min(e.clientX, window.innerWidth - r.width - 6) + 'px';
+  ctxmenu.style.top = Math.min(e.clientY, window.innerHeight - r.height - 6) + 'px';
+});
+document.addEventListener('click', e => {
+  if (!ctxmenu.contains(e.target)) ctxmenu.style.display = 'none';
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') ctxmenu.style.display = 'none'; }, true);
+
+g('ctx-dup').onclick = () => {
+  ctxmenu.style.display = 'none';
+  const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+  const dup = {...item, clr: {...(item.clr || CLR_DEF)}};
+  items.splice(items.indexOf(item) + 1, 0, dup);
+  rebuildSlides(cur);
+};
+g('ctx-remove').onclick = () => {
+  ctxmenu.style.display = 'none';
+  const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+  removeItem(items.indexOf(item), false);
+};
+g('ctx-del').onclick = () => {
+  ctxmenu.style.display = 'none';
+  const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+  removeItem(items.indexOf(item), true);
+};
+
 /* ── File loading ── */
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
@@ -811,10 +961,12 @@ g('bru').onclick = function() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
   items = []; sls = []; tws = []; selectedItems.clear(); lastClickedMI = -1;
-  [...stage.children].forEach(c => { if (c.id !== 'fnov') c.remove(); });
+  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge') c.remove(); });
   g('tstrip').innerHTML = '';
+  stage.classList.remove('hmax','vmax');
   viewer.style.display = 'none'; dz.style.display = 'flex'; fi.value = '';
   if (!ctrlsVisible) toggleControls();
+  if (watchMode) toggleWatchMode();
   closePL();
 };
 
@@ -826,11 +978,11 @@ function load(files) {
     const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
     if (type === 'image') {
       const p = new Image();
-      p.onload = () => { tmp[i] = {url, type, w:p.naturalWidth, h:p.naturalHeight, name:f.name}; if (++done === acc.length) build(tmp.filter(Boolean)); };
+      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
       p.src = url;
     } else {
       const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url, type, w:p.videoWidth||1920, h:p.videoHeight||1080, name:f.name}; if (++done === acc.length) build(tmp.filter(Boolean)); };
+      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
       p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
     }
   });
@@ -845,11 +997,11 @@ function addMoreFiles(files) {
     const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
     if (type === 'image') {
       const p = new Image();
-      p.onload = () => { tmp[i] = {url, type, w:p.naturalWidth, h:p.naturalHeight, name:f.name}; if (++done === acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
       p.src = url;
     } else {
       const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url, type, w:p.videoWidth||1920, h:p.videoHeight||1080, name:f.name}; if (++done === acc.length) finishAdd(tmp.filter(Boolean)); };
+      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
       p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
     }
   });
@@ -883,7 +1035,7 @@ function makeVid(item) {
 }
 
 function buildSlideDOM() {
-  [...stage.children].forEach(c => { if (c.id !== 'fnov') c.remove(); });
+  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge') c.remove(); });
   sls = []; tws = []; g('tstrip').innerHTML = '';
   getMediaItems().forEach((item, i) => {
     const sl = document.createElement('div'); sl.className = 'sl';
@@ -894,7 +1046,11 @@ function buildSlideDOM() {
     }
     stage.appendChild(sl); sls.push(sl);
     const cap = sl;
-    if (item.type === 'video') med.onended = () => { if (playing && sls.indexOf(cap) === cur) setTimeout(() => goTo((cur + 1) % sls.length), 300); };
+    if (item.type === 'video') {
+      med.onended = () => {
+        if (playing && sls.indexOf(cap) === cur) setTimeout(() => goTo(nextMI()), 300);
+      };
+    }
     const tw = document.createElement('div'); tw.className = 'tw';
     if (item.type === 'video') {
       const tv = document.createElement('video'); tv.src = item.url; tv.className = 'th'; tv.preload = 'metadata'; tv.muted = true; tv.onclick = () => goTo(i); tw.appendChild(tv);
@@ -907,12 +1063,10 @@ function buildSlideDOM() {
 }
 
 function build(its) {
-  items = its;
-  items.forEach(it => initItem(it));
+  items = its; items.forEach(it => initItem(it));
   buildSlideDOM();
-  cur = 0; playing = true; zoom = 1; panX = 0; panY = 0; si = 3;
-  selectedItems.clear(); lastClickedMI = -1;
-  updZoom(); updSpd(); updPlayBtn();
+  cur = 0; playing = true; spd = 100; selectedItems.clear(); lastClickedMI = -1;
+  updSpd(); updPlayBtn();
   applySlideSettings(0);
   showSlide(0); schedNext();
 }
@@ -927,59 +1081,38 @@ function rebuildSlides(newCur) {
   let nc = curItem ? mi.indexOf(curItem) : -1;
   if (nc < 0) nc = newCur ?? 0;
   cur = Math.max(0, Math.min(nc, mi.length - 1));
-  zoom = 1; panX = 0; panY = 0; playing = true;
-  updPlayBtn();
+  playing = true; updPlayBtn();
   applySlideSettings(cur);
   showSlide(cur); schedNext();
   if (g('plpanel').classList.contains('open')) renderPlaylist();
 }
 
 /* ── Playlist ── */
-function togglePL() {
-  const open = g('plpanel').classList.toggle('open');
-  g('bplt').classList.toggle('on', open);
-  if (open) renderPlaylist();
-}
+function togglePL() { const open = g('plpanel').classList.toggle('open'); g('bplt').classList.toggle('on', open); if (open) renderPlaylist(); }
 function closePL() { g('plpanel').classList.remove('open'); g('bplt').classList.remove('on'); }
 g('bplt').onclick = togglePL;
 g('plclose').onclick = closePL;
 
 function updPlCur() {
   if (!g('plpanel').classList.contains('open')) return;
-  g('pllist').querySelectorAll('.pli[data-mi]').forEach(el => {
-    el.classList.toggle('plcur', parseInt(el.dataset.mi) === cur);
-  });
+  g('pllist').querySelectorAll('.pli[data-mi]').forEach(el => el.classList.toggle('plcur', parseInt(el.dataset.mi) === cur));
 }
-
 function updSelBadge() {
   const badge = g('plselbadge');
-  if (selectedItems.size > 0) {
-    badge.textContent = selectedItems.size + ' selected';
-    badge.classList.add('show');
-  } else {
-    badge.classList.remove('show');
-  }
+  if (selectedItems.size > 0) { badge.textContent = selectedItems.size + ' selected'; badge.classList.add('show'); }
+  else badge.classList.remove('show');
 }
 
 function renderPlaylist() {
   const list = g('pllist'); list.innerHTML = '';
   updSelBadge();
-  let miIdx = 0;
-  let currentFolder = null;
-
+  let miIdx = 0, currentFolder = null;
   items.forEach((item, itemsIdx) => {
     if (item.type === 'folder') {
       currentFolder = item;
-      const div = document.createElement('div');
-      div.className = 'plfolder' + (item.dragging ? ' dragging' : '');
-      div.draggable = true;
-
-      const arr = document.createElement('span');
-      arr.className = 'pf-arr' + (item.open === false ? ' closed' : '');
-      arr.textContent = '▾';
-
+      const div = document.createElement('div'); div.className = 'plfolder'; div.draggable = true;
+      const arr = document.createElement('span'); arr.className = 'pf-arr' + (item.open === false ? ' closed' : ''); arr.textContent = '▾';
       const icon = document.createElement('span'); icon.className = 'pf-icon'; icon.textContent = '📁';
-
       const name = document.createElement('span'); name.className = 'pf-name'; name.textContent = item.name;
       name.ondblclick = e => {
         e.stopPropagation();
@@ -988,69 +1121,35 @@ function renderPlaylist() {
         inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:system-ui,sans-serif;';
         name.replaceWith(inp); inp.focus(); inp.select();
         const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); };
-        inp.onblur = done;
-        inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
+        inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
       };
-
       const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
       del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); };
-
       div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); };
       div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
-
-      div.addEventListener('dragstart', e => {
-        dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move';
-        setTimeout(() => div.classList.add('dragging'), 0);
-      });
-      div.addEventListener('dragend', () => {
-        div.classList.remove('dragging');
-        list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot'));
-        dragSrcItemsIdx = null;
-      });
-      div.addEventListener('dragover', e => {
-        e.preventDefault();
-        list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot'));
-        const r = div.getBoundingClientRect();
-        div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot');
-      });
-      div.addEventListener('drop', e => {
-        e.preventDefault();
-        list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot'));
-        if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return;
-        const r = div.getBoundingClientRect(), after = e.clientY >= r.top + r.height/2;
-        dropItemsAt(dragSrcItemsIdx, itemsIdx, after);
-      });
-
+      div.addEventListener('dragstart', e => { dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move'; setTimeout(() => div.classList.add('dragging'), 0); });
+      div.addEventListener('dragend', () => { div.classList.remove('dragging'); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
+      div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
+      div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
       list.appendChild(div);
       return;
     }
 
-    // Media item
     if (currentFolder && currentFolder.open === false) { miIdx++; return; }
 
     const thisMI = miIdx++;
-    const isSelected = selectedItems.has(thisMI);
-    const isCurrent = thisMI === cur;
-    const inFolder = currentFolder !== null;
-
     const div = document.createElement('div');
-    div.className = 'pli' + (isCurrent ? ' plcur' : '') + (isSelected ? ' plsel' : '') + (inFolder ? ' plindent' : '');
-    div.dataset.mi = thisMI;
-    div.draggable = true;
+    div.className = 'pli' + (thisMI === cur ? ' plcur' : '') + (selectedItems.has(thisMI) ? ' plsel' : '') + (currentFolder ? ' plindent' : '');
+    div.dataset.mi = thisMI; div.draggable = true;
 
     const drag = document.createElement('span'); drag.className = 'pldrag'; drag.textContent = '⠿';
-
     let thumb;
-    if (item.type === 'video') {
-      thumb = document.createElement('video'); thumb.muted = true; thumb.preload = 'metadata';
-    } else {
-      thumb = document.createElement('img');
-    }
+    if (item.type === 'video') { thumb = document.createElement('video'); thumb.muted = true; thumb.preload = 'metadata'; }
+    else { thumb = document.createElement('img'); }
     thumb.src = item.url; thumb.className = 'plthumb';
 
     const info = document.createElement('div'); info.className = 'plinfo';
-    const name = document.createElement('span'); name.className = 'plname';
-    name.textContent = item.name || ('Slide ' + (thisMI + 1));
+    const name = document.createElement('span'); name.className = 'plname'; name.textContent = item.name || ('Slide '+(thisMI+1));
     info.appendChild(name);
 
     if (item.type === 'image') {
@@ -1075,37 +1174,21 @@ function renderPlaylist() {
         if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
         kbsel.appendChild(opt);
       });
-      kbsel.onchange = e => {
-        e.stopPropagation();
-        item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value);
-        if (thisMI === cur) applyKBNow();
-      };
+      kbsel.onchange = e => { e.stopPropagation(); item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value); if (thisMI === cur) applyKBNow(); };
       kbsel.onclick = e => e.stopPropagation();
       kbRow.appendChild(kblbl); kbRow.appendChild(kbsel); info.appendChild(kbRow);
     }
 
     const del = document.createElement('button'); del.className = 'pldel'; del.textContent = '✕';
-    del.onclick = e => {
-      e.stopPropagation();
-      items.splice(itemsIdx, 1);
-      selectedItems.clear();
-      const cnt = getMediaItems().length;
-      if (!cnt) { g('bru').click(); } else { rebuildSlides(Math.min(cur, cnt - 1)); }
-    };
+    del.onclick = e => { e.stopPropagation(); removeItem(itemsIdx, false); };
 
     div.onclick = e => {
       if (e.shiftKey && lastClickedMI >= 0) {
         const lo = Math.min(lastClickedMI, thisMI), hi = Math.max(lastClickedMI, thisMI);
         for (let k = lo; k <= hi; k++) selectedItems.add(k);
-        updSelBadge();
-        renderPlaylist();
-      } else {
-        selectedItems.clear();
-        lastClickedMI = thisMI;
-        goTo(thisMI);
-      }
+        updSelBadge(); renderPlaylist();
+      } else { selectedItems.clear(); lastClickedMI = thisMI; goTo(thisMI); }
     };
-
     div.appendChild(drag); div.appendChild(thumb); div.appendChild(info); div.appendChild(del);
 
     div.addEventListener('dragstart', e => {
@@ -1113,58 +1196,30 @@ function renderPlaylist() {
       setTimeout(() => {
         list.querySelectorAll('.pli[data-mi]').forEach(el => {
           const mi2 = parseInt(el.dataset.mi);
-          if (selectedItems.has(thisMI) && selectedItems.size > 1 && selectedItems.has(mi2)) {
-            el.classList.add('dragging');
-          } else if (mi2 === thisMI && (!selectedItems.has(thisMI) || selectedItems.size <= 1)) {
-            el.classList.add('dragging');
-          }
+          if (selectedItems.has(thisMI) && selectedItems.size > 1 && selectedItems.has(mi2)) el.classList.add('dragging');
+          else if (mi2 === thisMI && (!selectedItems.has(thisMI) || selectedItems.size <= 1)) el.classList.add('dragging');
         });
       }, 0);
     });
-    div.addEventListener('dragend', () => {
-      list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragging','dragover-top','dragover-bot'));
-      dragSrcItemsIdx = null;
-    });
-    div.addEventListener('dragover', e => {
-      e.preventDefault();
-      list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot'));
-      const r = div.getBoundingClientRect();
-      div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot');
-    });
-    div.addEventListener('drop', e => {
-      e.preventDefault();
-      list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot'));
-      if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return;
-      const r = div.getBoundingClientRect(), after = e.clientY >= r.top + r.height/2;
-      dropItemsAt(dragSrcItemsIdx, itemsIdx, after);
-    });
-
+    div.addEventListener('dragend', () => { list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragging','dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
+    div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
+    div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
     list.appendChild(div);
   });
 }
 
 function dropItemsAt(srcIdx, tgtIdx, after) {
-  const mi = getMediaItems();
   const srcItem = items[srcIdx];
-
   if (srcItem && srcItem.type !== 'folder' && selectedItems.size > 1) {
-    // Build items-array indices of all selected media items
-    const selItemsIdxs = new Set();
-    let miCount = 0;
-    items.forEach((it, idx) => {
-      if (it.type !== 'folder') {
-        if (selectedItems.has(miCount)) selItemsIdxs.add(idx);
-        miCount++;
-      }
-    });
+    const selIdxs = new Set();
+    let mc = 0;
+    items.forEach((it, idx) => { if (it.type !== 'folder') { if (selectedItems.has(mc)) selIdxs.add(idx); mc++; } });
     const tgtItem = items[tgtIdx];
-    const moved = items.filter((_, idx) => selItemsIdxs.has(idx));
-    const remaining = items.filter((_, idx) => !selItemsIdxs.has(idx));
-    let tgt = remaining.indexOf(tgtItem);
-    if (tgt < 0) tgt = remaining.length;
+    const moved = items.filter((_, idx) => selIdxs.has(idx));
+    const remaining = items.filter((_, idx) => !selIdxs.has(idx));
+    let tgt = remaining.indexOf(tgtItem); if (tgt < 0) tgt = remaining.length;
     remaining.splice(after ? tgt + 1 : tgt, 0, ...moved);
-    items = remaining;
-    selectedItems.clear();
+    items = remaining; selectedItems.clear();
   } else {
     const tgtItem = items[tgtIdx];
     const moved = items.splice(srcIdx, 1)[0];
@@ -1174,11 +1229,10 @@ function dropItemsAt(srcIdx, tgtIdx, after) {
   rebuildSlides(cur);
 }
 
-/* ── New Folder ── */
 g('plnewfolder').onclick = () => {
   const name = prompt('Folder name:', 'New Folder');
   if (!name) return;
-  items.push({type:'folder', name: name.trim() || 'Folder', open: true, id: Math.random()});
+  items.push({type:'folder', name:name.trim()||'Folder', open:true, id:Math.random()});
   renderPlaylist();
 };
 
@@ -1189,19 +1243,11 @@ g('fiplist').onchange = function() { if (this.files[0]) loadPlaylistJSON(this.fi
 
 function savePlaylist() {
   const data = items.map(it => {
-    if (it.type === 'folder') return {type:'folder', name:it.name, open:it.open};
-    return {
-      type: it.type, name: it.name,
-      clr: it.clr,
-      rotation: it.rotation, mirrorX: it.mirrorX, mirrorY: it.mirrorY,
-      customDur: it.customDur, kbPreset: it.kbPreset
-    };
+    if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open};
+    return {type:it.type,name:it.name,clr:it.clr,rotation:it.rotation,mirrorX:it.mirrorX,mirrorY:it.mirrorY,zoom:it.zoom,panX:it.panX,panY:it.panY,customDur:it.customDur,kbPreset:it.kbPreset};
   });
-  const blob = new Blob([JSON.stringify({version:1, items:data}, null, 2)], {type:'application/json'});
-  const a = document.createElement('a');
-  a.download = 'SlideShowPro_playlist.json';
-  a.href = URL.createObjectURL(blob);
-  a.click();
+  const blob = new Blob([JSON.stringify({version:2,items:data},null,2)],{type:'application/json'});
+  const a = document.createElement('a'); a.download = 'SlideShowPro_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
 }
 
 function loadPlaylistJSON(file) {
@@ -1214,24 +1260,18 @@ function loadPlaylistJSON(file) {
       const newItems = [];
       data.items.forEach(entry => {
         if (entry.type === 'folder') {
-          newItems.push({type:'folder', name:entry.name, open:entry.open !== false, id:Math.random()});
+          newItems.push({type:'folder',name:entry.name,open:entry.open!==false,id:Math.random()});
         } else {
           const existing = byName.get(entry.name);
           if (existing) {
-            if (entry.clr) existing.clr = {...CLR_DEF, ...entry.clr};
-            if (entry.rotation !== undefined) existing.rotation = entry.rotation;
-            if (entry.mirrorX !== undefined) existing.mirrorX = entry.mirrorX;
-            if (entry.mirrorY !== undefined) existing.mirrorY = entry.mirrorY;
-            if (entry.customDur !== undefined) existing.customDur = entry.customDur;
-            if (entry.kbPreset !== undefined) existing.kbPreset = entry.kbPreset;
-            newItems.push(existing);
-            byName.delete(entry.name);
+            if (entry.clr) existing.clr = {...CLR_DEF,...entry.clr};
+            ['rotation','mirrorX','mirrorY','zoom','panX','panY','customDur','kbPreset'].forEach(k => { if (entry[k] !== undefined) existing[k] = entry[k]; });
+            newItems.push(existing); byName.delete(entry.name);
           }
         }
       });
       byName.forEach(it => newItems.push(it));
-      items = newItems;
-      selectedItems.clear();
+      items = newItems; selectedItems.clear();
       rebuildSlides(0);
     } catch(err) { alert('Invalid playlist file.'); }
   };
@@ -1247,13 +1287,14 @@ function playCurVid() {
 }
 
 function showSlide(i) {
-  sls.forEach((s, j) => s.className = 'sl' + (j === i ? ' on' : ''));
+  sls.forEach((s, j) => { s.classList.remove('companion'); s.className = 'sl' + (j === i ? ' on' : ''); });
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === i ? ' at' : ''); });
   tws[i]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
-  g('sc').textContent = (i + 1) + '/' + sls.length;
+  g('sc').textContent = (i+1) + '/' + sls.length;
   g('fnov').textContent = getMediaItems()[i]?.name || '';
   applySlideSettings(i);
   pauseVids();
+  showMaxCompanion(i);
   if (isV(i)) { playCurVid(); startVProg(i); } else { startKB(i); startProg(); }
   updPlCur();
 }
@@ -1263,10 +1304,7 @@ function startKB(i) {
   const img = sls[i]?.querySelector('img'); if (!img) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const p = getKBPreset(i);
-  if (!p) {
-    img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
-    return;
-  }
+  if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
   const dur = getEDur(i); let st = null;
   function step(ts) {
     if (!st) st = ts;
@@ -1283,7 +1321,7 @@ function startProg() {
   clearInterval(ptmr); ps = Date.now(); g('pb').style.width = '0%';
   const dur = getEDur();
   ptmr = setInterval(() => {
-    const pct = Math.min(((Date.now() - ps) / dur) * 100, 100).toFixed(1);
+    const pct = Math.min(((Date.now()-ps)/dur)*100,100).toFixed(1);
     g('pb').style.width = pct + '%'; if (parseFloat(pct) >= 100) clearInterval(ptmr);
   }, 50);
 }
@@ -1292,28 +1330,31 @@ function startVProg(i) {
   const v = sls[i]?.querySelector('video');
   ptmr = setInterval(() => {
     if (!v || !v.duration || !isFinite(v.duration)) return;
-    g('pb').style.width = Math.min((v.currentTime / v.duration) * 100, 100).toFixed(1) + '%';
+    g('pb').style.width = Math.min((v.currentTime/v.duration)*100,100).toFixed(1) + '%';
   }, 100);
 }
 
 function schedNext() {
   clearTimeout(tmr); if (!playing || isV(cur)) return;
-  tmr = setTimeout(() => { goTo((cur + 1) % sls.length); schedNext(); }, getEDur(cur));
+  tmr = setTimeout(() => { goTo(nextMI()); schedNext(); }, getEDur(cur));
 }
 
 function goTo(i) {
   clearTimeout(tmr); clearInterval(ptmr);
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const len = getMediaItems().length;
+  sls.forEach(s => s.classList.remove('companion'));
+  stage.classList.remove('hmax','vmax');
   sls[cur].classList.remove('on'); sls[cur].classList.add('fl');
-  cur = (i + len) % len; panX = 0; panY = 0;
+  cur = (i + len) % len;
   applySlideSettings(cur);
   sls[cur].className = 'sl on fe';
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === cur ? ' at' : ''); });
   tws[cur]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
-  g('sc').textContent = (cur + 1) + '/' + sls.length;
+  g('sc').textContent = (cur+1) + '/' + sls.length;
   g('fnov').textContent = getMediaItems()[cur]?.name || '';
   pauseVids();
+  showMaxCompanion(cur);
   if (isV(cur)) { playCurVid(); startVProg(cur); }
   else { startKB(cur); startProg(); if (playing) schedNext(); }
   updPlCur();
@@ -1348,23 +1389,21 @@ g('bss').onclick = function() {
     const id = ctx.getImageData(0,0,can.width,can.height), d = id.data;
     const lut = new Uint8Array(256);
     for (let i = 0; i < 256; i++) {
-      const v = i/255; let r = gv !== 1 ? Math.pow(v, 1/gv) : v;
-      const sw = v < 0.5 ? Math.pow(1-v*2,2) : 0; r += sw * sh * 0.45;
-      const hw = v > 0.5 ? Math.pow((v-0.5)*2,2) : 0; r += hw * hl * 0.45;
-      lut[i] = Math.round(Math.max(0,Math.min(1,r)) * 255);
+      const v = i/255; let r = gv !== 1 ? Math.pow(v,1/gv) : v;
+      const sw = v < 0.5 ? Math.pow(1-v*2,2) : 0; r += sw*sh*0.45;
+      const hw = v > 0.5 ? Math.pow((v-0.5)*2,2) : 0; r += hw*hl*0.45;
+      lut[i] = Math.round(Math.max(0,Math.min(1,r))*255);
     }
-    for (let i = 0; i < d.length; i += 4) { d[i]=lut[d[i]]; d[i+1]=lut[d[i+1]]; d[i+2]=lut[d[i+2]]; }
+    for (let i = 0; i < d.length; i+=4) { d[i]=lut[d[i]]; d[i+1]=lut[d[i+1]]; d[i+2]=lut[d[i+2]]; }
     ctx.putImageData(id, 0, 0);
   }
   const ts = new Date();
   const fn = `SlideShowPro_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.jpg`;
-  const a = document.createElement('a'); a.download = fn; a.href = can.toDataURL('image/jpeg', .95); a.click();
+  const a = document.createElement('a'); a.download = fn; a.href = can.toDataURL('image/jpeg',.95); a.click();
 };
 
 /* ── Wire controls ── */
-g('bcol').onclick = function() {
-  const p = g('cpanel'); p.classList.toggle('show'); this.classList.toggle('on', p.classList.contains('show'));
-};
+g('bcol').onclick = function() { const p = g('cpanel'); p.classList.toggle('show'); this.classList.toggle('on', p.classList.contains('show')); };
 g('bpl').onclick = togglePlay;
 g('bpr').onclick = () => goTo(cur - 1);
 g('bne').onclick = () => goTo(cur + 1);
@@ -1380,28 +1419,49 @@ g('bfs').onclick = () => {
   }
 };
 document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement) g('ifs').innerHTML = '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>';
+  if (!document.fullscreenElement) {
+    g('ifs').innerHTML = '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>';
+    if (watchMode) { watchMode = false; g('watchbadge').classList.remove('show'); if (preWatchCtrlsVis) { ctrlsVisible = true; [g('ctrls'),g('tstrip')].forEach(el => el.style.display=''); } }
+  }
 });
 
 /* ── Keyboard handler ── */
 document.addEventListener('keydown', e => {
+  /* F5 = watch mode */
+  if (e.key === 'F5') { e.preventDefault(); if (sls.length) toggleWatchMode(); return; }
+
+  /* Key remapper */
   if (listeningEl && listeningId) {
-    if (e.key === 'Escape') {
-      listeningEl.textContent = keyLabel(keyMap[listeningId]); listeningEl.classList.remove('listening');
-      listeningEl = null; listeningId = null;
-    } else {
-      keyMap[listeningId] = e.key; listeningEl.textContent = keyLabel(e.key);
-      listeningEl.classList.remove('listening'); listeningEl = null; listeningId = null;
-    }
+    if (e.key === 'Escape') { listeningEl.textContent = keyLabel(keyMap[listeningId]); listeningEl.classList.remove('listening'); listeningEl = null; listeningId = null; }
+    else { keyMap[listeningId] = e.key; listeningEl.textContent = keyLabel(e.key); listeningEl.classList.remove('listening'); listeningEl = null; listeningId = null; }
     e.preventDefault(); return;
   }
-  if (e.key === 'Escape' && selectedItems.size > 0) {
-    selectedItems.clear(); updSelBadge();
-    if (g('plpanel').classList.contains('open')) renderPlaylist();
+
+  /* Escape: exit watch mode or clear selection */
+  if (e.key === 'Escape') {
+    if (watchMode) { toggleWatchMode(); return; }
+    if (selectedItems.size > 0) { selectedItems.clear(); updSelBadge(); if (g('plpanel').classList.contains('open')) renderPlaylist(); }
     return;
   }
+
   if (!sls.length) return;
-  const t = e.target.tagName; if (t === 'SELECT' || t === 'INPUT') return;
+  const t = e.target.tagName;
+  if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
+
+  /* Delete = remove from app + clear LS; Backspace = remove from playlist only */
+  if (e.key === 'Delete') {
+    e.preventDefault();
+    const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+    removeItem(items.indexOf(item), true);
+    return;
+  }
+  if (e.key === 'Backspace') {
+    e.preventDefault();
+    const mi = getMediaItems(), item = mi[cur]; if (!item) return;
+    removeItem(items.indexOf(item), false);
+    return;
+  }
+
   if (e.altKey) {
     if (e.key === 'ArrowUp')    { e.preventDefault(); doPan(0,-1); }
     else if (e.key === 'ArrowDown')  { e.preventDefault(); doPan(0,1); }
@@ -1409,12 +1469,13 @@ document.addEventListener('keydown', e => {
     else if (e.key === 'ArrowRight') { e.preventDefault(); doPan(1,0); }
     return;
   }
+
   const k = e.key;
   if (k === keyMap.next) goTo(cur + 1);
   else if (k === keyMap.prev) goTo(cur - 1);
   else if (k === keyMap.play) { e.preventDefault(); togglePlay(); }
-  else if (k === keyMap.zoomIn || k === '=') changeZoom(0.25);
-  else if (k === keyMap.zoomOut) changeZoom(-0.25);
+  else if (k === keyMap.zoomIn || k === '=') changeZoom(0.15);
+  else if (k === keyMap.zoomOut) changeZoom(-0.15);
   else if (k === keyMap.panRst) resetPan();
   else if (k.toLowerCase() === keyMap.fullscr.toLowerCase()) g('bfs').click();
   else if (k.toLowerCase() === keyMap.mute.toLowerCase()) g('bmu').click();
