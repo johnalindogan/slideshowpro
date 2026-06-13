@@ -238,6 +238,10 @@ html,body{background:#000;height:100%;overflow:hidden;}
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Open Playlist
       </button>
+      <button id="lbupdates">
+        <svg viewBox="0 0 24 24"><path d="M21 7l-9 9-5-5"/><path d="M21 7V3h-4"/><path d="M3 17v4h4"/><path d="M3 17l7-7"/></svg>
+        Load Image Updates
+      </button>
       <button id="lbcont" disabled>
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         Continue from Last
@@ -250,6 +254,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <input type="file" id="fi" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
 <input type="file" id="fiadd" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
 <input type="file" id="fiplist" accept=".json">
+<input type="file" id="fiupd" accept=".json">
 
 <div id="viewer">
   <div id="stage">
@@ -349,6 +354,9 @@ html,body{background:#000;height:100%;overflow:hidden;}
     </button>
     <button class="cb" id="bss" title="Save screenshot">
       <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+    </button>
+    <button class="cb" id="btheme" title="Themes">
+      <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
     </button>
     <button class="cb" id="bplt" title="Playlist">
       <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
@@ -494,11 +502,32 @@ g('lbplist').onclick = async () => {
     } catch(e) { if (e.name !== 'AbortError') { landingPlaylistMode = true; g('fiplist').click(); } }
   } else { landingPlaylistMode = true; g('fiplist').click(); }
 };
+g('lbupdates').onclick = () => g('fiupd').click();
 g('lbcont').onclick = async () => {
   try {
     const snap = JSON.parse(localStorage.getItem('ssp_autosave') || 'null');
     if (snap) await restoreFromSnapshot(snap); else showToast('No saved session found.', 3000);
   } catch(e) { showToast('Could not restore last session.', 4000); }
+};
+g('fiupd').onchange = function() {
+  if (!this.files[0]) return;
+  const file = this.files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data) return;
+      persistImageUpdatesSource(data);
+      items.forEach(it => { if (it.type !== 'folder') applySharedImageUpdates(it); });
+      items.forEach(it => { if (it.type !== 'folder') saveItemLS(it); });
+      rebuildSlides(cur);
+      showToast(`Image Updates loaded: ${file.name}`, 2500);
+    } catch(err) {
+      showToast('Invalid Image Updates file.', 3500);
+    }
+  };
+  reader.readAsText(file);
+  this.value = '';
 };
 
 /* ── State ── */
@@ -515,6 +544,7 @@ let maxPreset = 2; // 1=SameSide2, 2=KBLeft, 3=KBRight, 4=SameSide3
 let screenshotDirHandle = null;
 const MAX_PRESET_LABELS = ['Same Side 2', 'KB Left', 'KB Right', 'Same Side 3'];
 let dragSrcItemsIdx = null;
+let sharedImageUpdates = null;
 
 /* Mouse drag state */
 let lDrag = false, lDragStartX = 0, lDragStartY = 0, lDragPX = 0, lDragPY = 0, lDragMoved = false, lDragOnComp = false;
@@ -522,6 +552,14 @@ let midDrag = false, midStartX = 0, midStartY = 0, midStartPX = 0, midStartPY = 
 let compZoom = 1, compPanX = 0, compPanY = 0, compKbId = null;
 
 const CLR_DEF = {b:100,c:100,s:100,h:0,hl:0,sh:0,g:100};
+
+const THEME_PRESETS = [
+  {name:'Sunset Glow', clr:{b:112,c:108,s:122,h:10,hl:12,sh:-8,g:102}, rotation:0, zoom:1.05, panX:0, panY:0, kbPreset:2},
+  {name:'Cool Night', clr:{b:92,c:118,s:88,h:-18,hl:4,sh:8,g:96}, rotation:0, zoom:1.02, panX:0, panY:0, kbPreset:3},
+  {name:'Mono Flash', clr:{b:105,c:130,s:0,h:0,hl:10,sh:0,g:104}, rotation:0, zoom:1, panX:0, panY:0, kbPreset:-1},
+  {name:'Vivid Pop', clr:{b:108,c:112,s:140,h:24,hl:6,sh:-4,g:100}, rotation:0, zoom:1.08, panX:0, panY:0, kbPreset:4}
+];
+let themeCursor = 0;
 
 /* Speed: 5–500% in steps of 5 */
 let spd = 100;
@@ -546,30 +584,80 @@ let kbEnabled = true, kbZoomInt = 4.0, kbPanInt = 4.0, kbDirection = 'mix', kbEa
 function getMediaItems() { return items.filter(it => it.type !== 'folder' && !it.unavailable); }
 function nextMI() { const len = getMediaItems().length; return reversePlay ? (cur - 1 + len) % len : (cur + 1) % len; }
 
+function makeItemId() {
+  return window.crypto?.randomUUID?.() || ('it_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+}
+
+function ensureItemId(item) {
+  if (!item.id) item.id = makeItemId();
+  return item.id;
+}
+
+function normalizeImageUpdatesSource(data) {
+  if (!data) return null;
+  const entries = Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [];
+  const byId = new Map();
+  const byName = new Map();
+  entries.forEach(entry => {
+    if (!entry || entry.type === 'folder') return;
+    const updates = entry.imageUpdates !== undefined ? entry.imageUpdates : entry;
+    if (entry.id) byId.set(entry.id, updates);
+    if (entry.name && !byName.has(entry.name)) byName.set(entry.name, updates);
+  });
+  return { byId, byName };
+}
+
+function loadPersistedImageUpdates() {
+  try {
+    sharedImageUpdates = normalizeImageUpdatesSource(JSON.parse(localStorage.getItem('ssp_image_updates') || 'null'));
+  } catch(e) {
+    sharedImageUpdates = null;
+  }
+}
+
+function persistImageUpdatesSource(data) {
+  sharedImageUpdates = normalizeImageUpdatesSource(data);
+  try { localStorage.setItem('ssp_image_updates', JSON.stringify(data)); } catch(e) {}
+}
+
+function applySharedImageUpdates(item) {
+  if (!sharedImageUpdates || !item || item.type === 'folder') return;
+  const updates = (item.id && sharedImageUpdates.byId.get(item.id)) || (item.name && sharedImageUpdates.byName.get(item.name));
+  if (updates) applyImageUpdates(item, updates);
+}
+
+loadPersistedImageUpdates();
+
 /* ── Per-item localStorage ── */
-function lsKey(name) { return 'ssp|' + name; }
+function lsKey(item) {
+  const key = typeof item === 'string' ? item : (item?.id || item?.name || '');
+  return 'ssp|' + key;
+}
 
 function loadItemLS(item) {
-  if (!item.name) return;
+  ensureItemId(item);
   try {
-    const d = JSON.parse(localStorage.getItem(lsKey(item.name)) || 'null');
-    if (!d) return;
-    if (d.clr) item.clr = {...CLR_DEF, ...d.clr};
-    if (d.rotation !== undefined) item.rotation = d.rotation;
-    if (d.mirrorX !== undefined) item.mirrorX = d.mirrorX;
-    if (d.mirrorY !== undefined) item.mirrorY = d.mirrorY;
-    if (d.zoom !== undefined) item.zoom = d.zoom;
-    if (d.panX !== undefined) item.panX = d.panX;
-    if (d.panY !== undefined) item.panY = d.panY;
-    if (d.customDur !== undefined) item.customDur = d.customDur;
-    if (d.kbPreset !== undefined) item.kbPreset = d.kbPreset;
+    for (const key of [item.id, item.name].filter(Boolean)) {
+      const d = JSON.parse(localStorage.getItem(lsKey(key)) || 'null');
+      if (!d) continue;
+      if (d.clr) item.clr = {...CLR_DEF, ...d.clr};
+      if (d.rotation !== undefined) item.rotation = d.rotation;
+      if (d.mirrorX !== undefined) item.mirrorX = d.mirrorX;
+      if (d.mirrorY !== undefined) item.mirrorY = d.mirrorY;
+      if (d.zoom !== undefined) item.zoom = d.zoom;
+      if (d.panX !== undefined) item.panX = d.panX;
+      if (d.panY !== undefined) item.panY = d.panY;
+      if (d.customDur !== undefined) item.customDur = d.customDur;
+      if (d.kbPreset !== undefined) item.kbPreset = d.kbPreset;
+      break;
+    }
   } catch(e) {}
 }
 
 function saveItemLS(item) {
-  if (!item.name) return;
+  ensureItemId(item);
   try {
-    localStorage.setItem(lsKey(item.name), JSON.stringify({
+    localStorage.setItem(lsKey(item), JSON.stringify({
       clr: item.clr, rotation: item.rotation,
       mirrorX: item.mirrorX, mirrorY: item.mirrorY,
       zoom: item.zoom, panX: item.panX, panY: item.panY,
@@ -594,13 +682,55 @@ function applyImageUpdates(item, data) {
 }
 
 function initItem(item) {
+  ensureItemId(item);
   if (item.type === 'folder') return;
   item.clr = {...CLR_DEF};
   item.rotation = 0; item.mirrorX = false; item.mirrorY = false;
   item.zoom = 1; item.panX = 0; item.panY = 0;
   item.customDur = undefined; item.kbPreset = undefined;
+  applySharedImageUpdates(item);
   applyImageUpdates(item, item);
   loadItemLS(item);
+}
+
+function applyThemePreset(item, preset) {
+  if (!item || !preset) return;
+  if (preset.clr) item.clr = {...CLR_DEF, ...preset.clr};
+  if (preset.rotation !== undefined) item.rotation = preset.rotation;
+  if (preset.mirrorX !== undefined) item.mirrorX = preset.mirrorX;
+  if (preset.mirrorY !== undefined) item.mirrorY = preset.mirrorY;
+  if (preset.zoom !== undefined) item.zoom = preset.zoom;
+  if (preset.panX !== undefined) item.panX = preset.panX;
+  if (preset.panY !== undefined) item.panY = preset.panY;
+  if (preset.kbPreset !== undefined) item.kbPreset = preset.kbPreset;
+  saveItemLS(item);
+}
+
+function applyThemeToCurrent(randomize = false) {
+  const mi = getMediaItems(), item = mi[cur];
+  if (!item) return;
+  const preset = randomize ? THEME_PRESETS[Math.floor(Math.random() * THEME_PRESETS.length)] : THEME_PRESETS[themeCursor++ % THEME_PRESETS.length];
+  applyThemePreset(item, preset);
+  applySlideSettings(cur);
+  if (!isV(cur)) {
+    if (playing) { clearTimeout(tmr); clearInterval(ptmr); startKB(cur); startProg(); schedNext(); }
+    else { startKB(cur); startProg(); }
+  }
+  showToast(`Theme applied: ${preset.name}`, 2000);
+}
+
+function applyThemeToAll(randomize = false) {
+  const presets = randomize ? null : THEME_PRESETS;
+  getMediaItems().forEach((item, idx) => {
+    const preset = randomize ? THEME_PRESETS[(idx + Math.floor(Math.random() * THEME_PRESETS.length)) % THEME_PRESETS.length] : presets[idx % presets.length];
+    applyThemePreset(item, preset);
+  });
+  applySlideSettings(cur);
+  if (!isV(cur)) {
+    if (playing) { clearTimeout(tmr); clearInterval(ptmr); startKB(cur); startProg(); schedNext(); }
+    else { startKB(cur); startProg(); }
+  }
+  showToast(randomize ? 'Random theme applied to playlist.' : 'Curated theme applied to playlist.', 2500);
 }
 
 /* ── KB preset ── */
@@ -634,6 +764,9 @@ const FNS = [
   {id:'next',    label:'Next Slide',      def:'ArrowRight'},
   {id:'prev',    label:'Prev Slide',      def:'ArrowLeft'},
   {id:'play',    label:'Play / Pause',    def:' '},
+  {id:'addMedia',label:'Add Media',       def:'a'},
+  {id:'screenshot',label:'Screenshot',    def:'s'},
+  {id:'theme',   label:'Themes',          def:'t'},
   {id:'zoomIn',  label:'Zoom In',         def:'+'},
   {id:'zoomOut', label:'Zoom Out',        def:'-'},
   {id:'panRst',  label:'Reset Pan/Zoom',  def:'p'},
@@ -1075,7 +1208,7 @@ window.addEventListener('resize', () => { if (sls.length) showMaxCompanion(cur);
 function removeItem(itemsIdx, clearLS) {
   const mi = getMediaItems(), item = items[itemsIdx];
   if (!item) return;
-  if (clearLS && item.name) localStorage.removeItem(lsKey(item.name));
+  if (clearLS) [item.id, item.name].filter(Boolean).forEach(key => localStorage.removeItem(lsKey(key)));
   items.splice(itemsIdx, 1);
   selectedItems.clear();
   const cnt = getMediaItems().length;
@@ -1102,7 +1235,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') ctxmenu.styl
 g('ctx-dup').onclick = () => {
   ctxmenu.style.display = 'none';
   const mi = getMediaItems(), item = mi[cur]; if (!item) return;
-  const dup = {...item, clr: {...(item.clr || CLR_DEF)}};
+  const dup = {...item, id: makeItemId(), clr: {...(item.clr || CLR_DEF)}};
   items.splice(items.indexOf(item) + 1, 0, dup);
   rebuildSlides(cur);
 };
@@ -1224,8 +1357,9 @@ function getPlaylistSnapshot() {
   return {
     sspVersion: 1, savedAt: Date.now(),
     items: items.map(it => {
-      if (it.type === 'folder') return { type:'folder', name:it.name, open:it.open !== false };
+      if (it.type === 'folder') return { type:'folder', id:it.id, name:it.name, open:it.open !== false };
       return {
+        id: it.id,
         type: it.type,
         name: it.name,
         imageUpdates: {
@@ -1248,7 +1382,11 @@ function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeo
 function autoSave() {
   clearTimeout(autoSaveTimer);
   try { localStorage.setItem('ssp_autosave', JSON.stringify(getPlaylistSnapshot())); } catch(e) {}
-  getMediaItems().forEach(it => { if (it.fileHandle) saveHandleIDB(it.name, it.fileHandle).catch(() => {}); });
+  getMediaItems().forEach(it => {
+    if (!it.fileHandle) return;
+    saveHandleIDB(it.id || it.name, it.fileHandle).catch(() => {});
+    if (it.name && it.name !== it.id) saveHandleIDB(it.name, it.fileHandle).catch(() => {});
+  });
 }
 window.addEventListener('beforeunload', autoSave);
 
@@ -1294,12 +1432,15 @@ async function restoreFromSnapshot(snap) {
   const entries = snap.items;
   const mediaEntries = entries.filter(it => it.type !== 'folder');
   if (!mediaEntries.length) {
-    const sk = entries.map(it => ({type:'folder',name:it.name,open:it.open!==false,id:Math.random()}));
+    const sk = entries.map(it => ({type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()}));
     build(sk); return;
   }
   const resolved = await Promise.all(mediaEntries.map(async entry => {
     let handle = null;
-    try { handle = await getHandleIDB(entry.name); } catch(e) {}
+    try { handle = await getHandleIDB(entry.id || entry.name); } catch(e) {}
+    if (!handle && entry.name) {
+      try { handle = await getHandleIDB(entry.name); } catch(e) {}
+    }
     if (handle) {
       try {
         const perm = await handle.queryPermission({ mode: 'read' });
@@ -1313,16 +1454,22 @@ async function restoreFromSnapshot(snap) {
   let unavailCount = 0;
   if (total === 0) {
     const sk = entries.map(it => it.type === 'folder'
-      ? {type:'folder',name:it.name,open:it.open!==false,id:Math.random()}
+      ? {type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()}
       : {...it, url:'', unavailable:true});
     build(sk);
     showToast('No files could be restored — re-open files or open a playlist.', 7000);
     return;
   }
-  const resolvedByName = new Map(resolved.map(r => [r.entry.name, r]));
+  const resolvedById = new Map(resolved.filter(r => r.entry.id).map(r => [r.entry.id, r]));
+  const resolvedByName = new Map();
+  resolved.forEach(r => {
+    if (!r.entry.name) return;
+    if (!resolvedByName.has(r.entry.name)) resolvedByName.set(r.entry.name, []);
+    resolvedByName.get(r.entry.name).push(r);
+  });
   const finalItems = entries.map(it => {
-    if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open!==false,id:Math.random()};
-    const r = resolvedByName.get(it.name);
+    if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()};
+    const r = (it.id && resolvedById.get(it.id)) || (resolvedByName.get(it.name)?.shift() || null);
     if (!r?.handle) { unavailCount++; return {...it, url:'', unavailable:true}; }
     return null;
   });
@@ -1357,6 +1504,12 @@ async function restoreFromSnapshot(snap) {
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
 dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); load(e.dataTransfer.files); });
+stage.addEventListener('dragover', e => { if (viewer.style.display === 'flex') { e.preventDefault(); } });
+stage.addEventListener('drop', e => {
+  if (viewer.style.display !== 'flex') return;
+  e.preventDefault();
+  addMoreFiles(e.dataTransfer.files);
+});
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
 g('fiadd').onchange = function() { if (this.files.length) addMoreFiles(this.files); this.value = ''; };
 g('pladd').onclick = async () => {
@@ -1689,7 +1842,7 @@ function dropItemsAt(srcIdx, tgtIdx, after) {
 g('plnewfolder').onclick = () => {
   const name = prompt('Folder name:', 'New Folder');
   if (!name) return;
-  items.push({type:'folder', name:name.trim()||'Folder', open:true, id:Math.random()});
+  items.push({type:'folder', name:name.trim()||'Folder', open:true, id:makeItemId()});
   renderPlaylist();
 };
 
@@ -1705,8 +1858,9 @@ g('fiplist').onchange = function() {
 
 function savePlaylist() {
   const data = items.map(it => {
-    if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open};
+    if (it.type === 'folder') return {type:'folder',id:it.id,name:it.name,open:it.open};
     return {
+      id: it.id,
       type: it.type,
       name: it.name,
       imageUpdates: {
@@ -1732,20 +1886,29 @@ function loadPlaylistJSON(file) {
     try {
       const data = JSON.parse(e.target.result);
       if (!data.items) return;
-      const byName = new Map(items.filter(it => it.type !== 'folder').map(it => [it.name, it]));
+      const existingMedia = items.filter(it => it.type !== 'folder');
+      const byId = new Map(existingMedia.filter(it => it.id).map(it => [it.id, it]));
+      const byName = new Map();
+      existingMedia.forEach(it => {
+        if (!it.name) return;
+        if (!byName.has(it.name)) byName.set(it.name, []);
+        byName.get(it.name).push(it);
+      });
+      const usedIds = new Set();
       const newItems = [];
       data.items.forEach(entry => {
         if (entry.type === 'folder') {
-          newItems.push({type:'folder',name:entry.name,open:entry.open!==false,id:Math.random()});
+          newItems.push({type:'folder',id:entry.id || makeItemId(),name:entry.name,open:entry.open!==false});
         } else {
-          const existing = byName.get(entry.name);
+          const existing = (entry.id && byId.get(entry.id)) || (entry.name && byName.get(entry.name)?.find(it => !usedIds.has(it.id)));
           if (existing) {
-              applyImageUpdates(existing, entry);
-              newItems.push(existing); byName.delete(entry.name);
-            }
+            usedIds.add(existing.id);
+            applyImageUpdates(existing, entry);
+            newItems.push(existing);
           }
+        }
       });
-      byName.forEach(it => newItems.push(it));
+      existingMedia.forEach(it => { if (!usedIds.has(it.id)) newItems.push(it); });
       items = newItems; selectedItems.clear();
       rebuildSlides(0);
     } catch(err) { alert('Invalid playlist file.'); }
@@ -1815,6 +1978,23 @@ function startVProg(i) {
   }, 100);
 }
 
+function waitForVideoFrame(video) {
+  return new Promise(resolve => {
+    if (!video) return resolve();
+    if (video.readyState >= 2) return resolve();
+    const done = () => {
+      video.removeEventListener('loadeddata', done);
+      video.removeEventListener('seeked', done);
+      resolve();
+    };
+    video.addEventListener('loadeddata', done, { once: true });
+    video.addEventListener('seeked', done, { once: true });
+    if (video.requestVideoFrameCallback) {
+      video.requestVideoFrameCallback(() => done());
+    }
+  });
+}
+
 function schedNext() {
   clearTimeout(tmr); if (!playing || isV(cur)) return;
   tmr = setTimeout(() => { goTo(nextMI()); schedNext(); }, getEDur(cur));
@@ -1861,6 +2041,7 @@ function togglePlay() {
 g('bss').onclick = async function() {
   const mi = getMediaItems(), item = mi[cur], med = sls[cur]?.querySelector('img,video');
   if (!med || !item) return;
+  if (med.tagName === 'VIDEO') await waitForVideoFrame(med);
   const can = document.createElement('canvas'); can.width = item.w; can.height = item.h;
   const ctx = can.getContext('2d');
   const clr = item.clr || CLR_DEF;
@@ -1897,6 +2078,7 @@ g('bcol').onclick = function() { const p = g('cpanel'); p.classList.toggle('show
 g('bpl').onclick = togglePlay;
 g('bpr').onclick = () => goTo(cur - 1);
 g('bne').onclick = () => goTo(cur + 1);
+g('btheme').onclick = e => { if (e.shiftKey) applyThemeToCurrent(true); else if (e.altKey) applyThemeToAll(true); else applyThemeToCurrent(false); };
 g('dsel').onchange = () => { clearTimeout(tmr); clearInterval(ptmr); if (!isV(cur)) { startKB(cur); startProg(); if (playing) schedNext(); } };
 
 g('bfs').onclick = () => {
@@ -1976,11 +2158,14 @@ document.addEventListener('keydown', e => {
   if (k === keyMap.next) goTo(cur + 1);
   else if (k === keyMap.prev) goTo(cur - 1);
   else if (k === keyMap.play) { e.preventDefault(); togglePlay(); }
+  else if (k.toLowerCase() === keyMap.addMedia.toLowerCase()) { e.preventDefault(); g('pladd').click(); }
   else if (k === keyMap.zoomIn || k === '=') changeZoom(0.15);
   else if (k === keyMap.zoomOut) changeZoom(-0.15);
   else if (k === keyMap.panRst) resetPan();
   else if (k.toLowerCase() === keyMap.fullscr.toLowerCase()) g('bfs').click();
   else if (k.toLowerCase() === keyMap.mute.toLowerCase()) g('bmu').click();
+  else if (k.toLowerCase() === keyMap.screenshot.toLowerCase()) g('bss').click();
+  else if (k.toLowerCase() === keyMap.theme.toLowerCase()) { e.preventDefault(); if (e.shiftKey) applyThemeToCurrent(true); else if (e.altKey) applyThemeToAll(true); else applyThemeToCurrent(false); }
   else if (k.toLowerCase() === keyMap.mirrorH.toLowerCase()) toggleMirrorH();
   else if (k.toLowerCase() === keyMap.mirrorV.toLowerCase()) toggleMirrorV();
   else if (k.toLowerCase() === keyMap.hidectl.toLowerCase()) toggleControls();
