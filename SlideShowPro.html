@@ -512,6 +512,7 @@ let selectedItems = new Set(), lastClickedMI = -1;
 let reversePlay = false, watchMode = false, preWatchCtrlsVis = true;
 let hMaxEnabled = false, vMaxEnabled = false;
 let maxPreset = 2; // 1=SameSide2, 2=KBLeft, 3=KBRight, 4=SameSide3
+let screenshotDirHandle = null;
 const MAX_PRESET_LABELS = ['Same Side 2', 'KB Left', 'KB Right', 'Same Side 3'];
 let dragSrcItemsIdx = null;
 
@@ -560,6 +561,8 @@ function loadItemLS(item) {
     if (d.zoom !== undefined) item.zoom = d.zoom;
     if (d.panX !== undefined) item.panX = d.panX;
     if (d.panY !== undefined) item.panY = d.panY;
+    if (d.customDur !== undefined) item.customDur = d.customDur;
+    if (d.kbPreset !== undefined) item.kbPreset = d.kbPreset;
   } catch(e) {}
 }
 
@@ -569,9 +572,25 @@ function saveItemLS(item) {
     localStorage.setItem(lsKey(item.name), JSON.stringify({
       clr: item.clr, rotation: item.rotation,
       mirrorX: item.mirrorX, mirrorY: item.mirrorY,
-      zoom: item.zoom, panX: item.panX, panY: item.panY
+      zoom: item.zoom, panX: item.panX, panY: item.panY,
+      customDur: item.customDur,
+      kbPreset: item.kbPreset
     }));
   } catch(e) {}
+}
+
+function applyImageUpdates(item, data) {
+  if (!data) return;
+  const updates = data.imageUpdates !== undefined ? data.imageUpdates : data;
+  if (updates.clr) item.clr = {...CLR_DEF, ...updates.clr};
+  if (updates.rotation !== undefined) item.rotation = updates.rotation;
+  if (updates.mirrorX !== undefined) item.mirrorX = updates.mirrorX;
+  if (updates.mirrorY !== undefined) item.mirrorY = updates.mirrorY;
+  if (updates.zoom !== undefined) item.zoom = updates.zoom;
+  if (updates.panX !== undefined) item.panX = updates.panX;
+  if (updates.panY !== undefined) item.panY = updates.panY;
+  if (updates.customDur !== undefined) item.customDur = updates.customDur;
+  if (updates.kbPreset !== undefined) item.kbPreset = updates.kbPreset;
 }
 
 function initItem(item) {
@@ -579,6 +598,8 @@ function initItem(item) {
   item.clr = {...CLR_DEF};
   item.rotation = 0; item.mirrorX = false; item.mirrorY = false;
   item.zoom = 1; item.panX = 0; item.panY = 0;
+  item.customDur = undefined; item.kbPreset = undefined;
+  applyImageUpdates(item, item);
   loadItemLS(item);
 }
 
@@ -1108,12 +1129,78 @@ g('ctx-del').onclick = () => {
 /* ── IndexedDB handle store ── */
 function openHandleDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('SSP_v1', 1);
-    r.onupgradeneeded = e => e.target.result.createObjectStore('handles', { keyPath: 'name' });
+    const r = indexedDB.open('SSP_v1', 2);
+    r.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('handles')) db.createObjectStore('handles', { keyPath: 'name' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+    };
     r.onsuccess = e => res(e.target.result);
     r.onerror = rej;
   });
 }
+async function saveMetaIDB(key, value) {
+  const db = await openHandleDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('meta', 'readwrite');
+    tx.objectStore('meta').put({ key, value });
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function getMetaIDB(key) {
+  const db = await openHandleDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('meta', 'readonly');
+    const r = tx.objectStore('meta').get(key);
+    r.onsuccess = () => res(r.result?.value || null);
+    r.onerror = rej;
+  });
+}
+
+async function getScreenshotDirHandle() {
+  if (!window.showDirectoryPicker) return null;
+  if (screenshotDirHandle) return screenshotDirHandle;
+  try {
+    screenshotDirHandle = await getMetaIDB('screenshotDir');
+  } catch(e) { screenshotDirHandle = null; }
+  if (screenshotDirHandle) {
+    try {
+      let perm = await screenshotDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'prompt') perm = await screenshotDirHandle.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') screenshotDirHandle = null;
+    } catch(e) { screenshotDirHandle = null; }
+  }
+  if (screenshotDirHandle) return screenshotDirHandle;
+  try {
+    const chosen = await window.showDirectoryPicker();
+    screenshotDirHandle = chosen.name.toLowerCase() === 'screenshots'
+      ? chosen
+      : await chosen.getDirectoryHandle('Screenshots', { create: true });
+    await saveMetaIDB('screenshotDir', screenshotDirHandle);
+    return screenshotDirHandle;
+  } catch(e) {
+    if (e.name !== 'AbortError') console.warn(e);
+    screenshotDirHandle = null;
+    return null;
+  }
+}
+
+async function saveScreenshotFile(name, blob) {
+  const dir = await getScreenshotDirHandle();
+  if (!dir) return false;
+  try {
+    const fileHandle = await dir.getFileHandle(name, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+  } catch(e) {
+    console.warn(e);
+    screenshotDirHandle = null;
+    return false;
+  }
+}
+
 async function saveHandleIDB(name, handle) {
   const db = await openHandleDB();
   return new Promise((res, rej) => {
@@ -1138,9 +1225,21 @@ function getPlaylistSnapshot() {
     sspVersion: 1, savedAt: Date.now(),
     items: items.map(it => {
       if (it.type === 'folder') return { type:'folder', name:it.name, open:it.open !== false };
-      return { type:it.type, name:it.name, clr:it.clr, rotation:it.rotation,
-               mirrorX:it.mirrorX, mirrorY:it.mirrorY, zoom:it.zoom, panX:it.panX,
-               panY:it.panY, customDur:it.customDur, kbPreset:it.kbPreset };
+      return {
+        type: it.type,
+        name: it.name,
+        imageUpdates: {
+          clr: it.clr,
+          rotation: it.rotation,
+          mirrorX: it.mirrorX,
+          mirrorY: it.mirrorY,
+          zoom: it.zoom,
+          panX: it.panX,
+          panY: it.panY,
+          customDur: it.customDur,
+          kbPreset: it.kbPreset
+        }
+      };
     })
   };
 }
@@ -1203,8 +1302,7 @@ async function restoreFromSnapshot(snap) {
     try { handle = await getHandleIDB(entry.name); } catch(e) {}
     if (handle) {
       try {
-        let perm = await handle.queryPermission({ mode: 'read' });
-        if (perm === 'prompt') perm = await handle.requestPermission({ mode: 'read' });
+        const perm = await handle.queryPermission({ mode: 'read' });
         if (perm !== 'granted') handle = null;
       } catch(e) { handle = null; }
     }
@@ -1519,10 +1617,10 @@ function renderPlaylist() {
         if ((item.customDur ?? getDur()) === v) opt.selected = true;
         sel.appendChild(opt);
       });
-      sel.onchange = e => { e.stopPropagation(); item.customDur = parseInt(sel.value); };
+      sel.onchange = e => { e.stopPropagation(); item.customDur = parseInt(sel.value); saveItemLS(item); schedAutoSave(); };
       sel.onclick = e => e.stopPropagation();
       durRow.appendChild(lbl); durRow.appendChild(sel); info.appendChild(durRow);
-
+ 
       const kbRow = document.createElement('div'); kbRow.className = 'pldurrow';
       const kblbl = document.createElement('span'); kblbl.className = 'pldlbl'; kblbl.textContent = 'KB:';
       const kbsel = document.createElement('select'); kbsel.className = 'pldsel';
@@ -1532,7 +1630,7 @@ function renderPlaylist() {
         if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
         kbsel.appendChild(opt);
       });
-      kbsel.onchange = e => { e.stopPropagation(); item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value); if (thisMI === cur) applyKBNow(); };
+      kbsel.onchange = e => { e.stopPropagation(); item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value); saveItemLS(item); schedAutoSave(); if (thisMI === cur) applyKBNow(); };
       kbsel.onclick = e => e.stopPropagation();
       kbRow.appendChild(kblbl); kbRow.appendChild(kbsel); info.appendChild(kbRow);
     }
@@ -1608,7 +1706,21 @@ g('fiplist').onchange = function() {
 function savePlaylist() {
   const data = items.map(it => {
     if (it.type === 'folder') return {type:'folder',name:it.name,open:it.open};
-    return {type:it.type,name:it.name,clr:it.clr,rotation:it.rotation,mirrorX:it.mirrorX,mirrorY:it.mirrorY,zoom:it.zoom,panX:it.panX,panY:it.panY,customDur:it.customDur,kbPreset:it.kbPreset};
+    return {
+      type: it.type,
+      name: it.name,
+      imageUpdates: {
+        clr: it.clr,
+        rotation: it.rotation,
+        mirrorX: it.mirrorX,
+        mirrorY: it.mirrorY,
+        zoom: it.zoom,
+        panX: it.panX,
+        panY: it.panY,
+        customDur: it.customDur,
+        kbPreset: it.kbPreset
+      }
+    };
   });
   const blob = new Blob([JSON.stringify({sspVersion:1,version:2,items:data},null,2)],{type:'application/json'});
   const a = document.createElement('a'); a.download = 'SlideShowPro_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
@@ -1628,11 +1740,10 @@ function loadPlaylistJSON(file) {
         } else {
           const existing = byName.get(entry.name);
           if (existing) {
-            if (entry.clr) existing.clr = {...CLR_DEF,...entry.clr};
-            ['rotation','mirrorX','mirrorY','zoom','panX','panY','customDur','kbPreset'].forEach(k => { if (entry[k] !== undefined) existing[k] = entry[k]; });
-            newItems.push(existing); byName.delete(entry.name);
+              applyImageUpdates(existing, entry);
+              newItems.push(existing); byName.delete(entry.name);
+            }
           }
-        }
       });
       byName.forEach(it => newItems.push(it));
       items = newItems; selectedItems.clear();
@@ -1747,7 +1858,7 @@ function togglePlay() {
 }
 
 /* ── Screenshot ── */
-g('bss').onclick = function() {
+g('bss').onclick = async function() {
   const mi = getMediaItems(), item = mi[cur], med = sls[cur]?.querySelector('img,video');
   if (!med || !item) return;
   const can = document.createElement('canvas'); can.width = item.w; can.height = item.h;
@@ -1770,7 +1881,15 @@ g('bss').onclick = function() {
   }
   const ts = new Date();
   const fn = `SlideShowPro_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.jpg`;
-  const a = document.createElement('a'); a.download = fn; a.href = can.toDataURL('image/jpeg',.95); a.click();
+  const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', .95));
+  if (!blob) { alert('Screenshot failed.'); return; }
+  const saved = await saveScreenshotFile(fn, blob);
+  if (saved) {
+    showToast(`<b style="color:#fff">${fn}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Saved to Screenshots folder.</span>`, 4000);
+  } else {
+    const a = document.createElement('a'); a.download = fn; a.href = URL.createObjectURL(blob); a.click();
+    showToast('Screenshot ready to download.', 3000);
+  }
 };
 
 /* ── Wire controls ── */
