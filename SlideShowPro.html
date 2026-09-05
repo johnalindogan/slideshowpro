@@ -31,7 +31,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #lbtns button svg{width:30px;height:30px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.75;}
 #lsinfo{font-size:10px;color:rgba(255,255,255,.38);max-width:148px;text-align:center;}
 #ldrophint{font-size:12px;color:rgba(255,255,255,.18);font-family:var(--font-main);letter-spacing:.02em;}
-#fi,#fiadd,#fiplist{display:none;}
+#fi,#fiadd,#fiplist,#fiupd{display:none;}
 #viewer{display:none;flex-direction:column;width:100vw;height:100vh;}
 #stage{position:relative;flex:1;overflow:hidden;background:#000;cursor:default;}
 #stage.ldrag{cursor:grabbing;}
@@ -2956,7 +2956,14 @@ window.confirmDeleteFile = async function() {
     const i = n.lastIndexOf('.');
     return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
   }
-  function bytesToU8(data) {
+  /** Decode base64 from read_media_file (or legacy number-array / Uint8Array). */
+  function mediaBytesToU8(data) {
+    if (typeof data === 'string') {
+      const bin = atob(data);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
     if (data instanceof Uint8Array) return data;
     if (data instanceof ArrayBuffer) return new Uint8Array(data);
     if (Array.isArray(data)) return Uint8Array.from(data);
@@ -2969,7 +2976,8 @@ window.confirmDeleteFile = async function() {
       const ext = extOf(p);
       const mime = IMAGE_MIME[ext];
       if (!mime) continue;
-      const raw = bytesToU8(await invoke('read_media_file', { path: p }));
+      const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
+      if (!raw.length) throw new Error('empty bytes for ' + basename(p));
       const url = URL.createObjectURL(new Blob([raw], { type: mime }));
       const name = basename(p);
       pending.push(new Promise((resolve) => {
@@ -2982,41 +2990,70 @@ window.confirmDeleteFile = async function() {
     return (await Promise.all(pending)).filter(Boolean);
   }
   async function openLaunchPaths(paths) {
-    if (!paths || !paths.length) return;
+    if (!paths || !paths.length) return false;
     const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-    if (!invoke) return;
+    if (!invoke) return false;
     try {
       const loaded = await itemsFromPaths(paths, invoke);
-      if (!loaded.length) return;
+      if (!loaded.length) return false;
       dz.style.display = 'none';
       viewer.style.display = 'flex';
       if (items.length) finishAdd(loaded);
       else build(loaded);
+      return true;
     } catch (e) {
       console.error('SSP Tauri launch ingest failed', e);
-      if (typeof showToast === 'function') showToast('Could not open launch files: ' + (e.message || e), 5000);
+      if (typeof showToast === 'function') showToast('Could not open launch files: ' + (e && e.message ? e.message : e), 5000);
+      return false;
     }
   }
-  async function ingest() {
-    if (!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)) return;
+  async function fetchLaunchPaths() {
     let paths = Array.isArray(window.__SSP_LAUNCH_PATHS__) ? window.__SSP_LAUNCH_PATHS__.slice() : [];
     try {
       const res = await window.__TAURI__.core.invoke('get_launch_paths');
       if (res && Array.isArray(res.paths) && res.paths.length) paths = res.paths;
-    } catch (_) {}
-    await openLaunchPaths(paths);
+    } catch (e) {
+      console.warn('SSP get_launch_paths failed', e);
+    }
+    return paths;
+  }
+  let ingesting = false;
+  let ingested = false;
+  async function ingest() {
+    if (ingested || ingesting) return;
+    if (!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)) return;
+    ingesting = true;
+    try {
+      const paths = await fetchLaunchPaths();
+      if (!paths.length) return;
+      const ok = await openLaunchPaths(paths);
+      if (ok) ingested = true;
+    } finally {
+      ingesting = false;
+    }
+  }
+  /** Retry get_launch_paths a few times over ~1–2s (setup/page-load race). */
+  function ingestWithRetry() {
+    const delays = [0, 100, 250, 500, 1000, 1500];
+    delays.forEach(function (ms) {
+      setTimeout(function () {
+        if (!ingested) ingest();
+      }, ms);
+    });
   }
   function start() {
     let tries = 0;
     const maxTries = 40; // ~2s if __TAURI__ injects slightly after DOM
     (function tick() {
       if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
-        ingest();
+        ingestWithRetry();
         try {
           if (window.__TAURI__.event && window.__TAURI__.event.listen) {
-            window.__TAURI__.event.listen('ssp-launch-paths', function() { ingest(); });
+            window.__TAURI__.event.listen('ssp-launch-paths', function () { ingest(); });
           }
-        } catch (_) {}
+        } catch (e) {
+          console.warn('SSP ssp-launch-paths listen failed', e);
+        }
         return;
       }
       if (++tries < maxTries) setTimeout(tick, 50);
