@@ -952,7 +952,8 @@ g('fiupd').onchange = function() {
 };
 
 /* ── State ── */
-let items = [], sls = [], tws = [], cur = 0, playing = true,
+let items = [], sls = [], slByIdx = Object.create(null), tws = [], cur = 0, playing = true,
+    stagePruneTmr = null, thumbIO = null,
     tmr = null, ptmr = null, ps = null, kbId = null,
     zoom = 1, panX = 0, panY = 0, muted = false, vol = 1,
     mirrorX = false, mirrorY = false, rotation = 0,
@@ -1516,7 +1517,7 @@ function mediaPrefix() {
 }
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const m = sls[cur]?.querySelector('img,video'); if (!m) return;
+  const m = getSl(cur)?.querySelector('img,video'); if (!m) return;
   const p = getKBPreset(cur);
   const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
   m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
@@ -1706,7 +1707,7 @@ function showMaxCompanion(curIdx) {
   if ((maxPreset === 1 || maxPreset === 3 || maxPreset === 4) && item.type !== 'video') startCompKB(curIdx);
 }
 
-window.addEventListener('resize', () => { if (sls.length) showMaxCompanion(cur); });
+window.addEventListener('resize', () => { if (getMediaItems().length) showMaxCompanion(cur); });
 
 /* ── Remove item from playlist helper ── */
 function removeItem(itemsIdx, clearLS) {
@@ -2037,7 +2038,9 @@ g('bru').onclick = function() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
-  items = []; sls = []; tws = []; selectedItems.clear(); lastClickedMI = -1;
+  clearTimeout(stagePruneTmr); stagePruneTmr = null;
+  if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
+  items = []; sls = []; slByIdx = Object.create(null); tws = []; selectedItems.clear(); lastClickedMI = -1;
   [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
   g('tstrip').innerHTML = '';
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
@@ -2139,7 +2142,21 @@ function shufflePlaylist() {
   autoSave();
 }
 
-/* ── Slide DOM ── */
+/* ── Slide DOM (virtualized: stage mounts current ±1 only) ── */
+const STAGE_KEEP_IDS = new Set(['fnov', 'watchbadge', 'maxcomp', 'maxcomp2']);
+const THUMB_PLACEHOLDER = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40"><rect width="64" height="40" fill="%23222222"/></svg>';
+const TRANS_MS = { fade: 500, slide: 600, zoom: 600, none: 0 };
+
+function getSl(i) { return slByIdx[i] || null; }
+
+function clearStageSlides() {
+  clearTimeout(stagePruneTmr); stagePruneTmr = null;
+  sls.forEach(s => { const v = s.querySelector('video'); if (v) { v.onended = null; v.pause(); } });
+  [...stage.children].forEach(c => { if (!STAGE_KEEP_IDS.has(c.id)) c.remove(); });
+  sls = [];
+  slByIdx = Object.create(null);
+}
+
 function makeImg(item) {
   const img = document.createElement('img'); img.src = item.url; img.draggable = false;
   img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;';
@@ -2152,38 +2169,121 @@ function makeVid(item) {
   return v;
 }
 
-function buildSlideDOM() {
-  [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
-  sls = []; tws = []; g('tstrip').innerHTML = '';
+function createSlideEl(item, i) {
+  const sl = document.createElement('div');
+  sl.className = 'sl';
+  sl.dataset.mi = String(i);
+  const med = item.type === 'video' ? makeVid(item) : makeImg(item);
+  sl.appendChild(med);
+  if (item.type === 'video') {
+    const b = document.createElement('div'); b.className = 'vb'; b.textContent = '▶ video'; sl.appendChild(b);
+    med.onended = () => {
+      if (playing && +sl.dataset.mi === cur) setTimeout(() => goTo(nextMI()), 300);
+    };
+  }
+  return sl;
+}
+
+function mountSlide(i) {
+  const mi = getMediaItems();
+  if (i < 0 || i >= mi.length) return null;
+  if (slByIdx[i]) return slByIdx[i];
+  const sl = createSlideEl(mi[i], i);
+  stage.appendChild(sl);
+  slByIdx[i] = sl;
+  sls.push(sl);
+  return sl;
+}
+
+function unmountSlide(i) {
+  const sl = slByIdx[i];
+  if (!sl) return;
+  const v = sl.querySelector('video');
+  if (v) { v.onended = null; v.pause(); v.removeAttribute('src'); try { v.load(); } catch (_) {} }
+  sl.remove();
+  delete slByIdx[i];
+  const idx = sls.indexOf(sl);
+  if (idx >= 0) sls.splice(idx, 1);
+}
+
+function stageWindowIndices(center) {
+  const len = getMediaItems().length;
+  if (!len) return [];
+  const c = ((center % len) + len) % len;
+  if (len === 1) return [c];
+  if (len === 2) return [0, 1];
+  return [(c - 1 + len) % len, c, (c + 1) % len];
+}
+
+/** Keep/mount at most current ±1 (plus optional extras for leave transitions). */
+function remountStageWindow(center, keepExtra) {
+  const keep = new Set(stageWindowIndices(center));
+  if (keepExtra) keepExtra.forEach(i => { if (i != null && i >= 0) keep.add(i); });
+  Object.keys(slByIdx).forEach(k => {
+    const i = +k;
+    if (!keep.has(i)) unmountSlide(i);
+  });
+  keep.forEach(i => mountSlide(i));
+}
+
+function scheduleStagePrune(center) {
+  clearTimeout(stagePruneTmr);
+  const ms = TRANS_MS[transitionType] ?? 500;
+  if (ms <= 0) { remountStageWindow(center); return; }
+  stagePruneTmr = setTimeout(() => {
+    stagePruneTmr = null;
+    remountStageWindow(center);
+  }, ms + 50);
+}
+
+function ensureThumbIO() {
+  if (thumbIO) return thumbIO;
+  thumbIO = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      const el = en.target;
+      const u = el.dataset.src;
+      if (u) { el.src = u; delete el.dataset.src; }
+      thumbIO.unobserve(el);
+    });
+  }, { root: g('tstrip'), rootMargin: '120px' });
+  return thumbIO;
+}
+
+function bindLazyThumb(img, url) {
+  img.src = THUMB_PLACEHOLDER;
+  img.dataset.src = url;
+  img.decoding = 'async';
+  ensureThumbIO().observe(img);
+}
+
+function buildTimelineThumbs() {
+  if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
+  tws = []; g('tstrip').innerHTML = '';
   getMediaItems().forEach((item, i) => {
-    const sl = document.createElement('div'); sl.className = 'sl';
-    const med = item.type === 'video' ? makeVid(item) : makeImg(item);
-    sl.appendChild(med);
-    if (item.type === 'video') {
-      const b = document.createElement('div'); b.className = 'vb'; b.textContent = '▶ video'; sl.appendChild(b);
-    }
-    stage.appendChild(sl); sls.push(sl);
-    const cap = sl;
-    if (item.type === 'video') {
-      med.onended = () => {
-        if (playing && sls.indexOf(cap) === cur) setTimeout(() => goTo(nextMI()), 300);
-      };
-    }
     const tw = document.createElement('div'); tw.className = 'tw';
     if (item.type === 'video') {
       const ti = document.createElement('img');
       ti.className = 'th';
       ti.dataset.thumbId = item.id;
       ti.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
+      ti.decoding = 'async';
       ti.onclick = () => goTo(i);
       tw.appendChild(ti);
       const vi = document.createElement('div'); vi.className = 'tvi'; vi.textContent = '▶'; tw.appendChild(vi);
       if (!item.thumbnailUrl) getVideoThumbnail(item);
     } else {
-      const ti = document.createElement('img'); ti.src = item.url; ti.className = 'th'; ti.onclick = () => goTo(i); tw.appendChild(ti);
+      const ti = document.createElement('img'); ti.className = 'th'; ti.onclick = () => goTo(i);
+      bindLazyThumb(ti, item.url);
+      tw.appendChild(ti);
     }
     g('tstrip').appendChild(tw); tws.push(tw);
   });
+}
+
+function buildSlideDOM() {
+  clearStageSlides();
+  buildTimelineThumbs();
 }
 
 function build(its) {
@@ -2500,15 +2600,20 @@ function loadPlaylistJSON(file) {
 function pauseVids() { sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); }); }
 function playCurVid() {
   if (!isV(cur)) return;
-  const v = sls[cur]?.querySelector('video');
+  const v = getSl(cur)?.querySelector('video');
   if (v && playing) { v.currentTime = 0; v.playbackRate = getSpd(); v.play().catch(() => {}); }
 }
 
 function showSlide(i) {
-  sls.forEach((s, j) => { s.classList.remove('companion'); s.className = 'sl' + (j === i ? ' on' : ''); });
+  remountStageWindow(i);
+  sls.forEach(s => {
+    const j = +s.dataset.mi;
+    s.classList.remove('companion');
+    s.className = 'sl' + (j === i ? ' on' : '');
+  });
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === i ? ' at' : ''); });
   tws[i]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
-  g('sc').textContent = (i+1) + '/' + sls.length;
+  g('sc').textContent = (i+1) + '/' + getMediaItems().length;
   g('fnov').textContent = getMediaItems()[i]?.name || '';
   applySlideSettings(i);
   pauseVids();
@@ -2519,7 +2624,7 @@ function showSlide(i) {
 
 function startKB(i) {
   if (isV(i)) return;
-  const img = sls[i]?.querySelector('img'); if (!img) return;
+  const img = getSl(i)?.querySelector('img'); if (!img) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const p = getKBPreset(i);
   // KBRight (preset 3): companion does KB, main slide is static
@@ -2551,7 +2656,7 @@ function startProg() {
 }
 function startVProg(i) {
   clearInterval(ptmr); g('pb').style.width = '0%';
-  const v = sls[i]?.querySelector('video');
+  const v = getSl(i)?.querySelector('video');
   ptmr = setInterval(() => {
     if (!v || !v.duration || !isFinite(v.duration)) return;
     g('pb').style.width = Math.min((v.currentTime/v.duration)*100,100).toFixed(1) + '%';
@@ -2587,18 +2692,25 @@ function goTo(i) {
   const len = getMediaItems().length;
   if (!len) return;
 
-  // Clear any existing animation classes on all slides
+  const prevCur = cur;
+  const next = ((i % len) + len) % len;
+
+  // Remount ±1 around destination. Adjacent advance keeps outgoing in-window
+  // (as prev); far jumps skip leave node so stage stays ≤3.
+  remountStageWindow(next);
+
+  // Clear any existing animation classes on mounted slides
   sls.forEach(s => s.classList.remove('fe', 'fl', 'sldFwdEnt', 'sldFwdLve', 'sldBwdEnt', 'sldBwdLve', 'ze', 'zl'));
 
   let outgoingClass = 'fl';
   let incomingClass = 'fe';
 
-  if (i !== cur) {
+  if (next !== prevCur) {
     let isForward = true;
-    if (i < cur) {
-      isForward = (cur === len - 1 && i === 0);
+    if (next < prevCur) {
+      isForward = (prevCur === len - 1 && next === 0);
     } else {
-      isForward = !(cur === 0 && i === len - 1);
+      isForward = !(prevCur === 0 && next === len - 1);
     }
 
     if (transitionType === 'slide') {
@@ -2618,27 +2730,34 @@ function goTo(i) {
 
   sls.forEach(s => s.classList.remove('companion'));
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
-  
-  if (outgoingClass) {
-    sls[cur].classList.remove('on');
-    sls[cur].classList.add(outgoingClass);
-  } else {
-    sls[cur].classList.remove('on');
+
+  const outSl = getSl(prevCur);
+  const inSl = getSl(next);
+  if (!inSl) return;
+
+  if (outSl && outSl !== inSl) {
+    if (outgoingClass) {
+      outSl.classList.remove('on');
+      outSl.classList.add(outgoingClass);
+    } else {
+      outSl.classList.remove('on');
+    }
   }
 
-  cur = (i + len) % len;
+  cur = next;
   applySlideSettings(cur);
-  sls[cur].className = 'sl on' + (incomingClass ? ' ' + incomingClass : '');
+  inSl.className = 'sl on' + (incomingClass ? ' ' + incomingClass : '');
 
   tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === cur ? ' at' : ''); });
   tws[cur]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
-  g('sc').textContent = (cur+1) + '/' + sls.length;
+  g('sc').textContent = (cur+1) + '/' + len;
   g('fnov').textContent = getMediaItems()[cur]?.name || '';
   pauseVids();
   showMaxCompanion(cur);
   if (isV(cur)) { staticT(); playCurVid(); startVProg(cur); }
   else { startKB(cur); startProg(); if (playing) schedNext(); }
   updPlCur();
+  scheduleStagePrune(cur);
 }
 
 function updPlayBtn() {
@@ -2649,7 +2768,7 @@ function updPlayBtn() {
 function togglePlay() {
   playing = !playing; updPlayBtn();
   if (isV(cur)) {
-    const v = sls[cur]?.querySelector('video');
+    const v = getSl(cur)?.querySelector('video');
     if (playing) { v?.play().catch(() => {}); startVProg(cur); } else { v?.pause(); clearInterval(ptmr); }
   } else {
     if (playing) { schedNext(); startProg(); } else { clearTimeout(tmr); clearInterval(ptmr); }
@@ -2658,7 +2777,7 @@ function togglePlay() {
 
 /* ── Screenshot ── */
 g('bss').onclick = async function() {
-  const mi = getMediaItems(), item = mi[cur], med = sls[cur]?.querySelector('img,video');
+  const mi = getMediaItems(), item = mi[cur], med = getSl(cur)?.querySelector('img,video');
   if (!med || !item) return;
   if (med.tagName === 'VIDEO') await waitForVideoFrame(med);
   const can = document.createElement('canvas'); can.width = item.w; can.height = item.h;
@@ -2724,7 +2843,7 @@ document.addEventListener('fullscreenchange', () => {
 /* ── Keyboard handler ── */
 document.addEventListener('keydown', e => {
   /* F5 = watch mode */
-  if (e.key === 'F5') { e.preventDefault(); if (sls.length) toggleWatchMode(); return; }
+  if (e.key === 'F5') { e.preventDefault(); if (getMediaItems().length) toggleWatchMode(); return; }
 
   /* Key remapper */
   if (listeningEl && listeningId) {
@@ -2740,7 +2859,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  if (!sls.length) return;
+  if (!getMediaItems().length) return;
   const t = e.target.tagName;
   if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
 
