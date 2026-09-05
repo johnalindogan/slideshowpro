@@ -3006,13 +3006,24 @@ window.confirmDeleteFile = async function() {
     } catch (_) {}
     await openLaunchPaths(paths);
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function() { setTimeout(ingest, 0); });
-  else setTimeout(ingest, 0);
-  try {
-    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
-      window.__TAURI__.event.listen('ssp-launch-paths', function() { ingest(); });
-    }
-  } catch (_) {}
+  function start() {
+    let tries = 0;
+    const maxTries = 40; // ~2s if __TAURI__ injects slightly after DOM
+    (function tick() {
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        ingest();
+        try {
+          if (window.__TAURI__.event && window.__TAURI__.event.listen) {
+            window.__TAURI__.event.listen('ssp-launch-paths', function() { ingest(); });
+          }
+        } catch (_) {}
+        return;
+      }
+      if (++tries < maxTries) setTimeout(tick, 50);
+    })();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
 })();
 
 </script>

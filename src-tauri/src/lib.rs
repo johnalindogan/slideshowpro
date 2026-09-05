@@ -3,6 +3,8 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use tauri::Emitter;
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
@@ -47,7 +49,7 @@ fn parse_launch_args() -> Vec<PathBuf> {
 fn store_launch_paths(app: &AppHandle, files: Vec<PathBuf>) {
     let paths: Vec<String> = files
         .into_iter()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().into_owned())
         .collect();
 
     if let Some(state) = app.try_state::<LaunchState>() {

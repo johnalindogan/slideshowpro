@@ -24,7 +24,7 @@ npm run dev      # sync HTML into ui/ + tauri dev
 npm run build    # sync HTML + NSIS installer under src-tauri/target/release/bundle/
 ```
 
-`npm run sync-ui` copies `SlideShowPro.html` – `ui/index.html` (Tauri `frontendDist`).
+`npm run sync-ui` copies `SlideShowPro.html` to `ui/index.html` (Tauri `frontendDist`).
 
 ### File associations
 

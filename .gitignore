@@ -3,5 +3,6 @@ node_modules/
 dist/
 ui/index.html
 src-tauri/target/
+src-tauri/gen/
 *.log
 .DS_Store
