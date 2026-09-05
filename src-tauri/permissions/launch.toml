@@ -5,5 +5,5 @@ commands.allow = ["get_launch_paths"]
 
 [[permission]]
 identifier = "allow-read-media-file"
-description = "Allow reading bytes for allowed launch-path images"
+description = "Allow reading base64 image bytes for allowed launch-path images"
 commands.allow = ["read_media_file"]
