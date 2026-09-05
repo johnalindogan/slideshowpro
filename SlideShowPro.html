@@ -1319,10 +1319,9 @@ function keyLabel(k) {
   return {ArrowRight:'→',ArrowLeft:'←',ArrowUp:'↑',ArrowDown:'↓'}[k] || k;
 }
 function keysEqual(bound, pressed) {
+  /* Exact match only — letter bindings like r vs R must stay distinct (Rotate CW/CCW). */
   if (bound == null || pressed == null) return false;
-  if (bound === pressed) return true;
-  if (bound.length === 1 && pressed.length === 1 && bound.toLowerCase() === pressed.toLowerCase()) return true;
-  return false;
+  return bound === pressed;
 }
 let listeningEl = null, listeningId = null;
 
