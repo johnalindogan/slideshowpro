@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SlideShowPro",
+  "version": "0.1.0",
+  "identifier": "com.johnalindogan.slideshowpro",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "SlideShowPro",
+        "width": 1280,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "fileAssociations": [
+      {
+        "ext": ["jpg", "jpeg"],
+        "mimeType": "image/jpeg",
+        "description": "JPEG Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["png"],
+        "mimeType": "image/png",
+        "description": "PNG Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["gif"],
+        "mimeType": "image/gif",
+        "description": "GIF Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["webp"],
+        "mimeType": "image/webp",
+        "description": "WebP Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["bmp"],
+        "mimeType": "image/bmp",
+        "description": "Bitmap Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["tif", "tiff"],
+        "mimeType": "image/tiff",
+        "description": "TIFF Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": ["ico"],
+        "mimeType": "image/x-icon",
+        "description": "Icon Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ]
+  }
+}

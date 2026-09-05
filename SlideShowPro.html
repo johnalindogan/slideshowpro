@@ -2938,6 +2938,83 @@ window.confirmDeleteFile = async function() {
     showToast(`<b style="color:#fff">${item.name}</b> deleted from disk.`, 3000);
   } catch(e) { showToast(`Could not delete: ${e.message}`, 4000); }
 };
+
+/* ── SSP Tauri bridge (launch-path ingest only) ── */
+(function sspTauriBridge() {
+  const IMAGE_MIME = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
+    ico: 'image/x-icon'
+  };
+  function basename(p) {
+    const s = String(p).replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  function extOf(p) {
+    const n = basename(p);
+    const i = n.lastIndexOf('.');
+    return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
+  }
+  function bytesToU8(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (Array.isArray(data)) return Uint8Array.from(data);
+    if (data && data.type === 'Buffer' && Array.isArray(data.data)) return Uint8Array.from(data.data);
+    return new Uint8Array(0);
+  }
+  async function itemsFromPaths(paths, invoke) {
+    const pending = [];
+    for (const p of paths) {
+      const ext = extOf(p);
+      const mime = IMAGE_MIME[ext];
+      if (!mime) continue;
+      const raw = bytesToU8(await invoke('read_media_file', { path: p }));
+      const url = URL.createObjectURL(new Blob([raw], { type: mime }));
+      const name = basename(p);
+      pending.push(new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name });
+        img.onerror = () => resolve({ url, type: 'image', w: 1920, h: 1080, name });
+        img.src = url;
+      }));
+    }
+    return (await Promise.all(pending)).filter(Boolean);
+  }
+  async function openLaunchPaths(paths) {
+    if (!paths || !paths.length) return;
+    const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+    if (!invoke) return;
+    try {
+      const loaded = await itemsFromPaths(paths, invoke);
+      if (!loaded.length) return;
+      dz.style.display = 'none';
+      viewer.style.display = 'flex';
+      if (items.length) finishAdd(loaded);
+      else build(loaded);
+    } catch (e) {
+      console.error('SSP Tauri launch ingest failed', e);
+      if (typeof showToast === 'function') showToast('Could not open launch files: ' + (e.message || e), 5000);
+    }
+  }
+  async function ingest() {
+    if (!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)) return;
+    let paths = Array.isArray(window.__SSP_LAUNCH_PATHS__) ? window.__SSP_LAUNCH_PATHS__.slice() : [];
+    try {
+      const res = await window.__TAURI__.core.invoke('get_launch_paths');
+      if (res && Array.isArray(res.paths) && res.paths.length) paths = res.paths;
+    } catch (_) {}
+    await openLaunchPaths(paths);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function() { setTimeout(ingest, 0); });
+  else setTimeout(ingest, 0);
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
+      window.__TAURI__.event.listen('ssp-launch-paths', function() { ingest(); });
+    }
+  } catch (_) {}
+})();
+
 </script>
 <div id="toast"></div>
 </body>

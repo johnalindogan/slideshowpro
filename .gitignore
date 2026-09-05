@@ -1,1 +1,7 @@
 .claude/
+node_modules/
+dist/
+ui/index.html
+src-tauri/target/
+*.log
+.DS_Store
