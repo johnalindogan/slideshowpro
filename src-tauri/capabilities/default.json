@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for SlideShowPro desktop wrapper",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:path:default",
+    "core:app:default",
+    "allow-get-launch-paths",
+    "allow-read-media-file"
+  ]
+}

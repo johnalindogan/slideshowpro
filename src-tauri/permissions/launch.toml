@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-get-launch-paths"
+description = "Allow frontend to read CLI/file-association launch paths"
+commands.allow = ["get_launch_paths"]
+
+[[permission]]
+identifier = "allow-read-media-file"
+description = "Allow reading bytes for allowed launch-path images"
+commands.allow = ["read_media_file"]
