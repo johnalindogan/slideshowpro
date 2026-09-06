@@ -34,6 +34,13 @@ After installing the sideload NSIS package, these extensions open with SlideShow
 
 Double-click or "Open with" passes paths on the CLI; Rust collects them and the HTML bridge loads them via a small invoke (`get_launch_paths` + `read_media_file`) into the existing `build()` path.
 
+### Open Folder / native dialogs
+
+Landing primary actions: **Open Files · Open Folder · Continue · Open Playlist** (Image Updates is under advanced).
+
+In the Tauri shell, Open Files / Open Folder / Playlist use `@tauri-apps/plugin-dialog` (no visible `<input type=file>` chrome). Open Folder walks the chosen directory **recursively** with a sane image/video extension filter (cap 10 000). Browser builds use `showDirectoryPicker` when available.
+
+
 ### Out of scope
 
 - Paid Apple signing / notarization / store listing

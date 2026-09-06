@@ -9,7 +9,11 @@
     "core:window:default",
     "core:path:default",
     "core:app:default",
+    "dialog:default",
     "allow-get-launch-paths",
-    "allow-read-media-file"
+    "allow-read-media-file",
+    "allow-register-allowed-paths",
+    "allow-list-folder-media",
+    "allow-read-text-file"
   ]
 }

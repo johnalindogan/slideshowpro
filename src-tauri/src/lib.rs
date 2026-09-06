@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -9,10 +10,24 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
 ];
+const VIDEO_EXTS: &[&str] = &["mp4", "mov", "webm", "m4v"];
+
+/// Full recursive folder walk with sane media-extension filter.
+/// Cap guards against pathological trees (network mounts, etc.).
+const FOLDER_MAX_FILES: usize = 10_000;
 
 #[derive(Default)]
 struct LaunchState {
+    /// Exact paths from Open-with / CLI (also mirrored into AllowedMedia).
     paths: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct AllowedMedia {
+    /// Canonical absolute file paths the frontend may read.
+    files: Mutex<HashSet<PathBuf>>,
+    /// Canonical directory roots; any media under these may be read.
+    roots: Mutex<Vec<PathBuf>>,
 }
 
 #[derive(Serialize)]
@@ -20,10 +35,30 @@ struct LaunchPathsPayload {
     paths: Vec<String>,
 }
 
-fn is_image_path(path: &Path) -> bool {
+#[derive(Serialize)]
+struct FolderMediaPayload {
+    paths: Vec<String>,
+    truncated: bool,
+    root: String,
+}
+
+fn ext_lower(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+        .map(|e| e.to_ascii_lowercase())
+}
+
+fn is_image_path(path: &Path) -> bool {
+    ext_lower(path)
+        .map(|e| IMAGE_EXTS.iter().any(|x| x == &e))
+        .unwrap_or(false)
+}
+
+fn is_media_path(path: &Path) -> bool {
+    ext_lower(path)
+        .map(|e| {
+            IMAGE_EXTS.iter().any(|x| x == &e) || VIDEO_EXTS.iter().any(|x| x == &e)
+        })
         .unwrap_or(false)
 }
 
@@ -65,6 +100,47 @@ fn parse_launch_args() -> Vec<PathBuf> {
     files.into_iter().filter(|p| is_image_path(p)).collect()
 }
 
+fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize()
+        .map_err(|e| format!("canonicalize failed for {}: {e}", path.display()))
+}
+
+fn path_under_root(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+fn is_path_allowed(canonical: &Path, allowed: &AllowedMedia) -> bool {
+    if let Ok(files) = allowed.files.lock() {
+        if files.contains(canonical) {
+            return true;
+        }
+    }
+    if let Ok(roots) = allowed.roots.lock() {
+        if roots.iter().any(|r| path_under_root(canonical, r)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn allow_exact_paths(allowed: &AllowedMedia, paths: &[PathBuf]) {
+    if let Ok(mut files) = allowed.files.lock() {
+        for p in paths {
+            let c = p.canonicalize().unwrap_or_else(|_| p.clone());
+            files.insert(c);
+        }
+    }
+}
+
+fn allow_root(allowed: &AllowedMedia, root: PathBuf) {
+    if let Ok(mut roots) = allowed.roots.lock() {
+        let c = root.canonicalize().unwrap_or(root);
+        if !roots.iter().any(|r| r == &c) {
+            roots.push(c);
+        }
+    }
+}
+
 fn inject_launch_paths_to_webview(app: &AppHandle) {
     let paths = app
         .try_state::<LaunchState>()
@@ -82,14 +158,17 @@ fn inject_launch_paths_to_webview(app: &AppHandle) {
 
 fn store_launch_paths(app: &AppHandle, files: Vec<PathBuf>) {
     let paths: Vec<String> = files
-        .into_iter()
-        .map(|p| p.canonicalize().unwrap_or(p).to_string_lossy().into_owned())
+        .iter()
+        .map(|p| p.canonicalize().unwrap_or_else(|_| p.clone()).to_string_lossy().into_owned())
         .collect();
 
     if let Some(state) = app.try_state::<LaunchState>() {
         if let Ok(mut guard) = state.paths.lock() {
             *guard = paths.clone();
         }
+    }
+    if let Some(allowed) = app.try_state::<AllowedMedia>() {
+        allow_exact_paths(&allowed, &files);
     }
 
     let json = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string());
@@ -107,35 +186,125 @@ fn get_launch_paths(state: State<'_, LaunchState>) -> LaunchPathsPayload {
 }
 
 #[tauri::command]
-fn read_media_file(path: String, state: State<'_, LaunchState>) -> Result<String, String> {
-    let allowed = state
-        .paths
-        .lock()
-        .map_err(|_| "launch state lock poisoned".to_string())?;
-    let canonical = PathBuf::from(&path)
-        .canonicalize()
-        .map_err(|e| format!("canonicalize failed: {e}"))?;
-    let ok = allowed.iter().any(|p| {
-        PathBuf::from(p)
-            .canonicalize()
-            .map(|c| c == canonical)
-            .unwrap_or(false)
-    });
-    if !ok {
-        return Err("path not in launch set".into());
+fn register_allowed_paths(
+    paths: Vec<String>,
+    allowed: State<'_, AllowedMedia>,
+) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut bufs = Vec::new();
+    for p in paths {
+        let pb = PathBuf::from(&p);
+        let c = canonicalize_path(&pb).unwrap_or(pb);
+        out.push(c.to_string_lossy().into_owned());
+        bufs.push(c);
     }
-    if !is_image_path(&canonical) {
+    allow_exact_paths(&allowed, &bufs);
+    Ok(out)
+}
+
+/// Recursively list image/video files under a user-picked folder (sane ext filter).
+/// Registers the folder as an allowed root so `read_media_file` may load them.
+#[tauri::command]
+fn list_folder_media(
+    path: String,
+    allowed: State<'_, AllowedMedia>,
+) -> Result<FolderMediaPayload, String> {
+    let root = canonicalize_path(Path::new(&path))?;
+    if !root.is_dir() {
+        return Err("not a directory".into());
+    }
+    allow_root(&allowed, root.clone());
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut truncated = false;
+    let mut stack = vec![root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let p = entry.path();
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if !ft.is_file() || !is_media_path(&p) {
+                continue;
+            }
+            if found.len() >= FOLDER_MAX_FILES {
+                truncated = true;
+                break;
+            }
+            found.push(p);
+        }
+        if truncated {
+            break;
+        }
+    }
+
+    found.sort();
+    let paths: Vec<String> = found
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    Ok(FolderMediaPayload {
+        paths,
+        truncated,
+        root: root.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn read_media_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<String, String> {
+    let canonical = canonicalize_path(Path::new(&path))?;
+    if !is_path_allowed(&canonical, &allowed) {
+        return Err("path not in allowed set".into());
+    }
+    if !is_media_path(&canonical) {
         return Err("unsupported extension".into());
     }
     let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
     Ok(B64.encode(bytes))
 }
 
+#[tauri::command]
+fn read_text_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<String, String> {
+    let canonical = canonicalize_path(Path::new(&path))?;
+    if !is_path_allowed(&canonical, &allowed) {
+        return Err("path not in allowed set".into());
+    }
+    let meta = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+    if meta.len() > 8 * 1024 * 1024 {
+        return Err("text file too large".into());
+    }
+    std::fs::read_to_string(&canonical).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(LaunchState::default())
-        .invoke_handler(tauri::generate_handler![get_launch_paths, read_media_file])
+        .manage(AllowedMedia::default())
+        .invoke_handler(tauri::generate_handler![
+            get_launch_paths,
+            read_media_file,
+            register_allowed_paths,
+            list_folder_media,
+            read_text_file
+        ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
             {
