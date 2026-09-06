@@ -697,8 +697,8 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
     <p id="ldrophint">or drop files here</p>
   </div>
 </div>
-<input type="file" id="fi" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
-<input type="file" id="fiadd" multiple accept="image/*,video/mp4,video/quicktime,.mov,.mp4">
+<input type="file" id="fi" multiple accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.ico">
+<input type="file" id="fiadd" multiple accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.ico">
 <input type="file" id="fiplist" accept=".json">
 <input type="file" id="fiupd" accept=".json">
 
@@ -960,8 +960,63 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 <script>
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
-const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: { 'image/*': [], 'video/mp4': ['.mp4'], 'video/quicktime': ['.mov'], 'video/webm': ['.webm'] } }] };
-const MEDIA_EXTS = ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','ico','mp4','mov','webm','m4v'];
+const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: {
+  'image/*': ['.jpg','.jpeg','.png','.gif','.webp','.bmp','.tif','.tiff','.ico'],
+  'video/*': ['.mp4','.mov','.webm','.m4v'],
+  'video/mp4': ['.mp4','.m4v'],
+  'video/quicktime': ['.mov'],
+  'video/webm': ['.webm']
+} }] };
+const IMAGE_EXTS = ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','ico'];
+const VIDEO_EXTS = ['mp4','mov','webm','m4v'];
+const MEDIA_EXTS = IMAGE_EXTS.concat(VIDEO_EXTS);
+const MEDIA_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
+  ico: 'image/x-icon',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/mp4'
+};
+function fileExtName(name) {
+  const n = String(name || '');
+  const i = n.lastIndexOf('.');
+  return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
+}
+/** Classify media by MIME first, then extension fallback (Windows/WebView2 often blank MIME). */
+function mediaKindFromName(name) {
+  const ext = fileExtName(name);
+  if (VIDEO_EXTS.includes(ext)) return 'video';
+  if (IMAGE_EXTS.includes(ext)) return 'image';
+  return null;
+}
+function mediaKindFromFile(f) {
+  if (!f) return null;
+  const t = (f.type || '').toLowerCase();
+  if (t.startsWith('video/')) return 'video';
+  if (t.startsWith('image/')) return 'image';
+  return mediaKindFromName(f.name);
+}
+function isAcceptedMediaFile(f) { return mediaKindFromFile(f) != null; }
+async function filesFromDataTransfer(dt) {
+  if (!dt) return [];
+  if (dt.files && dt.files.length) return Array.from(dt.files);
+  const out = [];
+  if (dt.items && dt.items.length) {
+    for (const item of Array.from(dt.items)) {
+      if (item.kind !== 'file') continue;
+      try {
+        if (typeof item.getAsFileSystemHandle === 'function') {
+          const h = await item.getAsFileSystemHandle();
+          if (h && h.kind === 'file') { out.push(await h.getFile()); continue; }
+        }
+      } catch (_) {}
+      try {
+        const f = item.getAsFile && item.getAsFile();
+        if (f) out.push(f);
+      } catch (_) {}
+    }
+  }
+  return out;
+}
 const FOLDER_BROWSER_CAP = 10000;
 const FOLDER_INGEST_BATCH = 8;
 const STRIP_THUMB_W = 64;
@@ -1743,7 +1798,7 @@ function applySlideSettings(i) {
 }
 
 /* ── Volume ── */
-function applyVol() { const v = muted ? 0 : vol; sls.forEach(s => { const vid = s.querySelector('video'); if (vid) vid.volume = v; }); }
+function applyVol() { const v = muted ? 0 : vol; sls.forEach(s => { const vid = s.querySelector('video'); if (vid) { vid.volume = v; if (muted) vid.muted = true; else if (!vid.paused) vid.muted = false; } }); }
 function updMute() {
   g('ivol').innerHTML = muted
     ? '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'
@@ -2357,7 +2412,7 @@ async function restoreFromSnapshot(snap) {
     (async () => {
       const f = await handle.getFile();
       const url = URL.createObjectURL(f);
-      const type = f.type.startsWith('video/') ? 'video' : 'image';
+      const type = mediaKindFromFile(f) || mediaKindFromName(entry.name) || entry.type || 'image';
       const origIdx = entries.indexOf(entry);
       const finish = (w, h) => {
         finalItems[origIdx] = {...entry, url, type, w, h, fileHandle: handle};
@@ -2381,12 +2436,28 @@ async function restoreFromSnapshot(snap) {
 /* ── File loading ── */
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); load(e.dataTransfer.files); });
+dz.addEventListener('drop', async e => {
+  e.preventDefault(); dz.classList.remove('over');
+  // Tauri native DnD (dragDropEnabled) usually empties dataTransfer.files — path ingest handles that.
+  if (sspIsTauri() && !(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length)) return;
+  const files = await filesFromDataTransfer(e.dataTransfer);
+  if (!files.length) {
+    if (!sspIsTauri()) showToast('Drop had no readable files — try Open Files.', 4000);
+    return;
+  }
+  load(files);
+});
 stage.addEventListener('dragover', e => { if (viewer.style.display === 'flex') { e.preventDefault(); } });
-stage.addEventListener('drop', e => {
+stage.addEventListener('drop', async e => {
   if (viewer.style.display !== 'flex') return;
   e.preventDefault();
-  addMoreFiles(e.dataTransfer.files);
+  if (sspIsTauri() && !(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length)) return;
+  const files = await filesFromDataTransfer(e.dataTransfer);
+  if (!files.length) {
+    if (!sspIsTauri()) showToast('Drop had no readable files — try Add Files.', 4000);
+    return;
+  }
+  addMoreFiles(files);
 });
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
 g('fiadd').onchange = function() { if (this.files.length) addMoreFiles(this.files); this.value = ''; };
@@ -2416,19 +2487,28 @@ g('bru').onclick = function() {
 
 function load(files) {
   folderIngestGen++;
-  const acc = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
-  if (!acc.length) return;
+  const list = Array.from(files || []);
+  const acc = list.filter(isAcceptedMediaFile);
+  if (!acc.length) {
+    showToast(list.length ? 'No supported images/videos in drop (check extension).' : 'No files to open.', 4000);
+    return;
+  }
+  const skipped = list.length - acc.length;
+  if (skipped > 0) showToast('Skipped ' + skipped + ' unsupported file' + (skipped>1?'s':'') + '.', 3000);
   const tmp = []; let done = 0;
   acc.forEach((f, i) => {
-    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    const url = URL.createObjectURL(f), type = mediaKindFromFile(f);
     if (type === 'image') {
       const p = new Image();
       p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
+      p.onerror = () => { showToast('Could not read image: ' + (f.name||''), 4000); if (++done===acc.length) build(tmp.filter(Boolean)); };
       p.src = url;
     } else {
       const p = document.createElement('video'); p.preload = 'metadata';
       const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+      p.onloadedmetadata = fin;
+      p.onerror = () => { showToast('Could not read video: ' + (f.name||''), 4000); fin(); };
+      p.src = url;
     }
   });
   dz.style.display = 'none'; viewer.style.display = 'flex';
@@ -2436,19 +2516,28 @@ function load(files) {
 
 function addMoreFiles(files) {
   folderIngestGen++;
-  const acc = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
-  if (!acc.length) return;
+  const list = Array.from(files || []);
+  const acc = list.filter(isAcceptedMediaFile);
+  if (!acc.length) {
+    showToast(list.length ? 'No supported images/videos in drop (check extension).' : 'No files to add.', 4000);
+    return;
+  }
+  const skipped = list.length - acc.length;
+  if (skipped > 0) showToast('Skipped ' + skipped + ' unsupported file' + (skipped>1?'s':'') + '.', 3000);
   const tmp = []; let done = 0;
   acc.forEach((f, i) => {
-    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    const url = URL.createObjectURL(f), type = mediaKindFromFile(f);
     if (type === 'image') {
       const p = new Image();
       p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
+      p.onerror = () => { showToast('Could not read image: ' + (f.name||''), 4000); if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
       p.src = url;
     } else {
       const p = document.createElement('video'); p.preload = 'metadata';
       const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+      p.onloadedmetadata = fin;
+      p.onerror = () => { showToast('Could not read video: ' + (f.name||''), 4000); fin(); };
+      p.src = url;
     }
   });
 }
@@ -2456,11 +2545,11 @@ function addMoreFiles(files) {
 async function processHandles(handles) {
   folderIngestGen++;
   const acc = [];
-  for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
-  if (!acc.length) return;
+  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
+  if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
   const tmp = []; let done = 0;
   acc.forEach(({h, f}, i) => {
-    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    const url = URL.createObjectURL(f), type = mediaKindFromFile(f) || 'image';
     if (type === 'image') {
       const p = new Image();
       p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) build(tmp.filter(Boolean)); };
@@ -2476,11 +2565,11 @@ async function processHandles(handles) {
 async function addHandles(handles) {
   folderIngestGen++;
   const acc = [];
-  for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
-  if (!acc.length) return;
+  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
+  if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
   const tmp = []; let done = 0;
   acc.forEach(({h, f}, i) => {
-    const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+    const url = URL.createObjectURL(f), type = mediaKindFromFile(f) || 'image';
     if (type === 'image') {
       const p = new Image();
       p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
@@ -2500,7 +2589,7 @@ async function collectBrowserFolderMedia(dirHandle, acc, truncatedRef) {
     if (entry.kind === 'file') {
       try {
         const f = await entry.getFile();
-        if (f.type.startsWith('image/') || f.type.startsWith('video/')) {
+        if (isAcceptedMediaFile(f)) {
           if (acc.length >= FOLDER_BROWSER_CAP) { truncatedRef.truncated = true; break; }
           acc.push({ h: entry, f });
         }
@@ -2516,7 +2605,7 @@ function handlesToItems(accPairs) {
     if (!accPairs.length) { resolve([]); return; }
     const tmp = []; let done = 0;
     accPairs.forEach(({h, f}, i) => {
-      const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+      const url = URL.createObjectURL(f), type = mediaKindFromFile(f) || 'image';
       if (type === 'image') {
         const p = new Image();
         p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===accPairs.length) resolve(tmp.filter(Boolean)); };
@@ -2575,21 +2664,13 @@ async function openBrowserFolder(dirHandle, opts) {
 /** Shared Tauri path → item loader (images + videos). Used by Open Files / Folder. */
 async function itemsFromMediaPaths(paths) {
   const invoke = tauriInvoke;
-  const MEDIA_MIME = {
-    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
-    webp: 'image/webp', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
-    ico: 'image/x-icon',
-    mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/mp4'
-  };
   function basename(p) {
     const s = String(p).replace(/\\/g, '/');
     const i = s.lastIndexOf('/');
     return i >= 0 ? s.slice(i + 1) : s;
   }
   function extOf(p) {
-    const n = basename(p);
-    const i = n.lastIndexOf('.');
-    return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
+    return fileExtName(basename(p));
   }
   function mediaBytesToU8(data) {
     if (typeof data === 'string') {
@@ -2604,25 +2685,38 @@ async function itemsFromMediaPaths(paths) {
     if (data && data.type === 'Buffer' && Array.isArray(data.data)) return Uint8Array.from(data.data);
     return new Uint8Array(0);
   }
+  function pathToUrl(p, mime) {
+    try {
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.convertFileSrc === 'function') {
+        return window.__TAURI__.core.convertFileSrc(p);
+      }
+    } catch (_) {}
+    return null;
+  }
   const pending = [];
   for (const p of paths) {
     const ext = extOf(p);
     const mime = MEDIA_MIME[ext];
     if (!mime) continue;
-    const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
-    if (!raw.length) throw new Error('empty bytes for ' + basename(p));
-    const url = URL.createObjectURL(new Blob([raw], { type: mime }));
     const name = basename(p);
-    const isVid = mime.startsWith('video/');
+    const kind = mediaKindFromName(name) || (mime.startsWith('video/') ? 'video' : 'image');
+    let url = pathToUrl(p, mime);
+    if (!url) {
+      const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
+      if (!raw.length) throw new Error('empty bytes for ' + name);
+      url = URL.createObjectURL(new Blob([raw], { type: mime }));
+    }
     pending.push(new Promise((resolve) => {
-      if (isVid) {
+      if (kind === 'video') {
         const v = document.createElement('video'); v.preload = 'metadata';
-        const fin = () => resolve({ url, type: 'video', w: v.videoWidth || 1920, h: v.videoHeight || 1080, name });
-        v.onloadedmetadata = fin; v.onerror = fin; v.src = url;
+        const fin = () => resolve({ url, type: 'video', w: v.videoWidth || 1920, h: v.videoHeight || 1080, name, path: p });
+        v.onloadedmetadata = fin;
+        v.onerror = () => { showToast('Could not read video: ' + name, 4000); fin(); };
+        v.src = url;
       } else {
         const img = new Image();
-        img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name });
-        img.onerror = () => resolve({ url, type: 'image', w: 1920, h: 1080, name });
+        img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name, path: p });
+        img.onerror = () => { showToast('Could not read image: ' + name, 4000); resolve({ url, type: 'image', w: 1920, h: 1080, name, path: p }); };
         img.src = url;
       }
     }));
@@ -2716,9 +2810,21 @@ function makeImg(item) {
   return img;
 }
 function makeVid(item) {
-  const v = document.createElement('video'); v.src = item.url; v.playsInline = true; v.draggable = false;
-  v.volume = muted ? 0 : vol; v.playbackRate = getSpd();
+  const v = document.createElement('video');
+  v.src = item.url;
+  v.playsInline = true;
+  v.draggable = false;
+  v.preload = 'auto';
+  // Start muted so WebView2/Chromium autoplay policy allows play-when-Play-is-on.
+  v.muted = true;
+  v.volume = muted ? 0 : vol;
+  v.playbackRate = getSpd();
   v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;';
+  v.addEventListener('error', () => {
+    const code = v.error ? v.error.code : 0;
+    const map = { 1: 'aborted', 2: 'network/read', 3: 'decode/codec', 4: 'format unsupported' };
+    showToast('Video failed (' + (map[code] || 'unknown') + '): ' + (item.name || ''), 5000);
+  });
   return v;
 }
 
@@ -3408,10 +3514,23 @@ function loadPlaylistJSON(file) {
 
 /* ── Playback ── */
 function pauseVids() { sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); }); }
-function playCurVid() {
+async function playCurVid() {
   if (!isV(cur)) return;
   const v = getSl(cur)?.querySelector('video');
-  if (v && playing) { v.currentTime = 0; v.playbackRate = getSpd(); v.play().catch(() => {}); }
+  if (!v || !playing) return;
+  try { v.currentTime = 0; } catch (_) {}
+  v.playbackRate = getSpd();
+  const wantSound = !muted && vol > 0;
+  // Mute-first autoplay (Tauri WebView2); restore audio after play() succeeds.
+  v.muted = true;
+  v.volume = wantSound ? vol : 0;
+  try {
+    await v.play();
+    if (wantSound) { v.muted = false; v.volume = vol; }
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    showToast('Video play failed: ' + msg, 5000);
+  }
 }
 
 function showSlide(i) {
@@ -3579,7 +3698,25 @@ function togglePlay() {
   playing = !playing; updPlayBtn();
   if (isV(cur)) {
     const v = getSl(cur)?.querySelector('video');
-    if (playing) { v?.play().catch(() => {}); startVProg(cur); } else { v?.pause(); clearInterval(ptmr); }
+    if (playing) {
+      if (v) {
+        v.playbackRate = getSpd();
+        v.muted = !!muted;
+        v.volume = muted ? 0 : vol;
+        v.play().then(() => {
+          if (!muted && vol > 0) { v.muted = false; v.volume = vol; }
+        }).catch((err) => {
+          v.muted = true;
+          v.play().then(() => {
+            if (!muted && vol > 0) { v.muted = false; v.volume = vol; }
+          }).catch((err2) => {
+            const msg = (err2 && err2.message) ? err2.message : ((err && err.message) ? err.message : String(err2 || err));
+            showToast('Video play failed: ' + msg, 5000);
+          });
+        });
+      }
+      startVProg(cur);
+    } else { v?.pause(); clearInterval(ptmr); }
   } else {
     if (playing) { schedNext(); startProg(); } else { clearTimeout(tmr); clearInterval(ptmr); }
   }
@@ -3809,67 +3946,21 @@ window.confirmDeleteFile = async function() {
   } catch(e) { showToast(`Could not delete: ${e.message}`, 4000); }
 };
 
-/* ── SSP Tauri bridge (launch-path ingest only) ── */
+/* ── SSP Tauri bridge (launch-path ingest + native drag-drop) ── */
 (function sspTauriBridge() {
-  const IMAGE_MIME = {
-    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
-    webp: 'image/webp', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
-    ico: 'image/x-icon'
-  };
   function basename(p) {
     const s = String(p).replace(/\\/g, '/');
     const i = s.lastIndexOf('/');
     return i >= 0 ? s.slice(i + 1) : s;
   }
-  function extOf(p) {
-    const n = basename(p);
-    const i = n.lastIndexOf('.');
-    return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
-  }
-  /** Decode base64 from read_media_file (or legacy number-array / Uint8Array). */
-  function mediaBytesToU8(data) {
-    if (typeof data === 'string') {
-      const bin = atob(data);
-      const out = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-      return out;
-    }
-    if (data instanceof Uint8Array) return data;
-    if (data instanceof ArrayBuffer) return new Uint8Array(data);
-    if (Array.isArray(data)) return Uint8Array.from(data);
-    if (data && data.type === 'Buffer' && Array.isArray(data.data)) return Uint8Array.from(data.data);
-    return new Uint8Array(0);
-  }
-  async function itemsFromPaths(paths, invoke) {
-    const pending = [];
-    for (const p of paths) {
-      const ext = extOf(p);
-      const mime = IMAGE_MIME[ext];
-      if (!mime) continue;
-      const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
-      if (!raw.length) throw new Error('empty bytes for ' + basename(p));
-      const url = URL.createObjectURL(new Blob([raw], { type: mime }));
-      const name = basename(p);
-      pending.push(new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name });
-        img.onerror = () => resolve({ url, type: 'image', w: 1920, h: 1080, name });
-        img.src = url;
-      }));
-    }
-    return (await Promise.all(pending)).filter(Boolean);
+  function filterMediaPaths(paths) {
+    return (paths || []).filter(p => mediaKindFromName(basename(p)));
   }
   async function openLaunchPaths(paths) {
     if (!paths || !paths.length) return false;
-    const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-    if (!invoke) return false;
+    if (typeof openMediaPaths !== 'function') return false;
     try {
-      const loaded = await itemsFromPaths(paths, invoke);
-      if (!loaded.length) return false;
-      dz.style.display = 'none';
-      viewer.style.display = 'flex';
-      if (items.length) finishAdd(loaded);
-      else build(loaded);
+      await openMediaPaths(paths, { append: !!(items && items.length) });
       return true;
     } catch (e) {
       console.error('SSP Tauri launch ingest failed', e);
@@ -3885,7 +3976,7 @@ window.confirmDeleteFile = async function() {
     } catch (e) {
       console.warn('SSP get_launch_paths failed', e);
     }
-    return paths;
+    return filterMediaPaths(paths);
   }
   let ingesting = false;
   let ingested = false;
@@ -3902,7 +3993,6 @@ window.confirmDeleteFile = async function() {
       ingesting = false;
     }
   }
-  /** Retry get_launch_paths a few times over ~1–2s (setup/page-load race). */
   function ingestWithRetry() {
     const delays = [0, 100, 250, 500, 1000, 1500];
     delays.forEach(function (ms) {
@@ -3911,6 +4001,63 @@ window.confirmDeleteFile = async function() {
       }, ms);
     });
   }
+
+  /** Tauri 2 native file drop — HTML5 dataTransfer.files is often empty on WebView2. */
+  let lastDropKey = '';
+  let lastDropAt = 0;
+  async function handleNativeDrop(paths) {
+    const media = filterMediaPaths(paths);
+    const key = media.join('|');
+    const now = Date.now();
+    // Dedupe duplicate tauri://drag-drop emissions.
+    if (key && key === lastDropKey && (now - lastDropAt) < 800) return;
+    lastDropKey = key;
+    lastDropAt = now;
+    if (!media.length) {
+      if (paths && paths.length) showToast('Dropped files are not supported images/videos.', 4000);
+      else showToast('Drop had no readable file paths.', 4000);
+      return;
+    }
+    const append = viewer.style.display === 'flex' && items.length > 0;
+    try {
+      await openMediaPaths(media, { append });
+      if (dz) dz.classList.remove('over');
+    } catch (e) {
+      console.error('SSP native drop failed', e);
+      showToast('Could not open dropped files: ' + (e && e.message ? e.message : e), 5000);
+    }
+  }
+  async function bindNativeDragDrop() {
+    const listen = window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen;
+    if (!listen) return;
+    try {
+      await listen('tauri://drag-enter', function () { if (dz && viewer.style.display !== 'flex') dz.classList.add('over'); });
+      await listen('tauri://drag-leave', function () { if (dz) dz.classList.remove('over'); });
+      await listen('tauri://drag-drop', function (event) {
+        const payload = event && event.payload;
+        const paths = (payload && payload.paths) || (Array.isArray(payload) ? payload : []);
+        handleNativeDrop(paths);
+      });
+    } catch (e) {
+      console.warn('SSP native drag-drop listen failed', e);
+      // Fallback: webview.onDragDropEvent if exposed via withGlobalTauri
+      try {
+        const wv = window.__TAURI__.webview && window.__TAURI__.webview.getCurrentWebview && window.__TAURI__.webview.getCurrentWebview();
+        if (wv && wv.onDragDropEvent) {
+          await wv.onDragDropEvent(function (event) {
+            const p = event && event.payload;
+            if (!p) return;
+            if (p.type === 'enter') { if (dz && viewer.style.display !== 'flex') dz.classList.add('over'); }
+            else if (p.type === 'leave') { if (dz) dz.classList.remove('over'); }
+            else if (p.type === 'drop') handleNativeDrop(p.paths || []);
+          });
+        }
+      } catch (e2) {
+        console.warn('SSP onDragDropEvent fallback failed', e2);
+      }
+    }
+  }
+
   function start() {
     let tries = 0;
     const maxTries = 40; // ~2s if __TAURI__ injects slightly after DOM
@@ -3924,6 +4071,7 @@ window.confirmDeleteFile = async function() {
         } catch (e) {
           console.warn('SSP ssp-launch-paths listen failed', e);
         }
+        bindNativeDragDrop();
         return;
       }
       if (++tries < maxTries) setTimeout(tick, 50);
