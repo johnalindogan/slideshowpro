@@ -31,6 +31,9 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #lbtns button svg{width:30px;height:30px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.75;}
 #lsinfo{font-size:10px;color:rgba(255,255,255,.38);max-width:148px;text-align:center;}
 #ldrophint{font-size:12px;color:rgba(255,255,255,.18);font-family:var(--font-main);letter-spacing:.02em;}
+#ladvanced{margin-top:-12px;font-size:11px;color:rgba(255,255,255,.28);font-family:var(--font-main);}
+#ladvanced a,#lbupdates-link{color:rgba(255,255,255,.38);text-decoration:none;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.12);}
+#ladvanced a:hover,#lbupdates-link:hover{color:rgba(255,255,255,.65);border-bottom-color:rgba(255,255,255,.35);}
 #fi,#fiadd,#fiplist,#fiupd{display:none;}
 #viewer{display:none;flex-direction:column;width:100vw;height:100vh;}
 #stage{position:relative;flex:1;overflow:hidden;background:#000;cursor:default;}
@@ -647,20 +650,21 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         Open Files
       </button>
+      <button id="lbfolder">
+        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/><path d="M12 11v6"/><path d="M9 14h6"/></svg>
+        Open Folder
+      </button>
+      <button id="lbcont" disabled>
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Continue
+        <span id="lsinfo"></span>
+      </button>
       <button id="lbplist">
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Open Playlist
       </button>
-      <button id="lbupdates">
-        <svg viewBox="0 0 24 24"><path d="M21 7l-9 9-5-5"/><path d="M21 7V3h-4"/><path d="M3 17v4h4"/><path d="M3 17l7-7"/></svg>
-        Load Image Updates
-      </button>
-      <button id="lbcont" disabled>
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        Continue from Last
-        <span id="lsinfo"></span>
-      </button>
     </div>
+    <p id="ladvanced"><a href="#" id="lbupdates-link">Image Updates</a> · advanced</p>
     <p id="ldrophint">or drop files here</p>
   </div>
 </div>
@@ -817,6 +821,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
       </div>
       <div id="dock-btns">
         <button id="pladd" title="Add files">Add +</button>
+        <button id="plopenfolder" title="Open folder">Folder</button>
         <button id="plshuffle" title="Shuffle">&#x1F500;</button>
         <button id="plnewfolder" title="New Folder">&#128193;</button>
         <button id="plsave" title="Save Playlist">&#128190;</button>
@@ -914,22 +919,220 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
 const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: { 'image/*': [], 'video/mp4': ['.mp4'], 'video/quicktime': ['.mov'], 'video/webm': ['.webm'] } }] };
-async function openFilePicker() {
-  if ('showOpenFilePicker' in window) {
-    try { processHandles(await window.showOpenFilePicker(PICKER_OPTS)); } catch(e) { if (e.name !== 'AbortError') fi.click(); }
-  } else { fi.click(); }
+const MEDIA_EXTS = ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','ico','mp4','mov','webm','m4v'];
+const FOLDER_BROWSER_CAP = 10000;
+
+function isTauri() {
+  return !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
 }
-let landingPlaylistMode = false;
-g('lbopen').onclick = () => openFilePicker();
-g('lbplist').onclick = async () => {
+function tauriInvoke(cmd, args) {
+  return window.__TAURI__.core.invoke(cmd, args || {});
+}
+function tauriDialogOpen(opts) {
+  if (!(window.__TAURI__ && window.__TAURI__.dialog && window.__TAURI__.dialog.open)) {
+    return Promise.reject(new Error('Tauri dialog plugin unavailable'));
+  }
+  return window.__TAURI__.dialog.open(opts);
+}
+
+/** Tauri: native dialog. Browser: showOpenFilePicker / hidden input. Never reveals inputs in Tauri. */
+async function pickOpenFiles() {
+  if (isTauri()) {
+    try {
+      const selected = await tauriDialogOpen({
+        multiple: true,
+        directory: false,
+        title: 'Open Files',
+        filters: [{ name: 'Images & Videos', extensions: MEDIA_EXTS }]
+      });
+      if (selected == null) return { kind: 'cancel' };
+      const paths = Array.isArray(selected) ? selected : [selected];
+      return { kind: 'tauri-paths', paths };
+    } catch (e) {
+      console.warn('Tauri open files dialog failed', e);
+      return { kind: 'cancel' };
+    }
+  }
+  if ('showOpenFilePicker' in window) {
+    try {
+      const handles = await window.showOpenFilePicker(PICKER_OPTS);
+      return { kind: 'handles', handles };
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { kind: 'cancel' };
+      return { kind: 'input', inputId: 'fi' };
+    }
+  }
+  return { kind: 'input', inputId: 'fi' };
+}
+
+async function pickOpenFolder() {
+  if (isTauri()) {
+    try {
+      const selected = await tauriDialogOpen({
+        multiple: false,
+        directory: true,
+        title: 'Open Folder'
+      });
+      if (selected == null) return { kind: 'cancel' };
+      const dir = Array.isArray(selected) ? selected[0] : selected;
+      if (!dir) return { kind: 'cancel' };
+      return { kind: 'tauri-folder', path: dir };
+    } catch (e) {
+      console.warn('Tauri open folder dialog failed', e);
+      return { kind: 'cancel' };
+    }
+  }
+  if ('showDirectoryPicker' in window) {
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      return { kind: 'dir-handle', dirHandle };
+    } catch (e) {
+      if (e && e.name !== 'AbortError') console.warn(e);
+      return { kind: 'cancel' };
+    }
+  }
+  showToast('Folder picker is not supported in this browser.', 4000);
+  return { kind: 'unsupported' };
+}
+
+async function pickPlaylist() {
+  if (isTauri()) {
+    try {
+      const selected = await tauriDialogOpen({
+        multiple: false,
+        directory: false,
+        title: 'Open Playlist',
+        filters: [{ name: 'SlideShowPro Playlist', extensions: ['json'] }]
+      });
+      if (selected == null) return { kind: 'cancel' };
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path) return { kind: 'cancel' };
+      return { kind: 'tauri-path', path };
+    } catch (e) {
+      console.warn('Tauri playlist dialog failed', e);
+      return { kind: 'cancel' };
+    }
+  }
   if ('showOpenFilePicker' in window) {
     try {
       const [h] = await window.showOpenFilePicker({ types: [{ description: 'SlideShowPro Playlist', accept: { 'application/json': ['.json'] } }] });
-      restoreFromSnapshotFile(await h.getFile());
-    } catch(e) { if (e.name !== 'AbortError') { landingPlaylistMode = true; g('fiplist').click(); } }
-  } else { landingPlaylistMode = true; g('fiplist').click(); }
-};
-g('lbupdates').onclick = () => g('fiupd').click();
+      return { kind: 'handle', handle: h };
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { kind: 'cancel' };
+      return { kind: 'input', inputId: 'fiplist' };
+    }
+  }
+  return { kind: 'input', inputId: 'fiplist' };
+}
+
+async function pickImageUpdates() {
+  if (isTauri()) {
+    try {
+      const selected = await tauriDialogOpen({
+        multiple: false,
+        directory: false,
+        title: 'Image Updates',
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      });
+      if (selected == null) return { kind: 'cancel' };
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path) return { kind: 'cancel' };
+      return { kind: 'tauri-path', path };
+    } catch (e) {
+      console.warn('Tauri image-updates dialog failed', e);
+      return { kind: 'cancel' };
+    }
+  }
+  return { kind: 'input', inputId: 'fiupd' };
+}
+
+async function openFilePicker(append) {
+  const picked = await pickOpenFiles();
+  if (picked.kind === 'cancel') return;
+  if (picked.kind === 'tauri-paths') {
+    await openMediaPaths(picked.paths, { append: !!append });
+    return;
+  }
+  if (picked.kind === 'handles') {
+    if (append) await addHandles(picked.handles);
+    else await processHandles(picked.handles);
+    return;
+  }
+  if (picked.kind === 'input') {
+    if (isTauri()) return; // never reveal bare Choose File chrome in Tauri
+    g(picked.inputId === 'fi' && append ? 'fiadd' : picked.inputId).click();
+  }
+}
+
+async function openFolderPicker(append) {
+  const picked = await pickOpenFolder();
+  if (picked.kind === 'cancel' || picked.kind === 'unsupported') return;
+  if (picked.kind === 'tauri-folder') {
+    await openTauriFolder(picked.path, { append: !!append });
+    return;
+  }
+  if (picked.kind === 'dir-handle') {
+    await openBrowserFolder(picked.dirHandle, { append: !!append });
+  }
+}
+
+async function openPlaylistPicker() {
+  const picked = await pickPlaylist();
+  if (picked.kind === 'cancel') return;
+  if (picked.kind === 'tauri-path') {
+    try {
+      await tauriInvoke('register_allowed_paths', { paths: [picked.path] });
+      const text = await tauriInvoke('read_text_file', { path: picked.path });
+      const snap = JSON.parse(text);
+      await restoreFromSnapshot(snap);
+    } catch (e) {
+      console.warn(e);
+      showToast('Could not load playlist.', 4000);
+    }
+    return;
+  }
+  if (picked.kind === 'handle') {
+    restoreFromSnapshotFile(await picked.handle.getFile());
+    return;
+  }
+  if (picked.kind === 'input') {
+    if (isTauri()) return;
+    landingPlaylistMode = true;
+    g('fiplist').click();
+  }
+}
+
+async function openImageUpdatesPicker() {
+  const picked = await pickImageUpdates();
+  if (picked.kind === 'cancel') return;
+  if (picked.kind === 'tauri-path') {
+    try {
+      await tauriInvoke('register_allowed_paths', { paths: [picked.path] });
+      const text = await tauriInvoke('read_text_file', { path: picked.path });
+      const data = JSON.parse(text);
+      if (!data) return;
+      persistImageUpdatesSource(data);
+      items.forEach(it => { if (it.type !== 'folder') applySharedImageUpdates(it); });
+      items.forEach(it => { if (it.type !== 'folder') saveItemLS(it); });
+      if (items.length) rebuildSlides(cur);
+      showToast('Image Updates loaded.', 2500);
+    } catch (e) {
+      console.warn(e);
+      showToast('Invalid Image Updates file.', 3500);
+    }
+    return;
+  }
+  if (picked.kind === 'input') {
+    if (isTauri()) return;
+    g('fiupd').click();
+  }
+}
+
+let landingPlaylistMode = false;
+g('lbopen').onclick = () => openFilePicker(false);
+g('lbfolder').onclick = () => openFolderPicker(false);
+g('lbplist').onclick = () => openPlaylistPicker();
+g('lbupdates-link').onclick = (e) => { e.preventDefault(); openImageUpdatesPicker(); };
 g('lbcont').onclick = async () => {
   try {
     const snap = JSON.parse(localStorage.getItem('ssp_autosave') || 'null');
@@ -2111,11 +2314,8 @@ stage.addEventListener('drop', e => {
 });
 fi.addEventListener('change', () => { if (fi.files.length) load(fi.files); });
 g('fiadd').onchange = function() { if (this.files.length) addMoreFiles(this.files); this.value = ''; };
-g('pladd').onclick = async () => {
-  if ('showOpenFilePicker' in window) {
-    try { addHandles(await window.showOpenFilePicker(PICKER_OPTS)); } catch(e) { if (e.name !== 'AbortError') g('fiadd').click(); }
-  } else { g('fiadd').click(); }
-};
+g('pladd').onclick = () => openFilePicker(true);
+g('plopenfolder').onclick = () => openFolderPicker(true);
 g('plshuffle').onclick = shufflePlaylist;
 
 g('bru').onclick = function() {
@@ -2209,6 +2409,161 @@ async function addHandles(handles) {
       p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
     }
   });
+}
+
+async function collectBrowserFolderMedia(dirHandle, acc, truncatedRef) {
+  for await (const entry of dirHandle.values()) {
+    if (truncatedRef.truncated) break;
+    if (entry.name && entry.name.startsWith('.')) continue;
+    if (entry.kind === 'file') {
+      try {
+        const f = await entry.getFile();
+        if (f.type.startsWith('image/') || f.type.startsWith('video/')) {
+          if (acc.length >= FOLDER_BROWSER_CAP) { truncatedRef.truncated = true; break; }
+          acc.push({ h: entry, f });
+        }
+      } catch (e) { /* skip unreadable */ }
+    } else if (entry.kind === 'directory') {
+      await collectBrowserFolderMedia(entry, acc, truncatedRef);
+    }
+  }
+}
+
+function handlesToItems(accPairs) {
+  return new Promise((resolve) => {
+    if (!accPairs.length) { resolve([]); return; }
+    const tmp = []; let done = 0;
+    accPairs.forEach(({h, f}, i) => {
+      const url = URL.createObjectURL(f), type = f.type.startsWith('video/') ? 'video' : 'image';
+      if (type === 'image') {
+        const p = new Image();
+        p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===accPairs.length) resolve(tmp.filter(Boolean)); };
+        p.onerror = () => { tmp[i] = {url,type,w:1920,h:1080,name:f.name,fileHandle:h}; if (++done===accPairs.length) resolve(tmp.filter(Boolean)); };
+        p.src = url;
+      } else {
+        const p = document.createElement('video'); p.preload = 'metadata';
+        const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name,fileHandle:h}; if (++done===accPairs.length) resolve(tmp.filter(Boolean)); };
+        p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
+      }
+    });
+  });
+}
+
+/** Browser Open Folder: full recursive walk with media MIME filter (cap 10k). */
+async function openBrowserFolder(dirHandle, opts) {
+  const append = !!(opts && opts.append);
+  const acc = [];
+  const truncatedRef = { truncated: false };
+  try {
+    await collectBrowserFolderMedia(dirHandle, acc, truncatedRef);
+  } catch (e) {
+    console.warn(e);
+    showToast('Could not read folder.', 4000);
+    return;
+  }
+  if (!acc.length) { showToast('No images or videos found in that folder.', 3500); return; }
+  // First media visible ASAP; remainder joins playlist.
+  const first = await handlesToItems([acc[0]]);
+  if (!first.length) return;
+  if (append && items.length) finishAdd(first);
+  else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
+  if (acc.length > 1) {
+    const rest = await handlesToItems(acc.slice(1));
+    if (rest.length) finishAdd(rest);
+  }
+  if (truncatedRef.truncated) showToast('Folder truncated at ' + FOLDER_BROWSER_CAP + ' media files.', 4500);
+}
+
+/** Shared Tauri path → item loader (images + videos). Used by Open Files / Folder. */
+async function itemsFromMediaPaths(paths) {
+  const invoke = tauriInvoke;
+  const MEDIA_MIME = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+    webp: 'image/webp', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
+    ico: 'image/x-icon',
+    mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/mp4'
+  };
+  function basename(p) {
+    const s = String(p).replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  function extOf(p) {
+    const n = basename(p);
+    const i = n.lastIndexOf('.');
+    return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
+  }
+  function mediaBytesToU8(data) {
+    if (typeof data === 'string') {
+      const bin = atob(data);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (Array.isArray(data)) return Uint8Array.from(data);
+    if (data && data.type === 'Buffer' && Array.isArray(data.data)) return Uint8Array.from(data.data);
+    return new Uint8Array(0);
+  }
+  const pending = [];
+  for (const p of paths) {
+    const ext = extOf(p);
+    const mime = MEDIA_MIME[ext];
+    if (!mime) continue;
+    const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
+    if (!raw.length) throw new Error('empty bytes for ' + basename(p));
+    const url = URL.createObjectURL(new Blob([raw], { type: mime }));
+    const name = basename(p);
+    const isVid = mime.startsWith('video/');
+    pending.push(new Promise((resolve) => {
+      if (isVid) {
+        const v = document.createElement('video'); v.preload = 'metadata';
+        const fin = () => resolve({ url, type: 'video', w: v.videoWidth || 1920, h: v.videoHeight || 1080, name });
+        v.onloadedmetadata = fin; v.onerror = fin; v.src = url;
+      } else {
+        const img = new Image();
+        img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name });
+        img.onerror = () => resolve({ url, type: 'image', w: 1920, h: 1080, name });
+        img.src = url;
+      }
+    }));
+  }
+  return (await Promise.all(pending)).filter(Boolean);
+}
+
+async function openMediaPaths(paths, opts) {
+  const append = !!(opts && opts.append);
+  if (!paths || !paths.length) return;
+  try {
+    await tauriInvoke('register_allowed_paths', { paths });
+    const first = await itemsFromMediaPaths([paths[0]]);
+    if (!first.length) { showToast('No supported media in selection.', 3500); return; }
+    if (append && items.length) finishAdd(first);
+    else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
+    if (paths.length > 1) {
+      const rest = await itemsFromMediaPaths(paths.slice(1));
+      if (rest.length) finishAdd(rest);
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('Could not open files: ' + (e && e.message ? e.message : e), 5000);
+  }
+}
+
+/** Tauri Open Folder: Rust full-recursive list (ext filter, cap 10k) then path ingest. */
+async function openTauriFolder(dirPath, opts) {
+  const append = !!(opts && opts.append);
+  try {
+    const res = await tauriInvoke('list_folder_media', { path: dirPath });
+    const paths = (res && res.paths) || [];
+    if (!paths.length) { showToast('No images or videos found in that folder.', 3500); return; }
+    await openMediaPaths(paths, { append });
+    if (res.truncated) showToast('Folder truncated at 10000 media files.', 4500);
+  } catch (e) {
+    console.error(e);
+    showToast('Could not open folder: ' + (e && e.message ? e.message : e), 5000);
+  }
 }
 
 function finishAdd(newItems) {
@@ -2613,7 +2968,7 @@ g('plnewfolder').onclick = () => {
 
 /* ── Save / Load Playlist ── */
 g('plsave').onclick = savePlaylist;
-g('plload').onclick = () => g('fiplist').click();
+g('plload').onclick = () => openPlaylistPicker();
 g('fiplist').onchange = function() {
   if (!this.files[0]) return;
   if (landingPlaylistMode) { landingPlaylistMode = false; restoreFromSnapshotFile(this.files[0]); }

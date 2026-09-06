@@ -5,5 +5,20 @@ commands.allow = ["get_launch_paths"]
 
 [[permission]]
 identifier = "allow-read-media-file"
-description = "Allow reading bytes for allowed launch-path images"
+description = "Allow reading bytes for allowlisted launch/dialog media paths"
 commands.allow = ["read_media_file"]
+
+[[permission]]
+identifier = "allow-register-allowed-paths"
+description = "Allow registering dialog-selected file paths for subsequent reads"
+commands.allow = ["register_allowed_paths"]
+
+[[permission]]
+identifier = "allow-list-folder-media"
+description = "Allow recursive media listing under a user-picked folder root"
+commands.allow = ["list_folder_media"]
+
+[[permission]]
+identifier = "allow-read-text-file"
+description = "Allow reading allowlisted text files (playlist JSON)"
+commands.allow = ["read_text_file"]
