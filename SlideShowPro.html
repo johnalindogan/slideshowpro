@@ -382,7 +382,21 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #pllist {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 0;
+  position: relative;
+}
+#pllist-track {
+  position: relative;
+  width: 100%;
+  min-height: 1px;
+}
+#pllist-track .pli,
+#pllist-track .plfolder {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  margin-bottom: 0;
+  box-sizing: border-box;
 }
 #pllist::-webkit-scrollbar {
   width: 4px;
@@ -955,6 +969,11 @@ const STRIP_GAP = 8;
 const STRIP_CELL = STRIP_THUMB_W + STRIP_GAP;
 const STRIP_PAD_X = 16;
 const STRIP_OVERSCAN = 12;
+const PL_PAD_Y = 12;
+const PL_OVERSCAN = 8;
+const PL_FOLDER_H = 36;
+const PL_MEDIA_H = 52;
+const PL_MEDIA_IMAGE_H = 78;
 
 function sspIsTauri() {
   // Avoid binding name `isTauri` — Tauri withGlobalTauri exposes window.isTauri (boolean).
@@ -1198,7 +1217,7 @@ g('fiupd').onchange = function() {
 /* ── State ── */
 let items = [], sls = [], slByIdx = Object.create(null), cur = 0, playing = true,
     stagePruneTmr = null, thumbIO = null,
-    stripMounted = new Map(), stripRaf = 0, folderIngestGen = 0,
+    stripMounted = new Map(), stripRaf = 0, plMounted = new Map(), plRaf = 0, plRows = [], plTotalH = 0, folderIngestGen = 0,
     tmr = null, ptmr = null, ps = null, kbId = null,
     zoom = 1, panX = 0, panY = 0, muted = false, vol = 1,
     mirrorX = false, mirrorY = false, rotation = 0,
@@ -2383,9 +2402,10 @@ g('bru').onclick = function() {
   clearTimeout(stagePruneTmr); stagePruneTmr = null;
   folderIngestGen++;
   if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
-  items = []; sls = []; slByIdx = Object.create(null); stripMounted.clear(); selectedItems.clear(); lastClickedMI = -1;
+  items = []; sls = []; slByIdx = Object.create(null); stripMounted.clear(); plMounted.clear(); plRows = []; plTotalH = 0; selectedItems.clear(); lastClickedMI = -1;
   [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
   g('tstrip').innerHTML = '';
+  g('pllist').innerHTML = '';
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
   viewer.style.display = 'none'; dz.style.display = 'flex'; fi.value = '';
   if (!ctrlsVisible) toggleControls();
@@ -2978,7 +2998,11 @@ g('dock-search').oninput = function() {
 
 function updPlCur() {
   if (!g('media-dock').classList.contains('expanded')) return;
-  g('pllist').querySelectorAll('.pli[data-mi]').forEach(el => el.classList.toggle('plcur', parseInt(el.dataset.mi) === cur));
+  plMounted.forEach((el, idx) => {
+    const row = plRows[idx];
+    if (row && row.kind === 'media') el.classList.toggle('plcur', row.mi === cur);
+  });
+  ensurePlCurVisible();
 }
 function updSelBadge() {
   const badge = g('plselbadge');
@@ -2986,152 +3010,301 @@ function updSelBadge() {
   else badge.classList.remove('show');
 }
 
-function renderPlaylist() {
-  const list = g('pllist'); list.innerHTML = '';
-  updSelBadge();
+function plRowHeight(item) {
+  if (item.type === 'folder') return PL_FOLDER_H;
+  if (item.type === 'image') return PL_MEDIA_IMAGE_H;
+  return PL_MEDIA_H;
+}
+
+function ensurePlTrack() {
+  const list = g('pllist');
+  let track = g('pllist-track');
+  if (!track) {
+    track = document.createElement('div');
+    track.id = 'pllist-track';
+    list.appendChild(track);
+    if (!list._sspPlScrollBound) {
+      list._sspPlScrollBound = true;
+      list.addEventListener('scroll', () => {
+        if (plRaf) return;
+        plRaf = requestAnimationFrame(() => {
+          plRaf = 0;
+          remountPlWindow();
+        });
+      }, { passive: true });
+    }
+  }
+  return track;
+}
+
+function syncPlTrackSize() {
+  const track = ensurePlTrack();
+  track.style.height = Math.max(plTotalH, 1) + 'px';
+}
+
+function buildPlRows() {
   const query = plSearchQuery.toLowerCase().trim();
-  
   let visibleItems = new Set();
   let forceOpenFolders = new Set();
-  
+
   if (query) {
     let currentFolderIdx = -1;
     items.forEach((item, idx) => {
       if (item.type === 'folder') {
         currentFolderIdx = idx;
-        if (item.name.toLowerCase().includes(query)) {
-          visibleItems.add(idx);
-        }
-      } else {
-        if (item.name && item.name.toLowerCase().includes(query)) {
-          visibleItems.add(idx);
-          if (currentFolderIdx !== -1) {
-            visibleItems.add(currentFolderIdx);
-            forceOpenFolders.add(currentFolderIdx);
-          }
+        if (item.name.toLowerCase().includes(query)) visibleItems.add(idx);
+      } else if (item.name && item.name.toLowerCase().includes(query)) {
+        visibleItems.add(idx);
+        if (currentFolderIdx !== -1) {
+          visibleItems.add(currentFolderIdx);
+          forceOpenFolders.add(currentFolderIdx);
         }
       }
     });
   }
 
+  const rows = [];
+  let top = PL_PAD_Y;
   let miIdx = 0, currentFolder = null;
+
   items.forEach((item, itemsIdx) => {
     if (query && !visibleItems.has(itemsIdx)) {
       if (item.type !== 'folder') miIdx++;
       return;
     }
-
     if (item.type === 'folder') {
       currentFolder = item;
       const isOpen = forceOpenFolders.has(itemsIdx) || (item.open !== false);
-      const div = document.createElement('div'); div.className = 'plfolder'; div.draggable = true;
-      const arr = document.createElement('span'); arr.className = 'pf-arr' + (isOpen ? '' : ' closed'); arr.textContent = '▾';
-      const icon = document.createElement('span'); icon.className = 'pf-icon'; icon.textContent = '📁';
-      const name = document.createElement('span'); name.className = 'pf-name'; name.textContent = item.name;
-      name.ondblclick = e => {
-        e.stopPropagation();
-        const inp = document.createElement('input');
-        inp.value = item.name;
-        inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
-        name.replaceWith(inp); inp.focus(); inp.select();
-        const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); };
-        inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
-      };
-      const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
-      del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); };
-      div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); };
-      div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
-      div.addEventListener('dragstart', e => { dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move'; setTimeout(() => div.classList.add('dragging'), 0); });
-      div.addEventListener('dragend', () => { div.classList.remove('dragging'); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
-      div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
-      div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
-      list.appendChild(div);
+      const h = plRowHeight(item);
+      rows.push({ kind: 'folder', itemsIdx, top, height: h, isOpen, forceOpen: forceOpenFolders.has(itemsIdx) });
+      top += h;
       return;
     }
-
     const folderIdx = items.indexOf(currentFolder);
     const isFolderOpen = currentFolder ? (forceOpenFolders.has(folderIdx) || currentFolder.open !== false) : true;
     if (currentFolder && !isFolderOpen) {
       miIdx++;
       return;
     }
-
     const thisMI = miIdx++;
-    const div = document.createElement('div');
-    div.className = 'pli' + (thisMI === cur ? ' plcur' : '') + (selectedItems.has(thisMI) ? ' plsel' : '') + (currentFolder ? ' plindent' : '');
-    div.dataset.mi = thisMI; div.draggable = true;
-
-    const drag = document.createElement('span'); drag.className = 'pldrag'; drag.textContent = '⠿';
-    const thumb = document.createElement('img');
-    thumb.className = 'plthumb';
-    if (item.type === 'video') {
-      thumb.dataset.thumbId = item.id;
-      thumb.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
-      if (!item.thumbnailUrl) getVideoThumbnail(item);
-    } else {
-      thumb.src = item.url;
-    }
-
-    if (item.unavailable) div.style.opacity = '0.38';
-    const info = document.createElement('div'); info.className = 'plinfo';
-    const name = document.createElement('span'); name.className = 'plname';
-    name.textContent = (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1)));
-    info.appendChild(name);
-
-    if (item.type === 'image') {
-      const durRow = document.createElement('div'); durRow.className = 'pldurrow';
-      const lbl = document.createElement('span'); lbl.className = 'pldlbl'; lbl.textContent = 'Duration:';
-      const sel = document.createElement('select'); sel.className = 'pldsel';
-      [[3000,'3s'],[4000,'4s'],[6000,'6s'],[8000,'8s'],[12000,'12s'],[20000,'20s']].forEach(([v,t]) => {
-        const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
-        if ((item.customDur ?? getDur()) === v) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      sel.onchange = e => { e.stopPropagation(); item.customDur = parseInt(sel.value); saveItemLS(item); schedAutoSave(); };
-      sel.onclick = e => e.stopPropagation();
-      durRow.appendChild(lbl); durRow.appendChild(sel); info.appendChild(durRow);
- 
-      const kbRow = document.createElement('div'); kbRow.className = 'pldurrow';
-      const kblbl = document.createElement('span'); kblbl.className = 'pldlbl'; kblbl.textContent = 'KB:';
-      const kbsel = document.createElement('select'); kbsel.className = 'pldsel';
-      [['auto','Auto'],[-1,'Off'],...KB_LABELS.map((l,idx)=>[idx,l.split('·')[0].trim()])].forEach(([v,t]) => {
-        const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
-        const ov = item.kbPreset;
-        if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
-        kbsel.appendChild(opt);
-      });
-      kbsel.onchange = e => { e.stopPropagation(); item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value); saveItemLS(item); schedAutoSave(); if (thisMI === cur) applyKBNow(); };
-      kbsel.onclick = e => e.stopPropagation();
-      kbRow.appendChild(kblbl); kbRow.appendChild(kbsel); info.appendChild(kbRow);
-    }
-
-    const del = document.createElement('button'); del.className = 'pldel'; del.textContent = '✕';
-    del.onclick = e => { e.stopPropagation(); removeItem(itemsIdx, false); };
-
-    div.onclick = e => {
-      if (e.shiftKey && lastClickedMI >= 0) {
-        const lo = Math.min(lastClickedMI, thisMI), hi = Math.max(lastClickedMI, thisMI);
-        for (let k = lo; k <= hi; k++) selectedItems.add(k);
-        updSelBadge(); renderPlaylist();
-      } else { selectedItems.clear(); lastClickedMI = thisMI; goTo(thisMI); }
-    };
-    div.appendChild(drag); div.appendChild(thumb); div.appendChild(info); div.appendChild(del);
-
-    div.addEventListener('dragstart', e => {
-      dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move';
-      setTimeout(() => {
-        list.querySelectorAll('.pli[data-mi]').forEach(el => {
-          const mi2 = parseInt(el.dataset.mi);
-          if (selectedItems.has(thisMI) && selectedItems.size > 1 && selectedItems.has(mi2)) el.classList.add('dragging');
-          else if (mi2 === thisMI && (!selectedItems.has(thisMI) || selectedItems.size <= 1)) el.classList.add('dragging');
-        });
-      }, 0);
+    const h = plRowHeight(item);
+    rows.push({
+      kind: 'media',
+      itemsIdx,
+      mi: thisMI,
+      top,
+      height: h,
+      indent: !!currentFolder
     });
-    div.addEventListener('dragend', () => { list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragging','dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
-    div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
-    div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
-    list.appendChild(div);
+    top += h;
   });
+
+  plRows = rows;
+  plTotalH = top + PL_PAD_Y;
+  return rows;
+}
+
+function unmountPlRow(idx) {
+  const el = plMounted.get(idx);
+  if (!el) return;
+  el.remove();
+  plMounted.delete(idx);
+}
+
+function createPlFolderRow(row) {
+  const item = items[row.itemsIdx];
+  const itemsIdx = row.itemsIdx;
+  const list = g('pllist');
+  const isOpen = row.isOpen;
+  const div = document.createElement('div');
+  div.className = 'plfolder';
+  div.draggable = true;
+  div.dataset.plIdx = String(row.itemsIdx);
+  div.style.height = (PL_FOLDER_H - 4) + 'px';
+
+  const arr = document.createElement('span'); arr.className = 'pf-arr' + (isOpen ? '' : ' closed'); arr.textContent = '▾';
+  const icon = document.createElement('span'); icon.className = 'pf-icon'; icon.textContent = '📁';
+  const name = document.createElement('span'); name.className = 'pf-name'; name.textContent = item.name;
+  name.ondblclick = e => {
+    e.stopPropagation();
+    const inp = document.createElement('input');
+    inp.value = item.name;
+    inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
+    name.replaceWith(inp); inp.focus(); inp.select();
+    const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); };
+    inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
+  };
+  const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
+  del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); };
+  div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); };
+  div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
+
+  div.addEventListener('dragstart', e => { dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move'; setTimeout(() => div.classList.add('dragging'), 0); });
+  div.addEventListener('dragend', () => { div.classList.remove('dragging'); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
+  div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
+  div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
+  return div;
+}
+
+function createPlMediaRow(row) {
+  const item = items[row.itemsIdx];
+  const itemsIdx = row.itemsIdx;
+  const thisMI = row.mi;
+  const list = g('pllist');
+  const div = document.createElement('div');
+  div.className = 'pli' + (thisMI === cur ? ' plcur' : '') + (selectedItems.has(thisMI) ? ' plsel' : '') + (row.indent ? ' plindent' : '');
+  div.dataset.mi = thisMI;
+  div.draggable = true;
+  div.style.height = (row.height - 4) + 'px';
+
+  const drag = document.createElement('span'); drag.className = 'pldrag'; drag.textContent = '⠿';
+  const thumb = document.createElement('img');
+  thumb.className = 'plthumb';
+  if (item.type === 'video') {
+    thumb.dataset.thumbId = item.id;
+    thumb.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
+    if (!item.thumbnailUrl) getVideoThumbnail(item);
+  } else {
+    thumb.src = item.url;
+  }
+
+  if (item.unavailable) div.style.opacity = '0.38';
+  const info = document.createElement('div'); info.className = 'plinfo';
+  const name = document.createElement('span'); name.className = 'plname';
+  name.textContent = (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1)));
+  info.appendChild(name);
+
+  if (item.type === 'image') {
+    const durRow = document.createElement('div'); durRow.className = 'pldurrow';
+    const lbl = document.createElement('span'); lbl.className = 'pldlbl'; lbl.textContent = 'Duration:';
+    const sel = document.createElement('select'); sel.className = 'pldsel';
+    [[3000,'3s'],[4000,'4s'],[6000,'6s'],[8000,'8s'],[12000,'12s'],[20000,'20s']].forEach(([v,t]) => {
+      const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
+      if ((item.customDur ?? getDur()) === v) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.onchange = e => { e.stopPropagation(); item.customDur = parseInt(sel.value); saveItemLS(item); schedAutoSave(); };
+    sel.onclick = e => e.stopPropagation();
+    durRow.appendChild(lbl); durRow.appendChild(sel); info.appendChild(durRow);
+
+    const kbRow = document.createElement('div'); kbRow.className = 'pldurrow';
+    const kblbl = document.createElement('span'); kblbl.className = 'pldlbl'; kblbl.textContent = 'KB:';
+    const kbsel = document.createElement('select'); kbsel.className = 'pldsel';
+    [['auto','Auto'],[-1,'Off'],...KB_LABELS.map((l,idx)=>[idx,l.split('·')[0].trim()])].forEach(([v,t]) => {
+      const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
+      const ov = item.kbPreset;
+      if ((ov === undefined && v === 'auto') || (ov !== undefined && String(ov) === String(v))) opt.selected = true;
+      kbsel.appendChild(opt);
+    });
+    kbsel.onchange = e => { e.stopPropagation(); item.kbPreset = kbsel.value === 'auto' ? undefined : parseInt(kbsel.value); saveItemLS(item); schedAutoSave(); if (thisMI === cur) applyKBNow(); };
+    kbsel.onclick = e => e.stopPropagation();
+    kbRow.appendChild(kblbl); kbRow.appendChild(kbsel); info.appendChild(kbRow);
+  }
+
+  const del = document.createElement('button'); del.className = 'pldel'; del.textContent = '✕';
+  del.onclick = e => { e.stopPropagation(); removeItem(itemsIdx, false); };
+
+  div.onclick = e => {
+    if (e.shiftKey && lastClickedMI >= 0) {
+      const lo = Math.min(lastClickedMI, thisMI), hi = Math.max(lastClickedMI, thisMI);
+      for (let k = lo; k <= hi; k++) selectedItems.add(k);
+      updSelBadge(); renderPlaylist();
+    } else { selectedItems.clear(); lastClickedMI = thisMI; goTo(thisMI); }
+  };
+  div.appendChild(drag); div.appendChild(thumb); div.appendChild(info); div.appendChild(del);
+
+  div.addEventListener('dragstart', e => {
+    dragSrcItemsIdx = itemsIdx; e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => {
+      list.querySelectorAll('.pli[data-mi]').forEach(el => {
+        const mi2 = parseInt(el.dataset.mi);
+        if (selectedItems.has(thisMI) && selectedItems.size > 1 && selectedItems.has(mi2)) el.classList.add('dragging');
+        else if (mi2 === thisMI && (!selectedItems.has(thisMI) || selectedItems.size <= 1)) el.classList.add('dragging');
+      });
+    }, 0);
+  });
+  div.addEventListener('dragend', () => { list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragging','dragover-top','dragover-bot')); dragSrcItemsIdx = null; });
+  div.addEventListener('dragover', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); const r = div.getBoundingClientRect(); div.classList.add(e.clientY < r.top + r.height/2 ? 'dragover-top' : 'dragover-bot'); });
+  div.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.pli,.plfolder').forEach(el => el.classList.remove('dragover-top','dragover-bot')); if (dragSrcItemsIdx === null || dragSrcItemsIdx === itemsIdx) return; const r = div.getBoundingClientRect(); dropItemsAt(dragSrcItemsIdx, itemsIdx, e.clientY >= r.top + r.height/2); });
+  return div;
+}
+
+function remountPlWindow() {
+  const list = g('pllist');
+  const track = ensurePlTrack();
+  syncPlTrackSize();
+  if (!plRows.length) {
+    plMounted.forEach((_, i) => unmountPlRow(i));
+    return;
+  }
+  const viewH = Math.max(list.clientHeight || 0, 120);
+  const scrollT = list.scrollTop;
+  const y0 = Math.max(0, scrollT - PL_OVERSCAN * PL_MEDIA_H);
+  const y1 = scrollT + viewH + PL_OVERSCAN * PL_MEDIA_H;
+
+  let first = 0;
+  while (first < plRows.length && plRows[first].top + plRows[first].height < y0) first++;
+  if (first >= plRows.length) first = Math.max(0, plRows.length - 1);
+  let last = first;
+  while (last < plRows.length - 1 && plRows[last].top < y1) last++;
+  last = Math.min(plRows.length - 1, Math.max(last, first));
+
+  plMounted.forEach((_, i) => {
+    if (i < first || i > last) unmountPlRow(i);
+  });
+
+  for (let i = first; i <= last; i++) {
+    const row = plRows[i];
+    if (plMounted.has(i)) {
+      const el = plMounted.get(i);
+      el.style.top = row.top + 'px';
+      if (row.kind === 'media') {
+        el.classList.toggle('plcur', row.mi === cur);
+        el.classList.toggle('plsel', selectedItems.has(row.mi));
+      }
+      continue;
+    }
+    if (row.kind === 'folder') {
+      if (!items[row.itemsIdx] || items[row.itemsIdx].type !== 'folder') continue;
+      const el = createPlFolderRow(row);
+      el.style.top = row.top + 'px';
+      track.appendChild(el);
+      plMounted.set(i, el);
+    } else {
+      if (!items[row.itemsIdx] || items[row.itemsIdx].type === 'folder') continue;
+      const el = createPlMediaRow(row);
+      el.style.top = row.top + 'px';
+      track.appendChild(el);
+      plMounted.set(i, el);
+    }
+  }
+}
+
+function ensurePlCurVisible() {
+  const idx = plRows.findIndex(r => r.kind === 'media' && r.mi === cur);
+  if (idx < 0) return;
+  const list = g('pllist');
+  const row = plRows[idx];
+  const viewTop = list.scrollTop;
+  const viewBot = viewTop + Math.max(list.clientHeight || 0, 120);
+  if (row.top >= viewTop && row.top + row.height <= viewBot) return;
+  const target = Math.max(0, row.top - Math.max(list.clientHeight || 0, 120) / 2 + row.height / 2);
+  if (typeof list.scrollTo === 'function') list.scrollTo({ top: target, behavior: 'auto' });
+  else list.scrollTop = target;
+  remountPlWindow();
+}
+
+function renderPlaylist() {
+  const list = g('pllist');
+  if (plRaf) { cancelAnimationFrame(plRaf); plRaf = 0; }
+  plMounted.clear();
+  list.innerHTML = '';
+  updSelBadge();
+  buildPlRows();
+  ensurePlTrack();
+  syncPlTrackSize();
+  remountPlWindow();
+  ensurePlCurVisible();
 }
 
 function dropItemsAt(srcIdx, tgtIdx, after) {
