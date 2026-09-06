@@ -305,16 +305,21 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 }
 
 #tstrip {
-  display: flex;
-  gap: 8px;
-  padding: 10px 16px;
+  display: block;
+  padding: 10px 0;
   background: transparent;
   flex-shrink: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   border-top: none;
   width: 100%;
   height: 100%;
-  align-items: center;
+  position: relative;
+}
+#tstrip-track {
+  position: relative;
+  height: 100%;
+  min-height: 40px;
 }
 #tstrip::-webkit-scrollbar {
   height: 4px;
@@ -327,8 +332,9 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
   border-radius: 2px;
 }
 .tw {
-  position: relative;
-  flex-shrink: 0;
+  position: absolute;
+  top: 50%;
+  margin-top: -20px;
   width: 64px;
   height: 40px;
 }
@@ -921,6 +927,12 @@ const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app 
 const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', accept: { 'image/*': [], 'video/mp4': ['.mp4'], 'video/quicktime': ['.mov'], 'video/webm': ['.webm'] } }] };
 const MEDIA_EXTS = ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','ico','mp4','mov','webm','m4v'];
 const FOLDER_BROWSER_CAP = 10000;
+const FOLDER_INGEST_BATCH = 8;
+const STRIP_THUMB_W = 64;
+const STRIP_GAP = 8;
+const STRIP_CELL = STRIP_THUMB_W + STRIP_GAP;
+const STRIP_PAD_X = 16;
+const STRIP_OVERSCAN = 12;
 
 function sspIsTauri() {
   // Avoid binding name `isTauri` — Tauri withGlobalTauri exposes window.isTauri (boolean).
@@ -1162,8 +1174,9 @@ g('fiupd').onchange = function() {
 };
 
 /* ── State ── */
-let items = [], sls = [], slByIdx = Object.create(null), tws = [], cur = 0, playing = true,
+let items = [], sls = [], slByIdx = Object.create(null), cur = 0, playing = true,
     stagePruneTmr = null, thumbIO = null,
+    stripMounted = new Map(), stripRaf = 0, folderIngestGen = 0,
     tmr = null, ptmr = null, ps = null, kbId = null,
     zoom = 1, panX = 0, panY = 0, muted = false, vol = 1,
     mirrorX = false, mirrorY = false, rotation = 0,
@@ -2325,8 +2338,9 @@ g('bru').onclick = function() {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
   clearTimeout(stagePruneTmr); stagePruneTmr = null;
+  folderIngestGen++;
   if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
-  items = []; sls = []; slByIdx = Object.create(null); tws = []; selectedItems.clear(); lastClickedMI = -1;
+  items = []; sls = []; slByIdx = Object.create(null); stripMounted.clear(); selectedItems.clear(); lastClickedMI = -1;
   [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
   g('tstrip').innerHTML = '';
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
@@ -2338,6 +2352,7 @@ g('bru').onclick = function() {
 };
 
 function load(files) {
+  folderIngestGen++;
   const acc = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
   if (!acc.length) return;
   const tmp = []; let done = 0;
@@ -2357,6 +2372,7 @@ function load(files) {
 }
 
 function addMoreFiles(files) {
+  folderIngestGen++;
   const acc = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
   if (!acc.length) return;
   const tmp = []; let done = 0;
@@ -2375,6 +2391,7 @@ function addMoreFiles(files) {
 }
 
 async function processHandles(handles) {
+  folderIngestGen++;
   const acc = [];
   for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
   if (!acc.length) return;
@@ -2394,6 +2411,7 @@ async function processHandles(handles) {
   dz.style.display = 'none'; viewer.style.display = 'flex';
 }
 async function addHandles(handles) {
+  folderIngestGen++;
   const acc = [];
   for (const h of handles) { const f = await h.getFile(); if (f.type.startsWith('image/') || f.type.startsWith('video/')) acc.push({h, f}); }
   if (!acc.length) return;
@@ -2450,9 +2468,20 @@ function handlesToItems(accPairs) {
   });
 }
 
+function yieldToMain() {
+  return new Promise(resolve => {
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(() => resolve(), { timeout: 48 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
 /** Browser Open Folder: full recursive walk with media MIME filter (cap 10k). */
 async function openBrowserFolder(dirHandle, opts) {
   const append = !!(opts && opts.append);
+  const gen = ++folderIngestGen;
   const acc = [];
   const truncatedRef = { truncated: false };
   try {
@@ -2462,17 +2491,22 @@ async function openBrowserFolder(dirHandle, opts) {
     showToast('Could not read folder.', 4000);
     return;
   }
+  if (gen !== folderIngestGen) return;
   if (!acc.length) { showToast('No images or videos found in that folder.', 3500); return; }
-  // First media visible ASAP; remainder joins playlist.
+  // First media visible ASAP; remainder ingested in batches.
   const first = await handlesToItems([acc[0]]);
+  if (gen !== folderIngestGen) return;
   if (!first.length) return;
   if (append && items.length) finishAdd(first);
   else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
-  if (acc.length > 1) {
-    const rest = await handlesToItems(acc.slice(1));
-    if (rest.length) finishAdd(rest);
-  }
   if (truncatedRef.truncated) showToast('Folder truncated at ' + FOLDER_BROWSER_CAP + ' media files.', 4500);
+  for (let i = 1; i < acc.length; i += FOLDER_INGEST_BATCH) {
+    if (gen !== folderIngestGen) return;
+    const chunk = await handlesToItems(acc.slice(i, i + FOLDER_INGEST_BATCH));
+    if (gen !== folderIngestGen) return;
+    if (chunk.length) finishAdd(chunk, { light: true });
+    await yieldToMain();
+  }
 }
 
 /** Shared Tauri path → item loader (images + videos). Used by Open Files / Folder. */
@@ -2536,15 +2570,21 @@ async function itemsFromMediaPaths(paths) {
 async function openMediaPaths(paths, opts) {
   const append = !!(opts && opts.append);
   if (!paths || !paths.length) return;
+  const gen = ++folderIngestGen;
   try {
     await tauriInvoke('register_allowed_paths', { paths });
+    if (gen !== folderIngestGen) return;
     const first = await itemsFromMediaPaths([paths[0]]);
+    if (gen !== folderIngestGen) return;
     if (!first.length) { showToast('No supported media in selection.', 3500); return; }
     if (append && items.length) finishAdd(first);
     else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
-    if (paths.length > 1) {
-      const rest = await itemsFromMediaPaths(paths.slice(1));
-      if (rest.length) finishAdd(rest);
+    for (let i = 1; i < paths.length; i += FOLDER_INGEST_BATCH) {
+      if (gen !== folderIngestGen) return;
+      const chunk = await itemsFromMediaPaths(paths.slice(i, i + FOLDER_INGEST_BATCH));
+      if (gen !== folderIngestGen) return;
+      if (chunk.length) finishAdd(chunk, { light: true });
+      await yieldToMain();
     }
   } catch (e) {
     console.error(e);
@@ -2567,8 +2607,17 @@ async function openTauriFolder(dirPath, opts) {
   }
 }
 
-function finishAdd(newItems) {
+function finishAdd(newItems, opts) {
   newItems.forEach(it => { initItem(it); items.push(it); });
+  if (opts && opts.light) {
+    syncStripTrackSize();
+    remountStripWindow();
+    const mi = getMediaItems();
+    if (mi.length) g('sc').textContent = (cur + 1) + '/' + mi.length;
+    if (g('media-dock').classList.contains('expanded')) renderPlaylist();
+    autoSave();
+    return;
+  }
   rebuildSlides(cur);
   autoSave();
 }
@@ -2698,28 +2747,132 @@ function bindLazyThumb(img, url) {
   ensureThumbIO().observe(img);
 }
 
+function stripTotalWidth(n) {
+  if (n <= 0) return STRIP_PAD_X * 2;
+  return STRIP_PAD_X * 2 + n * STRIP_THUMB_W + Math.max(0, n - 1) * STRIP_GAP;
+}
+function stripLeftForIndex(i) {
+  return STRIP_PAD_X + i * STRIP_CELL;
+}
+function ensureStripTrack() {
+  const strip = g('tstrip');
+  let track = g('tstrip-track');
+  if (!track) {
+    track = document.createElement('div');
+    track.id = 'tstrip-track';
+    strip.appendChild(track);
+    if (!strip._sspStripScrollBound) {
+      strip._sspStripScrollBound = true;
+      strip.addEventListener('scroll', () => {
+        if (stripRaf) return;
+        stripRaf = requestAnimationFrame(() => {
+          stripRaf = 0;
+          remountStripWindow();
+        });
+      }, { passive: true });
+    }
+  }
+  return track;
+}
+function syncStripTrackSize() {
+  const track = ensureStripTrack();
+  const n = getMediaItems().length;
+  track.style.width = stripTotalWidth(n) + 'px';
+}
+function createStripThumb(item, i) {
+  const tw = document.createElement('div');
+  tw.className = 'tw';
+  tw.style.left = stripLeftForIndex(i) + 'px';
+  tw.dataset.mi = String(i);
+  const ti = document.createElement('img');
+  ti.className = 'th' + (i === cur ? ' at' : '');
+  ti.decoding = 'async';
+  ti.onclick = () => goTo(i);
+  if (item.type === 'video') {
+    ti.dataset.thumbId = item.id;
+    // Placeholder unless thumbnail already cached — avoid decoding every video on scrub.
+    ti.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
+    tw.appendChild(ti);
+    const vi = document.createElement('div'); vi.className = 'tvi'; vi.textContent = '▶'; tw.appendChild(vi);
+  } else {
+    // Window is already small; bind lazy still avoids decode storms on fast scrub.
+    bindLazyThumb(ti, item.url);
+    if (i === cur) ti.className = 'th at';
+    tw.appendChild(ti);
+  }
+  return tw;
+}
+function unmountStripThumb(i) {
+  const tw = stripMounted.get(i);
+  if (!tw) return;
+  const img = tw.querySelector('img');
+  if (img && thumbIO) try { thumbIO.unobserve(img); } catch (_) {}
+  tw.remove();
+  stripMounted.delete(i);
+}
+/** Mount only thumbs intersecting the scroll viewport (+ overscan). */
+function remountStripWindow(forceCenter) {
+  const mi = getMediaItems();
+  const strip = g('tstrip');
+  const track = ensureStripTrack();
+  syncStripTrackSize();
+  if (!mi.length) {
+    stripMounted.forEach((_, i) => unmountStripThumb(i));
+    return;
+  }
+  const viewW = Math.max(strip.clientWidth || 0, 320);
+  let scrollL = strip.scrollLeft;
+  if (forceCenter != null && forceCenter >= 0) {
+    const target = stripLeftForIndex(forceCenter) + STRIP_THUMB_W / 2 - viewW / 2;
+    scrollL = Math.max(0, Math.min(target, Math.max(0, stripTotalWidth(mi.length) - viewW)));
+  }
+  const first = Math.max(0, Math.floor((scrollL - STRIP_PAD_X) / STRIP_CELL) - STRIP_OVERSCAN);
+  const last = Math.min(mi.length - 1, Math.ceil((scrollL + viewW - STRIP_PAD_X) / STRIP_CELL) + STRIP_OVERSCAN);
+  stripMounted.forEach((_, i) => {
+    if (i < first || i > last) unmountStripThumb(i);
+  });
+  for (let i = first; i <= last; i++) {
+    if (stripMounted.has(i)) {
+      const tw = stripMounted.get(i);
+      tw.style.left = stripLeftForIndex(i) + 'px';
+      const e = tw.querySelector('img');
+      if (e) e.className = 'th' + (i === cur ? ' at' : '');
+      continue;
+    }
+    const tw = createStripThumb(mi[i], i);
+    track.appendChild(tw);
+    stripMounted.set(i, tw);
+  }
+}
+function updStripActive(i) {
+  stripMounted.forEach((tw, j) => {
+    const e = tw.querySelector('img');
+    if (e) e.className = 'th' + (j === i ? ' at' : '');
+  });
+}
+function scrollStripTo(i, smooth) {
+  const strip = g('tstrip');
+  const miLen = getMediaItems().length;
+  if (!miLen) return;
+  const viewW = Math.max(strip.clientWidth || 0, 320);
+  const target = stripLeftForIndex(i) + STRIP_THUMB_W / 2 - viewW / 2;
+  const left = Math.max(0, Math.min(target, Math.max(0, stripTotalWidth(miLen) - viewW)));
+  if (typeof strip.scrollTo === 'function') {
+    strip.scrollTo({ left, behavior: smooth ? 'smooth' : 'auto' });
+  } else {
+    strip.scrollLeft = left;
+  }
+  remountStripWindow(i);
+}
+
 function buildTimelineThumbs() {
   if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
-  tws = []; g('tstrip').innerHTML = '';
-  getMediaItems().forEach((item, i) => {
-    const tw = document.createElement('div'); tw.className = 'tw';
-    if (item.type === 'video') {
-      const ti = document.createElement('img');
-      ti.className = 'th';
-      ti.dataset.thumbId = item.id;
-      ti.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
-      ti.decoding = 'async';
-      ti.onclick = () => goTo(i);
-      tw.appendChild(ti);
-      const vi = document.createElement('div'); vi.className = 'tvi'; vi.textContent = '▶'; tw.appendChild(vi);
-      if (!item.thumbnailUrl) getVideoThumbnail(item);
-    } else {
-      const ti = document.createElement('img'); ti.className = 'th'; ti.onclick = () => goTo(i);
-      bindLazyThumb(ti, item.url);
-      tw.appendChild(ti);
-    }
-    g('tstrip').appendChild(tw); tws.push(tw);
-  });
+  if (stripRaf) { cancelAnimationFrame(stripRaf); stripRaf = 0; }
+  stripMounted.clear();
+  g('tstrip').innerHTML = '';
+  ensureStripTrack();
+  syncStripTrackSize();
+  remountStripWindow(cur);
 }
 
 function buildSlideDOM() {
@@ -3052,8 +3205,8 @@ function showSlide(i) {
     s.classList.remove('companion');
     s.className = 'sl' + (j === i ? ' on' : '');
   });
-  tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === i ? ' at' : ''); });
-  tws[i]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
+  scrollStripTo(i, true);
+  updStripActive(i);
   g('sc').textContent = (i+1) + '/' + getMediaItems().length;
   g('fnov').textContent = getMediaItems()[i]?.name || '';
   applySlideSettings(i);
@@ -3189,8 +3342,8 @@ function goTo(i) {
   applySlideSettings(cur);
   inSl.className = 'sl on' + (incomingClass ? ' ' + incomingClass : '');
 
-  tws.forEach((tw, j) => { const e = tw.querySelector('img,video'); if (e) e.className = 'th' + (j === cur ? ' at' : ''); });
-  tws[cur]?.querySelector('img,video')?.scrollIntoView?.({behavior:'smooth',block:'nearest',inline:'nearest'});
+  scrollStripTo(cur, true);
+  updStripActive(cur);
   g('sc').textContent = (cur+1) + '/' + len;
   g('fnov').textContent = getMediaItems()[cur]?.name || '';
   pauseVids();
