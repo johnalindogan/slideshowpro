@@ -6,3 +6,10 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 .DS_Store
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/app/src/main/assets/SlideShowPro.html
+*.iml
