@@ -15,20 +15,25 @@
         "width": 1280,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "dragDropEnabled": true
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -43,51 +48,103 @@
     },
     "fileAssociations": [
       {
-        "ext": ["jpg", "jpeg"],
+        "ext": [
+          "jpg",
+          "jpeg"
+        ],
         "mimeType": "image/jpeg",
         "description": "JPEG Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["png"],
+        "ext": [
+          "png"
+        ],
         "mimeType": "image/png",
         "description": "PNG Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["gif"],
+        "ext": [
+          "gif"
+        ],
         "mimeType": "image/gif",
         "description": "GIF Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["webp"],
+        "ext": [
+          "webp"
+        ],
         "mimeType": "image/webp",
         "description": "WebP Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["bmp"],
+        "ext": [
+          "bmp"
+        ],
         "mimeType": "image/bmp",
         "description": "Bitmap Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["tif", "tiff"],
+        "ext": [
+          "tif",
+          "tiff"
+        ],
         "mimeType": "image/tiff",
         "description": "TIFF Image",
         "role": "Viewer",
         "rank": "Alternate"
       },
       {
-        "ext": ["ico"],
+        "ext": [
+          "ico"
+        ],
         "mimeType": "image/x-icon",
         "description": "Icon Image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "mp4"
+        ],
+        "mimeType": "video/mp4",
+        "description": "MP4 Video",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "mov"
+        ],
+        "mimeType": "video/quicktime",
+        "description": "QuickTime Video",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "webm"
+        ],
+        "mimeType": "video/webm",
+        "description": "WebM Video",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "m4v"
+        ],
+        "mimeType": "video/mp4",
+        "description": "M4V Video",
         "role": "Viewer",
         "rank": "Alternate"
       }

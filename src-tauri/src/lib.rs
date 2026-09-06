@@ -48,6 +48,7 @@ fn ext_lower(path: &Path) -> Option<String> {
         .map(|e| e.to_ascii_lowercase())
 }
 
+#[allow(dead_code)]
 fn is_image_path(path: &Path) -> bool {
     ext_lower(path)
         .map(|e| IMAGE_EXTS.iter().any(|x| x == &e))
@@ -75,7 +76,7 @@ fn strip_surrounding_quotes(s: &str) -> &str {
     t
 }
 
-/// Parse CLI / Open-with args into image paths.
+/// Parse CLI / Open-with args into image/video paths.
 /// Only treat args that start with `file:` as URLs — `Url::parse` would otherwise
 /// treat Windows paths like `C:/foo.jpg` as scheme `"c"` and drop them.
 fn parse_launch_args() -> Vec<PathBuf> {
@@ -97,7 +98,7 @@ fn parse_launch_args() -> Vec<PathBuf> {
         }
         files.push(PathBuf::from(arg));
     }
-    files.into_iter().filter(|p| is_image_path(p)).collect()
+    files.into_iter().filter(|p| is_media_path(p)).collect()
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
@@ -333,7 +334,7 @@ pub fn run() {
                 let files: Vec<PathBuf> = urls
                     .iter()
                     .filter_map(|u| u.to_file_path().ok())
-                    .filter(|p| is_image_path(p))
+                    .filter(|p| is_media_path(p))
                     .collect();
                 if !files.is_empty() {
                     store_launch_paths(app, files);
