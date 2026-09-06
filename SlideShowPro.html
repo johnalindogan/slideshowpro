@@ -100,22 +100,31 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .cv{font-size:11px;color:rgba(255,255,255,.55);width:48px;text-align:right;flex-shrink:0;font-family:var(--font-main);}
 .crst{font-size:11px;color:rgba(255,255,255,.35);cursor:pointer;padding:2px 8px;border:.5px solid rgba(255,255,255,.15);border-radius:4px;background:transparent;font-family:var(--font-main);flex-shrink:0;}
 .crst:hover{color:#fff;border-color:rgba(255,255,255,.5);}
-#ctrls{display:flex;align-items:center;gap:5px;padding:9px 12px;background:rgba(8,8,8,.99);flex-shrink:0;flex-wrap:wrap;border-top:.5px solid rgba(255,255,255,.08);}
-.cb{background:transparent;border:.5px solid rgba(255,255,255,.22);cursor:pointer;color:#fff;padding:6px 7px;border-radius:6px;display:flex;align-items:center;font-size:18px;transition:background .15s;flex-shrink:0;line-height:1;}
+#ctrls{display:flex;flex-direction:column;gap:0;padding:0;background:rgba(8,8,8,.99);flex-shrink:0;border-top:.5px solid rgba(255,255,255,.08);}
+#ctrls-primary{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-wrap:nowrap;width:100%;min-height:44px;box-sizing:border-box;}
+#ctrls-overflow{display:none;align-items:center;gap:5px;padding:8px 12px 10px;flex-wrap:wrap;width:100%;box-sizing:border-box;border-top:.5px solid rgba(255,255,255,.06);background:rgba(0,0,0,.28);}
+#ctrls-overflow.open{display:flex;}
+.ctrls-cluster{display:flex;align-items:center;gap:4px;flex-shrink:0;}
+.cb{background:transparent;border:.5px solid rgba(255,255,255,.18);cursor:pointer;color:#fff;padding:6px 7px;border-radius:6px;display:flex;align-items:center;font-size:18px;transition:background .15s,border-color .15s;flex-shrink:0;line-height:1;}
 .cb:hover{background:rgba(255,255,255,.1);}
 .cb:active{background:rgba(255,255,255,.22);}
 .cb.on{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.55);}
 .cb svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+#bmore{margin-left:auto;}
 .cs{font-size:12px;background:#111;border:.5px solid rgba(255,255,255,.22);border-radius:4px;color:#fff;padding:3px 5px;cursor:pointer;flex-shrink:0;font-family:var(--font-main);}
-#pbw{flex:1;min-width:60px;height:4px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;flex-shrink:1;cursor:pointer;}
+#pbw{flex:1;min-width:48px;max-width:160px;height:3px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;flex-shrink:1;cursor:pointer;}
 #pb{height:100%;width:0%;background:#fff;border-radius:2px;transition:width .1s linear;}
-.sp{width:.5px;height:20px;background:rgba(255,255,255,.15);flex-shrink:0;}
+.sp{width:.5px;height:20px;background:rgba(255,255,255,.12);flex-shrink:0;}
 .lb{font-size:12px;color:rgba(255,255,255,.45);min-width:32px;text-align:center;flex-shrink:0;font-family:var(--font-main);}
 #vsl{width:64px;accent-color:#fff;cursor:pointer;}
 .pg{display:grid;grid-template-columns:repeat(3,24px);grid-template-rows:repeat(3,24px);gap:2px;flex-shrink:0;}
 .pg .cb{padding:0;font-size:13px;border-radius:4px;justify-content:center;width:24px;height:24px;}
 .pc{color:rgba(255,255,255,.2)!important;border-color:rgba(255,255,255,.07)!important;cursor:default!important;}
 .pc:hover{background:transparent!important;}
+@media (max-width:720px){
+  #ctrls-primary{gap:4px;padding:7px 8px;}
+  #pbw{max-width:96px;min-width:36px;}
+}
 
 /* Media Dock styling */
 #media-dock {
@@ -700,118 +709,131 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
   </div>
 
   <div id="ctrls">
-    <button class="cb" id="bru" title="Load new files">
-      <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-    </button>
-    <div class="sp"></div>
-    <button class="cb" id="bpr" title="Previous">
-      <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-    </button>
-    <button class="cb" id="bpl" title="Play/Pause">
-      <svg id="ipl" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-    </button>
-    <button class="cb" id="bne" title="Next">
-      <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-    </button>
-    <button class="cb" id="brev" title="Reverse Playback">
-      <svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-    </button>
-    <div id="pbw"><div id="pb"></div></div>
-    <span class="lb" id="sc">1/1</span>
-    <div class="sp"></div>
-    <button class="cb" id="bmu" title="Mute">
-      <svg id="ivol" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-    </button>
-    <input type="range" id="vsl" min="0" max="1" step="0.05" value="1" title="Volume">
-    <div class="sp"></div>
-    <button class="cb" id="bsd" title="Slower (−5%)">
-      <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    </button>
-    <span class="lb" id="slb" title="Playback speed (click to reset)" style="cursor:pointer;min-width:42px;">100%</span>
-    <button class="cb" id="bsu" title="Faster (+5%)">
-      <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    </button>
-    <div class="sp"></div>
-    <button class="cb" id="bzo" title="Zoom out">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-    </button>
-    <span class="lb" id="zlb" title="Zoom (click to reset)" style="cursor:pointer;">100%</span>
-    <button class="cb" id="bzi" title="Zoom in">
-      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-    </button>
-    <div class="sp"></div>
-    <div class="pg">
-      <button class="cb" onclick="doPan(-1,-1)">&#8598;</button>
-      <button class="cb" onclick="doPan(0,-1)">&#8593;</button>
-      <button class="cb" onclick="doPan(1,-1)">&#8599;</button>
-      <button class="cb" onclick="doPan(-1,0)">&#8592;</button>
-      <button class="cb pc" onclick="resetPan()">&#9675;</button>
-      <button class="cb" onclick="doPan(1,0)">&#8594;</button>
-      <button class="cb" onclick="doPan(-1,1)">&#8601;</button>
-      <button class="cb" onclick="doPan(0,1)">&#8595;</button>
-      <button class="cb" onclick="doPan(1,1)">&#8600;</button>
+    <div id="ctrls-primary">
+      <div class="ctrls-cluster">
+        <button class="cb" id="bpr" title="Previous">
+          <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="cb" id="bpl" title="Play/Pause">
+          <svg id="ipl" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <button class="cb" id="bne" title="Next">
+          <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+      <div id="pbw"><div id="pb"></div></div>
+      <span class="lb" id="sc">1/1</span>
+      <div class="sp"></div>
+      <div class="ctrls-cluster">
+        <button class="cb" id="bzo" title="Zoom out">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+        <span class="lb" id="zlb" title="Zoom (click to reset)" style="cursor:pointer;">100%</span>
+        <button class="cb" id="bzi" title="Zoom in">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        </button>
+      </div>
+      <div class="sp"></div>
+      <div class="ctrls-cluster">
+        <button class="cb" id="bfs" title="Fullscreen">
+          <svg id="ifs" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        </button>
+        <button class="cb" id="bplt" title="Playlist">
+          <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+        <button class="cb" id="bkb" title="Ken Burns settings">
+          <svg viewBox="0 0 24 24"><path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"/></svg>
+        </button>
+        <button class="cb" id="bhide" title="Hide controls">
+          <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+        </button>
+        <button class="cb" id="bked" title="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
+        </button>
+      </div>
+      <button class="cb" id="bmore" title="More tools" aria-expanded="false" aria-controls="ctrls-overflow">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+      </button>
     </div>
-    <div class="sp"></div>
-    <button class="cb" id="bmh" title="Mirror Horizontal">
-      <svg viewBox="0 0 24 24"><line x1="12" y1="3" x2="12" y2="21"/><path d="M16 7l4 5-4 5M8 7l-4 5 4 5"/></svg>
-    </button>
-    <button class="cb" id="bmv" title="Mirror Vertical">
-      <svg viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><path d="M7 16l5 4 5-4M7 8l5-4 5 4"/></svg>
-    </button>
-    <button class="cb" id="brcw" title="Rotate CW">
-      <svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>
-    </button>
-    <button class="cb" id="brccw" title="Rotate CCW">
-      <svg viewBox="0 0 24 24"><path d="M3 2v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>
-    </button>
-    <div class="sp"></div>
-    <select class="cs" id="dsel" title="Default photo duration">
-      <option value="3000">3s</option>
-      <option value="4000">4s</option>
-      <option value="6000" selected>6s</option>
-      <option value="8000">8s</option>
-      <option value="12000">12s</option>
-    </select>
-    <select class="cs" id="tsel" title="Transition effect">
-      <option value="fade" selected>Fade</option>
-      <option value="slide">Slide</option>
-      <option value="zoom">Zoom</option>
-      <option value="none">None</option>
-    </select>
-    <div class="sp"></div>
-    <button class="cb" id="bcol" title="Color controls">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
-    </button>
-    <button class="cb" id="bss" title="Save screenshot">
-      <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-    </button>
-    <button class="cb" id="btheme" title="Themes">
-      <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
-    </button>
-    <button class="cb" id="bplt" title="Playlist">
-      <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-    </button>
-    <button class="cb" id="bkb" title="Ken Burns settings">
-      <svg viewBox="0 0 24 24"><path d="M15 3h6v6M14 10l6.1-6.1M9 21H3v-6M10 14l-6.1 6.1"/></svg>
-    </button>
-    <button class="cb" id="bhmax" title="Horizontal Max Mode (2 images side by side for portrait media on landscape screen)">
-      <svg viewBox="0 0 24 24"><rect x="2" y="3" width="9" height="18" rx="1.5"/><rect x="13" y="3" width="9" height="18" rx="1.5"/></svg>
-    </button>
-    <button class="cb" id="bvmax" title="Vertical Max Mode (2 images top/bottom for landscape media on portrait screen)">
-      <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="9" rx="1.5"/><rect x="2" y="13" width="20" height="9" rx="1.5"/></svg>
-    </button>
-    <button class="cb on" id="bfname" title="Toggle Filename">
-      <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-    </button>
-    <button class="cb" id="bked" title="Keyboard shortcuts">
-      <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
-    </button>
-    <button class="cb" id="bhide" title="Hide controls">
-      <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-    </button>
-    <button class="cb" id="bfs" title="Fullscreen">
-      <svg id="ifs" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-    </button>
+    <div id="ctrls-overflow" role="region" aria-label="More tools">
+      <button class="cb" id="bru" title="Load new files">
+        <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </button>
+      <button class="cb" id="brev" title="Reverse Playback">
+        <svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      </button>
+      <div class="sp"></div>
+      <button class="cb" id="bmu" title="Mute">
+        <svg id="ivol" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      </button>
+      <input type="range" id="vsl" min="0" max="1" step="0.05" value="1" title="Volume">
+      <div class="sp"></div>
+      <button class="cb" id="bsd" title="Slower (−5%)">
+        <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <span class="lb" id="slb" title="Playback speed (click to reset)" style="cursor:pointer;min-width:42px;">100%</span>
+      <button class="cb" id="bsu" title="Faster (+5%)">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <div class="sp"></div>
+      <div class="pg">
+        <button class="cb" onclick="doPan(-1,-1)">&#8598;</button>
+        <button class="cb" onclick="doPan(0,-1)">&#8593;</button>
+        <button class="cb" onclick="doPan(1,-1)">&#8599;</button>
+        <button class="cb" onclick="doPan(-1,0)">&#8592;</button>
+        <button class="cb pc" onclick="resetPan()">&#9675;</button>
+        <button class="cb" onclick="doPan(1,0)">&#8594;</button>
+        <button class="cb" onclick="doPan(-1,1)">&#8601;</button>
+        <button class="cb" onclick="doPan(0,1)">&#8595;</button>
+        <button class="cb" onclick="doPan(1,1)">&#8600;</button>
+      </div>
+      <div class="sp"></div>
+      <button class="cb" id="bmh" title="Mirror Horizontal">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="3" x2="12" y2="21"/><path d="M16 7l4 5-4 5M8 7l-4 5 4 5"/></svg>
+      </button>
+      <button class="cb" id="bmv" title="Mirror Vertical">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><path d="M7 16l5 4 5-4M7 8l5-4 5 4"/></svg>
+      </button>
+      <button class="cb" id="brcw" title="Rotate CW">
+        <svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>
+      </button>
+      <button class="cb" id="brccw" title="Rotate CCW">
+        <svg viewBox="0 0 24 24"><path d="M3 2v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>
+      </button>
+      <div class="sp"></div>
+      <select class="cs" id="dsel" title="Default photo duration">
+        <option value="3000">3s</option>
+        <option value="4000">4s</option>
+        <option value="6000" selected>6s</option>
+        <option value="8000">8s</option>
+        <option value="12000">12s</option>
+      </select>
+      <select class="cs" id="tsel" title="Transition effect">
+        <option value="fade" selected>Fade</option>
+        <option value="slide">Slide</option>
+        <option value="zoom">Zoom</option>
+        <option value="none">None</option>
+      </select>
+      <div class="sp"></div>
+      <button class="cb" id="bcol" title="Color controls">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+      </button>
+      <button class="cb" id="bss" title="Save screenshot">
+        <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      </button>
+      <button class="cb" id="btheme" title="Themes">
+        <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
+      </button>
+      <button class="cb" id="bhmax" title="Horizontal Max Mode (2 images side by side for portrait media on landscape screen)">
+        <svg viewBox="0 0 24 24"><rect x="2" y="3" width="9" height="18" rx="1.5"/><rect x="13" y="3" width="9" height="18" rx="1.5"/></svg>
+      </button>
+      <button class="cb" id="bvmax" title="Vertical Max Mode (2 images top/bottom for landscape media on portrait screen)">
+        <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="9" rx="1.5"/><rect x="2" y="13" width="20" height="9" rx="1.5"/></svg>
+      </button>
+      <button class="cb on" id="bfname" title="Toggle Filename">
+        <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+    </div>
   </div>
 
   <!-- Unified Media Dock -->
@@ -1866,9 +1888,29 @@ function toggleControls() {
   ctrlsVisible = !ctrlsVisible;
   [g('ctrls'), g('media-dock'), g('cpanel')].forEach(el => el.style.display = ctrlsVisible ? '' : 'none');
   g('showctrl').classList.toggle('visible', !ctrlsVisible);
+  if (!ctrlsVisible) setOverflowOpen(false);
 }
 g('bhide').onclick = toggleControls;
 g('showctrl').onclick = () => { if (!ctrlsVisible) toggleControls(); };
+
+/* ── More tools overflow drawer ── */
+function setOverflowOpen(open) {
+  const o = g('ctrls-overflow'), btn = g('bmore');
+  if (!o || !btn) return;
+  o.classList.toggle('open', open);
+  btn.classList.toggle('on', open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+g('bmore').onclick = (e) => {
+  e.stopPropagation();
+  setOverflowOpen(!g('ctrls-overflow').classList.contains('open'));
+};
+document.addEventListener('click', (e) => {
+  const o = g('ctrls-overflow');
+  if (!o || !o.classList.contains('open')) return;
+  if (o.contains(e.target) || g('bmore').contains(e.target) || g('cpanel').contains(e.target)) return;
+  setOverflowOpen(false);
+});
 
 /* ── Watch Mode (F5) ── */
 function toggleWatchMode() {
@@ -1876,6 +1918,7 @@ function toggleWatchMode() {
   if (watchMode) {
     preWatchCtrlsVis = ctrlsVisible;
     if (ctrlsVisible) { ctrlsVisible = false; [g('ctrls'),g('media-dock'),g('cpanel')].forEach(el => el.style.display = 'none'); }
+    setOverflowOpen(false);
     g('showctrl').classList.remove('visible');
     g('watchbadge').classList.add('show');
     closePL();
@@ -3519,9 +3562,10 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); return;
   }
 
-  /* Escape: exit watch mode or clear selection (fixed) */
+  /* Escape: exit watch mode, close overflow, or clear selection (fixed) */
   if (e.key === 'Escape') {
     if (watchMode) { toggleWatchMode(); return; }
+    if (g('ctrls-overflow')?.classList.contains('open')) { setOverflowOpen(false); return; }
     if (selectedItems.size > 0) { selectedItems.clear(); updSelBadge(); if (g('media-dock').classList.contains('expanded')) renderPlaylist(); }
     return;
   }
