@@ -41,6 +41,28 @@ Landing primary actions: **Open Files · Open Folder · Continue · Open Playlis
 In the Tauri shell, Open Files / Open Folder / Playlist use `@tauri-apps/plugin-dialog` (no visible `<input type=file>` chrome). Open Folder walks the chosen directory **recursively** with a sane image/video extension filter (cap 10 000). Browser builds use `showDirectoryPicker` when available.
 
 
+
+## Android TV wrapper (Phase 1 scaffold)
+
+Thin Leanback shell: loads the same SlideShowPro.html in a WebView. Does not rewrite Ken Burns or add SAF / media bridges (Phase 2+).
+
+### Prerequisites
+
+- Android Studio (or SDK + JDK 17)
+- ANDROID_HOME or android/local.properties with Platform 34 and a TV emulator image
+
+Open the android/ folder in Android Studio (not the repo root).
+
+### Sync / build / sideload
+
+1. Run the package.json sync-android script (copies HTML into app assets).
+2. From android/, run Gradle assembleDebug.
+3. Sideload the debug APK onto a Google TV / Android TV emulator and open the Leanback launcher entry.
+
+Gradle preBuild also syncs the HTML asset automatically.
+
+See android/README.md for details.
+
 ### Out of scope
 
 - Paid Apple signing / notarization / store listing
