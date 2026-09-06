@@ -922,8 +922,9 @@ const PICKER_OPTS = { multiple: true, types: [{ description: 'Images & Videos', 
 const MEDIA_EXTS = ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','ico','mp4','mov','webm','m4v'];
 const FOLDER_BROWSER_CAP = 10000;
 
-function isTauri() {
-  return !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+function sspIsTauri() {
+  // Avoid binding name `isTauri` — Tauri withGlobalTauri exposes window.isTauri (boolean).
+  return !!(window.__TAURI__ || window.__TAURI_INTERNALS__);
 }
 function tauriInvoke(cmd, args) {
   return window.__TAURI__.core.invoke(cmd, args || {});
@@ -937,7 +938,7 @@ function tauriDialogOpen(opts) {
 
 /** Tauri: native dialog. Browser: showOpenFilePicker / hidden input. Never reveals inputs in Tauri. */
 async function pickOpenFiles() {
-  if (isTauri()) {
+  if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
         multiple: true,
@@ -966,7 +967,7 @@ async function pickOpenFiles() {
 }
 
 async function pickOpenFolder() {
-  if (isTauri()) {
+  if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
         multiple: false,
@@ -996,7 +997,7 @@ async function pickOpenFolder() {
 }
 
 async function pickPlaylist() {
-  if (isTauri()) {
+  if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
         multiple: false,
@@ -1026,7 +1027,7 @@ async function pickPlaylist() {
 }
 
 async function pickImageUpdates() {
-  if (isTauri()) {
+  if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
         multiple: false,
@@ -1059,7 +1060,7 @@ async function openFilePicker(append) {
     return;
   }
   if (picked.kind === 'input') {
-    if (isTauri()) return; // never reveal bare Choose File chrome in Tauri
+    if (sspIsTauri()) return; // never reveal bare Choose File chrome in Tauri
     g(picked.inputId === 'fi' && append ? 'fiadd' : picked.inputId).click();
   }
 }
@@ -1096,7 +1097,7 @@ async function openPlaylistPicker() {
     return;
   }
   if (picked.kind === 'input') {
-    if (isTauri()) return;
+    if (sspIsTauri()) return;
     landingPlaylistMode = true;
     g('fiplist').click();
   }
@@ -1123,7 +1124,7 @@ async function openImageUpdatesPicker() {
     return;
   }
   if (picked.kind === 'input') {
-    if (isTauri()) return;
+    if (sspIsTauri()) return;
     g('fiupd').click();
   }
 }
