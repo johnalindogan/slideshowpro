@@ -982,6 +982,12 @@ function fileExtName(name) {
   return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
 }
 /** Classify media by MIME first, then extension fallback (Windows/WebView2 often blank MIME). */
+function mediaKindFromMime(mime) {
+  const t = String(mime || '').toLowerCase();
+  if (t.startsWith('video/')) return 'video';
+  if (t.startsWith('image/')) return 'image';
+  return null;
+}
 function mediaKindFromName(name) {
   const ext = fileExtName(name);
   if (VIDEO_EXTS.includes(ext)) return 'video';
@@ -990,12 +996,54 @@ function mediaKindFromName(name) {
 }
 function mediaKindFromFile(f) {
   if (!f) return null;
-  const t = (f.type || '').toLowerCase();
-  if (t.startsWith('video/')) return 'video';
-  if (t.startsWith('image/')) return 'image';
-  return mediaKindFromName(f.name);
+  return mediaKindFromMime(f.type) || mediaKindFromName(f.name);
 }
 function isAcceptedMediaFile(f) { return mediaKindFromFile(f) != null; }
+/** Normalize string path or Android {uri,name,mime} entry for ingest. */
+function normalizeMediaPathEntry(entry) {
+  function basename(p) {
+    const s = String(p || '').replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  if (entry && typeof entry === 'object') {
+    const path = String(entry.uri || entry.path || '');
+    const name = String(entry.name || entry.displayName || basename(path) || '');
+    const mime = String(entry.mime || entry.type || '').toLowerCase();
+    return { path, name, mime };
+  }
+  const path = String(entry || '');
+  return { path, name: basename(path), mime: '' };
+}
+/**
+ * Resolve kind + MIME for a path entry.
+ * Prefer bridge MIME / displayName; fall back to basename extension.
+ * Never drop known image/video MIME or displayName with a media extension.
+ */
+function resolveMediaPathMeta(entry) {
+  const { path, name, mime } = normalizeMediaPathEntry(entry);
+  if (!path && !name) return null;
+  const kind = mediaKindFromMime(mime) || mediaKindFromName(name) || mediaKindFromName(path);
+  if (!kind) return null;
+  const ext = fileExtName(name) || fileExtName(path);
+  let resolvedMime = mime;
+  if (!resolvedMime || resolvedMime === 'application/octet-stream') {
+    resolvedMime = MEDIA_MIME[ext] || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
+  }
+  const displayName = name || (ext ? basenameFallback(path) : (kind === 'video' ? 'video' : 'image'));
+  return { path, name: displayName, mime: resolvedMime, kind };
+}
+function basenameFallback(p) {
+  const s = String(p || '').replace(/\\/g, '/');
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+function mediaPathStrings(paths) {
+  return (paths || []).map((p) => {
+    if (p && typeof p === 'object') return String(p.uri || p.path || '');
+    return String(p || '');
+  }).filter(Boolean);
+}
 async function filesFromDataTransfer(dt) {
   if (!dt) return [];
   if (dt.files && dt.files.length) return Array.from(dt.files);
@@ -2849,17 +2897,11 @@ async function openBrowserFolder(dirHandle, opts) {
   }
 }
 
-/** Shared Tauri path → item loader (images + videos). Used by Open Files / Folder. */
+/** Shared Tauri/Android path → item loader (images + videos). Used by Open Files / Folder.
+ * Accepts string paths (Tauri/desktop) or Android bridge objects {uri,name,mime}.
+ */
 async function itemsFromMediaPaths(paths) {
   const invoke = tauriInvoke;
-  function basename(p) {
-    const s = String(p).replace(/\\/g, '/');
-    const i = s.lastIndexOf('/');
-    return i >= 0 ? s.slice(i + 1) : s;
-  }
-  function extOf(p) {
-    return fileExtName(basename(p));
-  }
   function mediaBytesToU8(data) {
     if (typeof data === 'string') {
       const bin = atob(data);
@@ -2884,12 +2926,11 @@ async function itemsFromMediaPaths(paths) {
     return null;
   }
   const pending = [];
-  for (const p of paths) {
-    const ext = extOf(p);
-    const mime = MEDIA_MIME[ext];
-    if (!mime) continue;
-    const name = basename(p);
-    const kind = mediaKindFromName(name) || (mime.startsWith('video/') ? 'video' : 'image');
+  for (const entry of paths) {
+    const meta = resolveMediaPathMeta(entry);
+    // Drop only when neither MIME nor displayName/path extension identifies media.
+    if (!meta) continue;
+    const { path: p, name, mime, kind } = meta;
     let url = pathToUrl(p, mime);
     if (!url) {
       if (sspIsAndroid()) {
@@ -2930,7 +2971,7 @@ async function openMediaPaths(paths, opts) {
   if (!paths || !paths.length) return;
   const gen = bumpFolderIngestGen();
   try {
-    if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths });
+    if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths: mediaPathStrings(paths) });
     if (gen !== folderIngestGen) return;
     const first = await itemsFromMediaPaths([paths[0]]);
     if (gen !== folderIngestGen) return;

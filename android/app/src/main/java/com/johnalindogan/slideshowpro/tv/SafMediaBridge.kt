@@ -171,7 +171,7 @@ class SafMediaBridge(
         }
         takeReadPermissions(uris)
         val paths = JSONArray()
-        uris.forEach { paths.put(it.toString()) }
+        uris.forEach { paths.put(mediaEntryJson(it)) }
         resolve(
             id,
             JSONObject()
@@ -245,7 +245,7 @@ class SafMediaBridge(
             try {
                 val root = DocumentFile.fromTreeUri(activity, treeUri)
                     ?: throw IllegalStateException("invalid tree uri")
-                val paths = ArrayList<String>(256)
+                val paths = ArrayList<JSONObject>(256)
                 var truncated = false
                 val stack = ArrayDeque<DocumentFile>()
                 stack.add(root)
@@ -272,12 +272,12 @@ class SafMediaBridge(
                             continue
                         }
                         if (!child.isFile) continue
-                        if (!isMediaName(name)) continue
+                        if (!isMediaDocument(child, name)) continue
                         if (paths.size >= FOLDER_MAX_FILES) {
                             truncated = true
                             break
                         }
-                        paths.add(child.uri.toString())
+                        paths.add(mediaEntryJson(child.uri, name, child.type))
                     }
                     if (truncated) break
                 }
@@ -285,7 +285,10 @@ class SafMediaBridge(
                     resolve(requestId, JSONObject().put("kind", "cancel").put("reason", "ingest-cancelled"))
                     return@execute
                 }
-                paths.sort()
+                paths.sortWith(compareBy(
+                    { it.optString("name").lowercase() },
+                    { it.optString("uri") }
+                ))
                 val arr = JSONArray()
                 paths.forEach { arr.put(it) }
                 resolve(
@@ -303,6 +306,31 @@ class SafMediaBridge(
                 reject(requestId, e.message ?: "folder walk failed")
             }
         }
+    }
+
+
+    /** Prefer DocumentFile / ContentResolver MIME + display name — SAF URIs often lack extensions. */
+    private fun mediaEntryJson(uri: Uri, displayName: String? = null, mimeHint: String? = null): JSONObject {
+        val doc = DocumentFile.fromSingleUri(activity, uri)
+        val name = when {
+            !displayName.isNullOrBlank() -> displayName
+            !doc?.name.isNullOrBlank() -> doc!!.name!!
+            else -> uri.lastPathSegment?.substringAfterLast(':') ?: ""
+        }
+        val mime = when {
+            !mimeHint.isNullOrBlank() -> mimeHint
+            else -> activity.contentResolver.getType(uri) ?: doc?.type ?: ""
+        }
+        return JSONObject()
+            .put("uri", uri.toString())
+            .put("name", name)
+            .put("mime", mime)
+    }
+
+    private fun isMediaDocument(child: DocumentFile, name: String): Boolean {
+        if (isMediaName(name)) return true
+        val mime = (child.type ?: "").lowercase()
+        return mime.startsWith("image/") || mime.startsWith("video/")
     }
 
     private fun takeReadPermissions(uris: List<Uri>) {
