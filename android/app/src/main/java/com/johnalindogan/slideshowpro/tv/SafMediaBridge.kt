@@ -3,7 +3,10 @@ package com.johnalindogan.slideshowpro.tv
 import android.app.Activity
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -15,6 +18,8 @@ import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -28,6 +33,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * - read_text_file → playlist JSON / M3U text
  *
  * DocumentFile tree walk only (no MediaStore). Batched + cancelable for N≥200 / ~1k.
+ *
+ * DEBUG-only URI inject (BuildConfig.DEBUG): feeds the same android-folder / android-paths
+ * resolve path used by real SAF picks so App QA can exercise bridge ingest + Continue on
+ * AOSP TV AVDs that lack DocumentsUI. Inject greens the bridge path only — it does NOT
+ * equal SAF picker PASS.
  */
 class SafMediaBridge(
     private val activity: Activity,
@@ -72,6 +82,101 @@ class SafMediaBridge(
     /** Current cancel generation — JS may snapshot before long walks. */
     @JavascriptInterface
     fun currentIngestGen(): Int = ingestGen.get()
+
+    /**
+     * DEBUG only. True when inject surface is live (debug APK).
+     * Release: always false — no functional inject surface.
+     */
+    @JavascriptInterface
+    fun debugInjectAvailable(): Boolean = BuildConfig.DEBUG
+
+    /**
+     * DEBUG only. Walk a seed directory (or synthesize N JPEGs), persist for Continue,
+     * and resolve via the same android-folder payload as SAF Open Folder.
+     *
+     * @param seedHint optional absolute path or empty for default seed dirs
+     * @param ensureCountJson target media count to synthesize when seed is sparse (default 220)
+     */
+    @JavascriptInterface
+    fun debugInjectFromSeed(requestId: String, appendJson: String, seedHint: String, ensureCountJson: String) {
+        if (!BuildConfig.DEBUG) {
+            reject(requestId, "debug inject unavailable in release")
+            return
+        }
+        pendingAppend = appendJson == "true" || appendJson == "1"
+        val ensureCount = ensureCountJson.toIntOrNull()?.coerceIn(0, FOLDER_MAX_FILES) ?: DEBUG_DEFAULT_ENSURE
+        io.execute {
+            try {
+                val seed = resolveSeedDir(seedHint)
+                ensureSeedMedia(seed, ensureCount)
+                val rootUri = Uri.fromFile(seed)
+                // Persist so Continue / reopenPersistedFolder can re-walk after kill.
+                prefs.edit().putString(PREF_TREE, rootUri.toString()).apply()
+                Log.i(TAG, "DEBUG inject from seed=$seed ensure=$ensureCount (NOT SAF picker PASS)")
+                walkFileTreeAndResolve(requestId, seed, rootUri.toString())
+            } catch (e: Exception) {
+                Log.e(TAG, "debugInjectFromSeed", e)
+                reject(requestId, e.message ?: "debug inject failed")
+            }
+        }
+    }
+
+    /**
+     * DEBUG only. Accept JSON payload:
+     * { "kind":"folder"|"paths", "paths":[{"uri","name","mime"}], "root"?, "append"?, "persist"? }
+     * and deliver through the same __sspAndroidResolve path as real SAF results.
+     */
+    @JavascriptInterface
+    fun debugInjectPayload(requestId: String, json: String) {
+        if (!BuildConfig.DEBUG) {
+            reject(requestId, "debug inject unavailable in release")
+            return
+        }
+        io.execute {
+            try {
+                val obj = JSONObject(json)
+                val kindIn = obj.optString("kind", "folder")
+                val paths = obj.optJSONArray("paths") ?: JSONArray()
+                if (paths.length() == 0) {
+                    reject(requestId, "debug inject payload has no paths")
+                    return@execute
+                }
+                val append = obj.optBoolean("append", pendingAppend)
+                pendingAppend = append
+                val root = obj.optString("root", "")
+                if (obj.optBoolean("persist", kindIn == "folder" || kindIn == "android-folder") && root.isNotBlank()) {
+                    prefs.edit().putString(PREF_TREE, root).apply()
+                }
+                val outKind = when (kindIn) {
+                    "paths", "android-paths", "files" -> "android-paths"
+                    else -> "android-folder"
+                }
+                val payload = JSONObject()
+                    .put("kind", outKind)
+                    .put("paths", paths)
+                    .put("append", append)
+                    .put("truncated", obj.optBoolean("truncated", false))
+                    .put("debugInject", true)
+                if (root.isNotBlank()) payload.put("root", root)
+                Log.i(TAG, "DEBUG inject payload kind=$outKind n=${paths.length()} (NOT SAF picker PASS)")
+                resolve(requestId, payload)
+            } catch (e: Exception) {
+                Log.e(TAG, "debugInjectPayload", e)
+                reject(requestId, e.message ?: "debug inject payload failed")
+            }
+        }
+    }
+
+    /** DEBUG helper for adb / MainActivity — same as debugInjectFromSeed with defaults. */
+    fun debugInjectFromSeedExternal(requestId: String, append: Boolean, seedHint: String?, ensureCount: Int) {
+        if (!BuildConfig.DEBUG) return
+        debugInjectFromSeed(
+            requestId,
+            if (append) "true" else "false",
+            seedHint ?: "",
+            ensureCount.toString()
+        )
+    }
 
     @JavascriptInterface
     fun pickOpenFiles(requestId: String, appendJson: String) {
@@ -225,6 +330,20 @@ class SafMediaBridge(
     }
 
     private fun walkTreeAndResolve(requestId: String, treeUri: Uri, persist: Boolean) {
+        // DEBUG Continue / inject: file:// seed trees (no DocumentsUI / no persistable grant).
+        if (BuildConfig.DEBUG && ("file".equals(treeUri.scheme, ignoreCase = true))) {
+            val dir = treeUri.path?.let { File(it) }
+            if (dir == null || !dir.isDirectory) {
+                reject(requestId, "debug file tree missing: $treeUri")
+                return
+            }
+            if (persist) {
+                prefs.edit().putString(PREF_TREE, treeUri.toString()).apply()
+            }
+            walkFileTreeAndResolve(requestId, dir, treeUri.toString())
+            return
+        }
+
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
         try {
             activity.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -309,6 +428,147 @@ class SafMediaBridge(
     }
 
 
+    /**
+     * DEBUG: walk java.io.File tree into the same android-folder resolve shape as DocumentFile.
+     * Cancelable via [cancelIngest] / ingestGen (same token as SAF walks).
+     */
+    private fun walkFileTreeAndResolve(requestId: String, rootDir: File, rootUriString: String) {
+        val gen = ingestGen.incrementAndGet()
+        // May already be on io thread (from debugInjectFromSeed); always hop to io for consistency.
+        io.execute {
+            try {
+                val paths = ArrayList<JSONObject>(256)
+                var truncated = false
+                val stack = ArrayDeque<File>()
+                stack.add(rootDir)
+                while (stack.isNotEmpty()) {
+                    if (ingestGen.get() != gen) {
+                        resolve(requestId, JSONObject().put("kind", "cancel").put("reason", "ingest-cancelled"))
+                        return@execute
+                    }
+                    val dir = stack.removeLast()
+                    val children = dir.listFiles() ?: emptyArray()
+                    if (paths.size > 0 && paths.size % WALK_YIELD_EVERY == 0) {
+                        try { Thread.sleep(1) } catch (_: InterruptedException) {}
+                    }
+                    for (child in children) {
+                        if (ingestGen.get() != gen) {
+                            resolve(requestId, JSONObject().put("kind", "cancel").put("reason", "ingest-cancelled"))
+                            return@execute
+                        }
+                        val name = child.name ?: continue
+                        if (name.startsWith(".")) continue
+                        if (child.isDirectory) {
+                            stack.add(child)
+                            continue
+                        }
+                        if (!child.isFile) continue
+                        if (!isMediaName(name)) continue
+                        if (paths.size >= FOLDER_MAX_FILES) {
+                            truncated = true
+                            break
+                        }
+                        val uri = Uri.fromFile(child)
+                        val mime = when {
+                            name.substringAfterLast('.', "").lowercase() in VIDEO_EXTS ->
+                                "video/" + name.substringAfterLast('.').lowercase().let {
+                                    if (it == "mov") "quicktime" else it
+                                }
+                            else -> "image/" + name.substringAfterLast('.', "jpeg").lowercase().let {
+                                if (it == "jpg") "jpeg" else it
+                            }
+                        }
+                        paths.add(mediaEntryJson(uri, name, mime))
+                    }
+                    if (truncated) break
+                }
+                if (ingestGen.get() != gen) {
+                    resolve(requestId, JSONObject().put("kind", "cancel").put("reason", "ingest-cancelled"))
+                    return@execute
+                }
+                paths.sortWith(compareBy(
+                    { it.optString("name").lowercase() },
+                    { it.optString("uri") }
+                ))
+                val arr = JSONArray()
+                paths.forEach { arr.put(it) }
+                resolve(
+                    requestId,
+                    JSONObject()
+                        .put("kind", "android-folder")
+                        .put("paths", arr)
+                        .put("truncated", truncated)
+                        .put("root", rootUriString)
+                        .put("append", pendingAppend)
+                        .put("gen", gen)
+                        .put("debugInject", true)
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "walkFileTree", e)
+                reject(requestId, e.message ?: "debug file tree walk failed")
+            }
+        }
+    }
+
+    private fun resolveSeedDir(seedHint: String): File {
+        if (seedHint.isNotBlank()) {
+            val hinted = File(seedHint)
+            if (hinted.isDirectory || hinted.mkdirs()) return hinted
+            throw IllegalStateException("cannot use seed hint: $seedHint")
+        }
+        // App-private first (writable, adb push friendly, no storage permission).
+        val privateCandidates = mutableListOf<File>()
+        activity.getExternalFilesDir(null)?.let { privateCandidates.add(File(it, SEED_DIR_NAME)) }
+        privateCandidates.add(File(activity.filesDir, SEED_DIR_NAME))
+
+        // Public smoke locations: only reuse when they already contain media (may be read-only).
+        val publicCandidates = mutableListOf<File>()
+        val ext = Environment.getExternalStorageDirectory()
+        publicCandidates.add(File(ext, "Download/$SEED_DIR_NAME"))
+        publicCandidates.add(File(ext, SEED_DIR_NAME))
+        publicCandidates.add(File("/sdcard/Download/$SEED_DIR_NAME"))
+        publicCandidates.add(File("/sdcard/$SEED_DIR_NAME"))
+
+        for (c in publicCandidates) {
+            if (!c.isDirectory) continue
+            val hasMedia = c.listFiles()?.any { it.isFile && isMediaName(it.name) } == true
+            if (hasMedia) return c
+        }
+        for (c in privateCandidates) {
+            if (c.isDirectory) return c
+        }
+        val primary = privateCandidates.first()
+        if (!primary.mkdirs() && !primary.isDirectory) {
+            throw IllegalStateException("cannot create seed dir: $primary")
+        }
+        return primary
+    }
+
+    /** When seed has fewer than [ensureCount] media files, synthesize tiny JPEGs for N≥200 ingest. */
+    private fun ensureSeedMedia(seed: File, ensureCount: Int) {
+        if (ensureCount <= 0) return
+        val existing = seed.walkTopDown()
+            .maxDepth(3)
+            .filter { it.isFile && isMediaName(it.name) }
+            .count()
+        if (existing >= ensureCount) return
+        val need = ensureCount - existing
+        Log.i(TAG, "DEBUG seed synthesize +$need JPEGs into $seed (had $existing)")
+        for (i in 0 until need) {
+            if (ingestGen.get() < 0) break // unreachable; keeps structure consistent
+            val name = "qa_%04d.jpg".format(existing + i)
+            val out = File(seed, name)
+            if (out.exists()) continue
+            val color = Color.rgb(20 + ((existing + i) * 37) % 200, 40 + ((existing + i) * 17) % 180, 80 + ((existing + i) * 11) % 150)
+            val bmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+            bmp.eraseColor(color)
+            FileOutputStream(out).use { fos ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 70, fos)
+            }
+            bmp.recycle()
+        }
+    }
+
     /** Prefer DocumentFile / ContentResolver MIME + display name — SAF URIs often lack extensions. */
     private fun mediaEntryJson(uri: Uri, displayName: String? = null, mimeHint: String? = null): JSONObject {
         val doc = DocumentFile.fromSingleUri(activity, uri)
@@ -375,6 +635,10 @@ class SafMediaBridge(
         private const val PREF_TREE = "persisted_tree_uri"
         private const val FOLDER_MAX_FILES = 10_000
         private const val WALK_YIELD_EVERY = 64
+        /** Default synthesized seed size for App QA batched ingest (N≥200). */
+        const val DEBUG_DEFAULT_ENSURE = 220
+        const val SEED_DIR_NAME = "ssp-qa"
+        const val DEBUG_INJECT_ACTION = "com.johnalindogan.slideshowpro.tv.DEBUG_URI_INJECT"
 
         private val IMAGE_EXTS = setOf(
             "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico"

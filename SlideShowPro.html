@@ -692,6 +692,10 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Open Playlist
       </button>
+      <button id="lbdebuginject" type="button" style="display:none;border-color:rgba(255,180,60,.45);color:#ffcc66" title="DEBUG only — inject ≠ SAF PASS">
+        <svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
+        QA Inject
+      </button>
     </div>
     <p id="ladvanced"><a href="#" id="lbupdates-link">Image Updates</a> · advanced</p>
     <p id="ldrophint">or drop files here</p>
@@ -1136,7 +1140,24 @@ function androidCall(method, payload) {
       else if (method === 'pickOpenFolder') window.AndroidBridge.pickOpenFolder(id, append ? 'true' : 'false');
       else if (method === 'pickPlaylist') window.AndroidBridge.pickPlaylist(id);
       else if (method === 'reopenPersistedFolder') window.AndroidBridge.reopenPersistedFolder(id, append ? 'true' : 'false');
-      else {
+      else if (method === 'debugInjectFromSeed') {
+        // DEBUG APK only — inject greens bridge path; does NOT equal SAF picker PASS.
+        if (typeof window.AndroidBridge.debugInjectFromSeed !== 'function') {
+          __sspAndroidPending.delete(id);
+          reject(new Error('debug inject unavailable'));
+          return;
+        }
+        const seed = (payload && payload.seed) ? String(payload.seed) : '';
+        const ensure = (payload && payload.ensure != null) ? String(payload.ensure) : '220';
+        window.AndroidBridge.debugInjectFromSeed(id, append ? 'true' : 'false', seed, ensure);
+      } else if (method === 'debugInjectPayload') {
+        if (typeof window.AndroidBridge.debugInjectPayload !== 'function') {
+          __sspAndroidPending.delete(id);
+          reject(new Error('debug inject unavailable'));
+          return;
+        }
+        window.AndroidBridge.debugInjectPayload(id, JSON.stringify((payload && payload.body) || payload || {}));
+      } else {
         __sspAndroidPending.delete(id);
         reject(new Error('unknown android method ' + method));
       }
@@ -1412,6 +1433,16 @@ let landingPlaylistMode = false;
 g('lbopen').onclick = () => openFilePicker(false);
 g('lbfolder').onclick = () => openFolderPicker(false);
 g('lbplist').onclick = () => openPlaylistPicker();
+(function wireDebugInjectButton() {
+  const btn = g('lbdebuginject');
+  if (!btn) return;
+  try {
+    if (sspIsAndroid() && window.AndroidBridge.debugInjectAvailable && window.AndroidBridge.debugInjectAvailable()) {
+      btn.style.display = '';
+      btn.onclick = () => openAndroidDebugInject({ ensure: 220 });
+    }
+  } catch (_) {}
+})();
 g('lbupdates-link').onclick = (e) => { e.preventDefault(); openImageUpdatesPicker(); };
 g('lbcont').onclick = async () => {
   try {
@@ -3014,6 +3045,48 @@ async function openAndroidFolder(picked, opts) {
   await openMediaPaths(paths, { append });
   if (picked && picked.truncated) showToast('Folder truncated at 10000 media files.', 4500);
 }
+
+/**
+ * DEBUG-only URI inject for AOSP TV AVDs without DocumentsUI.
+ * Feeds the same android-folder → openMediaPaths path as real SAF Open Folder.
+ * Inject greens bridge ingest only — does NOT equal SAF picker PASS.
+ */
+async function openAndroidDebugInject(opts) {
+  if (!sspIsAndroid()) return;
+  try {
+    if (!(window.AndroidBridge.debugInjectAvailable && window.AndroidBridge.debugInjectAvailable())) {
+      showToast('Debug inject only available on debug APKs.', 3500);
+      return;
+    }
+  } catch (_) {
+    showToast('Debug inject only available on debug APKs.', 3500);
+    return;
+  }
+  const ensure = (opts && opts.ensure != null) ? opts.ensure : 220;
+  const seed = (opts && opts.seed) || '';
+  const append = !!(opts && opts.append);
+  try {
+    showToast('DEBUG inject (≠ SAF PASS)…', 2500);
+    const res = await androidCall('debugInjectFromSeed', { append, seed, ensure });
+    if (!res || res.kind === 'cancel') {
+      showToast('Debug inject cancelled.', 3000);
+      return;
+    }
+    if (res.kind === 'android-folder') {
+      await openAndroidFolder(res, { append: !!append || !!res.append });
+      showToast('DEBUG inject loaded ' + ((res.paths || []).length) + ' (bridge only; ≠ SAF PASS)', 4500);
+      return;
+    }
+    if (res.kind === 'android-paths') {
+      await openMediaPaths(res.paths || [], { append: !!append || !!res.append });
+      showToast('DEBUG inject files (bridge only; ≠ SAF PASS)', 4000);
+    }
+  } catch (e) {
+    console.warn('debug inject failed', e);
+    showToast('Debug inject failed: ' + (e && e.message ? e.message : e), 5000);
+  }
+}
+window.__sspDebugInjectSeed = openAndroidDebugInject;
 
 function finishAdd(newItems, opts) {
   newItems.forEach(it => { initItem(it); items.push(it); });

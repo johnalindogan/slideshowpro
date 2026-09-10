@@ -61,6 +61,8 @@ Open the android/ folder in Android Studio (not the repo root).
 
 Phase 2a: Open Folder / Files / Playlist via SAF, persistable URI for Continue/last folder, batched cancelable ingest for large trees.
 
+DEBUG APKs only: URI/tree inject for AOSP TV AVDs without DocumentsUI (bridge ingest + Continue). **Inject ≠ SAF picker PASS** — real SAF PASS needs DocumentsUI (physical Google TV). See android/README.md.
+
 Gradle preBuild also syncs the HTML asset automatically.
 
 See android/README.md for details.
