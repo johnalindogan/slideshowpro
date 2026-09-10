@@ -1,4 +1,4 @@
-# SlideShow Pro — Android TV (Phase 2a)
+# SlideShow Pro — Android TV (Phase 2a + 2b)
 
 Thin Leanback / Android TV shell that loads the existing SlideShowPro.html viewer in a WebView,
 plus a SAF / DocumentFile media bridge (Kotlin ↔ JS). Same idea as the Tauri wrapper: no engine rewrite.
@@ -105,10 +105,18 @@ Gradle preBuild also performs the HTML asset copy.
 From android/: ./gradlew :app:assembleDebug
 Install APK on TV emulator; launch Leanback entry.
 
+## Phase 2b (portrait + Leanback chrome)
+
+- Activity `screenOrientation=fullUser` + existing `configChanges` so portrait and landscape both work; media stays `object-fit:contain` (letterbox/pillarbox OK).
+- HTML `body.ssp-tv` focus rings on landing tiles + primary controls + filmstrip thumbs.
+- D-pad zones: landing tiles → stage (L/R slides, Enter play/pause) → controls → filmstrip/playlist; Up/Down move between stage/controls/strip.
+- Android Back: Kotlin → `__sspHandleAndroidBack()` — strip closes first, then stage returns to landing; Activity does **not** finish on first Back from stage.
+- Windows `src-tauri` / NSIS untouched in this slice (prove with `cargo check` when Rust available).
+
 ## Out of scope
 
-- P2b portrait / Leanback D-pad chrome
-- P2c Ken Burns (Kotlin)
+- P2c Ken Burns / slideshow loop on ATV (Kotlin rewrite)
+- Real SAF DocumentsUI / physical Google TV picker PASS (parallel to P2a inject)
 - MediaStore
 - Jellyfin / Play Store
 

@@ -22,8 +22,8 @@ import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 
 /**
- * Android TV shell: WebView + Phase 2a SAF media bridge.
- * HTML remains source of truth; Kotlin only supplies DocumentFile/URI trees.
+ * Android TV shell: WebView + Phase 2a SAF media bridge + Phase 2b Back/orientation.
+ * HTML remains source of truth; Kotlin only supplies DocumentFile/URI trees + Back bridge.
  *
  * DEBUG builds also accept adb inject intents / broadcasts that feed the same
  * SafMediaBridge resolve path (NOT a SAF picker PASS).
@@ -131,11 +131,24 @@ class MainActivity : ComponentActivity() {
 
         setContentView(webView)
 
+        // P2b: Back is handled in HTML first (strip → stage → landing). Only finish if JS declines.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (webView.canGoBack()) webView.goBack() else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+                val js = """
+                    (function(){
+                      try {
+                        if (window.__sspHandleAndroidBack) return !!window.__sspHandleAndroidBack();
+                      } catch (e) {}
+                      return false;
+                    })()
+                """.trimIndent()
+                webView.evaluateJavascript(js) { result ->
+                    val handled = result == "true"
+                    if (!handled) {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
                 }
             }
         })

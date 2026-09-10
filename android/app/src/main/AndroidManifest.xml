@@ -23,7 +23,7 @@
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="landscape"
+            android:screenOrientation="fullUser"
             android:theme="@style/Theme.SlideShowProTV">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

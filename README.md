@@ -42,9 +42,9 @@ In the Tauri shell, Open Files / Open Folder / Playlist use `@tauri-apps/plugin-
 
 
 
-## Android TV wrapper (Phase 2a — SAF bridge)
+## Android TV wrapper (Phase 2a SAF + Phase 2b Leanback)
 
-Thin Leanback shell: loads the same SlideShowPro.html in a WebView, with a Kotlin `AndroidBridge` for SAF DocumentFile / tree URI media ingest (not MediaStore). Does not rewrite Ken Burns or Leanback chrome (P2b/P2c).
+Thin Leanback shell: loads the same SlideShowPro.html in a WebView, with a Kotlin `AndroidBridge` for SAF DocumentFile / tree URI media ingest (not MediaStore). Phase 2b adds portrait+landscape (letterbox/pillarbox), D-pad landing→stage→strip navigation, visible focus rings, and Back = stage→landing (no exit on first Back). Does not rewrite Ken Burns (P2c).
 
 ### Prerequisites
 
@@ -60,6 +60,8 @@ Open the android/ folder in Android Studio (not the repo root).
 3. Sideload the debug APK onto a Google TV / Android TV emulator and open the Leanback launcher entry.
 
 Phase 2a: Open Folder / Files / Playlist via SAF, persistable URI for Continue/last folder, batched cancelable ingest for large trees.
+
+Phase 2b: `fullUser` orientation, Leanback focus chrome, D-pad zones, Android Back bridged to HTML (`__sspHandleAndroidBack`).
 
 DEBUG APKs only: URI/tree inject for AOSP TV AVDs without DocumentsUI (bridge ingest + Continue). **Inject ≠ SAF picker PASS** — real SAF PASS needs DocumentsUI (physical Google TV). See android/README.md.
 

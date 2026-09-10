@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<<title>SlideShowPro</title>
 <title>SlideShowPro</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -28,6 +27,29 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #lbtns button{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px 32px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;color:#fff;font-size:13px;font-family:var(--font-main);cursor:pointer;min-width:148px;transition:background .15s,border-color .15s;line-height:1.4;}
 #lbtns button:hover:not(:disabled){background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.28);}
 #lbtns button:disabled{opacity:.3;cursor:default;}
+/* P2b Leanback / 10-foot focus rings + portrait letterbox chrome */
+#lbtns button:focus-visible,.cb:focus-visible,#dock-toggle-btn:focus-visible,#showctrl:focus-visible,#lbupdates-link:focus-visible{
+  outline:none;box-shadow:0 0 0 3px #fff,0 0 12px rgba(80,140,255,.55);border-color:rgba(255,255,255,.9);background:rgba(255,255,255,.14);
+}
+body.ssp-tv #lbtns button:focus,body.ssp-tv .cb:focus,body.ssp-tv #dock-toggle-btn:focus,body.ssp-tv #showctrl:focus,
+body.ssp-tv #lbupdates-link:focus,body.ssp-tv .tw:focus,body.ssp-tv .pli:focus,body.ssp-tv #stage:focus{
+  outline:none;box-shadow:0 0 0 3px #fff,0 0 14px rgba(80,140,255,.6);border-color:rgba(255,255,255,.95);background:rgba(255,255,255,.14);z-index:3;
+}
+body.ssp-tv #lbtns button:focus:disabled{box-shadow:0 0 0 3px rgba(255,255,255,.35);background:rgba(255,255,255,.05);}
+body.ssp-tv #stage:focus{box-shadow:inset 0 0 0 3px rgba(255,255,255,.55);background:#000;}
+body.ssp-tv .tw{outline:none;}
+body.ssp-tv .tw:focus{box-shadow:0 0 0 3px #fff,0 0 10px rgba(80,140,255,.55);border-radius:6px;}
+body.ssp-tv #ldrophint{display:none;}
+body.ssp-tv #lbtns button{min-height:96px;}
+@media (orientation: portrait){
+  #landing{gap:22px;padding:20px 14px;max-width:100%;}
+  #llogo{font-size:28px;}
+  #lbtns{gap:10px;}
+  #lbtns button{min-width:118px;padding:18px 20px;}
+  #ldrophint{display:none;}
+  /* Media already object-fit:contain — pillarbox/letterbox on black stage is intentional */
+}
+
 #lbtns button svg{width:30px;height:30px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.75;}
 #lsinfo{font-size:10px;color:rgba(255,255,255,.38);max-width:148px;text-align:center;}
 #ldrophint{font-size:12px;color:rgba(255,255,255,.18);font-family:var(--font-main);letter-spacing:.02em;}
@@ -2732,7 +2754,7 @@ g('pladd').onclick = () => openFilePicker(true);
 g('plopenfolder').onclick = () => openFolderPicker(true);
 g('plshuffle').onclick = shufflePlaylist;
 
-g('bru').onclick = function() {
+function returnToLanding() {
   clearTimeout(tmr); clearInterval(ptmr);
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
@@ -2750,7 +2772,9 @@ g('bru').onclick = function() {
   if (watchMode) toggleWatchMode();
   closePL();
   updLandingInfo();
-};
+  if (typeof sspTvOnLanding === 'function') sspTvOnLanding();
+}
+g('bru').onclick = returnToLanding;
 
 function load(files) {
   bumpFolderIngestGen();
@@ -3277,10 +3301,18 @@ function createStripThumb(item, i) {
   tw.className = 'tw';
   tw.style.left = stripLeftForIndex(i) + 'px';
   tw.dataset.mi = String(i);
+  tw.tabIndex = 0;
+  tw.setAttribute('role', 'button');
+  tw.setAttribute('aria-label', item.name || ('Slide ' + (i + 1)));
+  const activate = () => goTo(i);
+  tw.onclick = activate;
+  tw.onkeydown = e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+  };
   const ti = document.createElement('img');
   ti.className = 'th' + (i === cur ? ' at' : '');
   ti.decoding = 'async';
-  ti.onclick = () => goTo(i);
+  ti.draggable = false;
   if (item.type === 'video') {
     ti.dataset.thumbId = item.id;
     // Placeholder unless thumbnail already cached — avoid decoding every video on scrub.
@@ -3409,7 +3441,8 @@ function togglePL() {
   g('bplt').classList.toggle('on', dockExpanded);
   if (dockExpanded) {
     renderPlaylist();
-    g('dock-search').focus();
+    /* TV: keep focus on strip/chrome — search is touch/mouse oriented */
+    if (!document.body.classList.contains('ssp-tv')) g('dock-search').focus();
   }
 }
 function closePL() {
@@ -4213,6 +4246,10 @@ document.addEventListener('keydown', e => {
   }
   const t = e.target.tagName;
   if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
+  /* Leanback: focused chrome owns arrows/Enter/Space — don't remap over D-pad focus */
+  if (document.body.classList.contains('ssp-tv') && (t === 'BUTTON' || e.target.closest?.('.tw') || e.target.closest?.('#ctrls') || e.target.closest?.('#media-dock'))) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === ' ' || e.key === 'Enter') return;
+  }
 
   /* Delete / Backspace fixed (not remappable) */
   if (e.key === 'Delete') {
@@ -4250,6 +4287,198 @@ document.addEventListener('keydown', e => {
   runMappedKey(e);
 });
 updLandingInfo();
+
+/* ── Android TV / Leanback 10-foot navigation (P2b) ── */
+let sspTvZone = 'landing'; /* landing | stage | controls | strip */
+const SSP_TV_CTRL_IDS = ['bpr','bpl','bne','bzo','bzi','bfs','bplt','bkb','bhide','bked','bmore'];
+
+function sspTvEnabled() {
+  return document.body.classList.contains('ssp-tv');
+}
+function sspTvFocusLanding() {
+  sspTvZone = 'landing';
+  const order = ['lbopen','lbfolder','lbcont','lbplist','lbdebuginject'];
+  for (const id of order) {
+    const el = g(id);
+    if (!el) continue;
+    if (el.disabled) continue;
+    if (el.style.display === 'none') continue;
+    try { el.focus(); } catch (_) {}
+    return;
+  }
+}
+function sspTvOnLanding() {
+  if (!sspTvEnabled()) return;
+  sspTvFocusLanding();
+}
+function sspTvFocusStage() {
+  sspTvZone = 'stage';
+  try {
+    stage.tabIndex = -1;
+    stage.focus({ preventScroll: true });
+  } catch (_) {}
+}
+function sspTvFocusControls(preferredId) {
+  sspTvZone = 'controls';
+  if (!ctrlsVisible) toggleControls();
+  const ids = preferredId ? [preferredId, ...SSP_TV_CTRL_IDS] : SSP_TV_CTRL_IDS;
+  for (const id of ids) {
+    const el = g(id);
+    if (el && el.offsetParent !== null) {
+      try { el.focus(); } catch (_) {}
+      return;
+    }
+  }
+}
+function sspTvMoveControlFocus(dir) {
+  const focusable = SSP_TV_CTRL_IDS.map(id => g(id)).filter(el => el && el.offsetParent !== null);
+  if (!focusable.length) return;
+  const curEl = document.activeElement;
+  let i = focusable.indexOf(curEl);
+  if (i < 0) i = dir > 0 ? -1 : 0;
+  const next = focusable[Math.max(0, Math.min(focusable.length - 1, i + dir))];
+  if (next) try { next.focus(); } catch (_) {}
+}
+function sspTvFocusStripCur() {
+  sspTvZone = 'strip';
+  if (!dockExpanded) togglePL();
+  remountStripWindow(cur);
+  const tw = stripMounted.get(cur);
+  if (tw) {
+    try { tw.focus({ preventScroll: true }); } catch (_) {}
+    const strip = g('tstrip');
+    if (strip && tw) {
+      const left = stripLeftForIndex(cur);
+      const viewW = strip.clientWidth || 320;
+      strip.scrollLeft = Math.max(0, left + STRIP_THUMB_W / 2 - viewW / 2);
+    }
+    return;
+  }
+  const dockBtn = g('dock-toggle-btn');
+  if (dockBtn) try { dockBtn.focus(); } catch (_) {}
+}
+function sspTvEnterViewer() {
+  if (!sspTvEnabled()) return;
+  sspTvFocusStage();
+}
+window.__sspHandleAndroidBack = function () {
+  if (!sspIsAndroid()) return false;
+  try {
+    if (g('keditor') && g('keditor').classList.contains('open')) { toggleKeyEditor(); return true; }
+    if (g('kbmodal') && g('kbmodal').classList.contains('open')) { toggleKBModal(); return true; }
+    if (watchMode) { toggleWatchMode(); return true; }
+    if (g('ctrls-overflow') && g('ctrls-overflow').classList.contains('open')) { setOverflowOpen(false); return true; }
+    if (viewer.style.display === 'flex') {
+      if (dockExpanded || sspTvZone === 'strip') {
+        closePL();
+        sspTvFocusControls('bplt');
+        return true;
+      }
+      /* First Back from stage → landing (do not finish Activity). */
+      returnToLanding();
+      return true;
+    }
+  } catch (e) {
+    console.warn('__sspHandleAndroidBack', e);
+  }
+  return false;
+};
+
+(function initSspTvLeanback() {
+  function boot() {
+    if (!sspIsAndroid()) return;
+    document.body.classList.add('ssp-tv');
+    stage.tabIndex = -1;
+    stage.setAttribute('aria-label', 'Slideshow stage');
+    /* When viewer becomes visible, park focus on stage for D-pad. */
+    const mo = new MutationObserver(() => {
+      if (viewer.style.display === 'flex' && sspTvZone === 'landing') sspTvEnterViewer();
+      if (viewer.style.display !== 'flex' && sspTvZone !== 'landing') sspTvOnLanding();
+    });
+    try { mo.observe(viewer, { attributes: true, attributeFilter: ['style'] }); } catch (_) {}
+    sspTvFocusLanding();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+
+  document.addEventListener('keydown', e => {
+    if (!sspTvEnabled()) return;
+    if (listeningEl && listeningId) return;
+    const onViewer = viewer.style.display === 'flex';
+    if (!onViewer) {
+      /* Landing: native button focus + Enter. Ensure something is focused. */
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') &&
+          !document.activeElement?.closest?.('#lbtns')) {
+        sspTvFocusLanding();
+      }
+      return;
+    }
+    if (!getMediaItems().length) return;
+    const t = e.target;
+    const tag = t && t.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (g('keditor')?.classList.contains('open') || g('kbmodal')?.classList.contains('open')) return;
+
+    const inDock = !!(t && t.closest && t.closest('#media-dock'));
+    const inCtrls = !!(t && t.closest && t.closest('#ctrls'));
+    if (inDock) sspTvZone = 'strip';
+    else if (inCtrls) sspTvZone = 'controls';
+    else if (t === stage || (t && t.closest && t.closest('#stage'))) sspTvZone = 'stage';
+
+    if (e.key === 'ArrowDown') {
+      if (sspTvZone === 'stage') {
+        e.preventDefault(); e.stopPropagation();
+        sspTvFocusControls('bpl');
+        return;
+      }
+      if (sspTvZone === 'controls') {
+        e.preventDefault(); e.stopPropagation();
+        sspTvFocusStripCur();
+        return;
+      }
+    }
+    if (e.key === 'ArrowUp') {
+      if (sspTvZone === 'strip') {
+        e.preventDefault(); e.stopPropagation();
+        closePL();
+        sspTvFocusControls('bplt');
+        return;
+      }
+      if (sspTvZone === 'controls') {
+        e.preventDefault(); e.stopPropagation();
+        sspTvFocusStage();
+        return;
+      }
+    }
+    if (sspTvZone === 'controls' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault(); e.stopPropagation();
+      sspTvMoveControlFocus(e.key === 'ArrowRight' ? 1 : -1);
+      return;
+    }
+    if (sspTvZone === 'strip' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault(); e.stopPropagation();
+      goTo(cur + (e.key === 'ArrowRight' ? 1 : -1));
+      sspTvFocusStripCur();
+      return;
+    }
+    if (sspTvZone === 'stage') {
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        togglePlay();
+        return;
+      }
+      /* Left/Right fall through to mapped next/prev on bubble handler */
+    }
+    /* Escape on TV mirrors Back one step when not in watch/overflow (Back is primary). */
+    if (e.key === 'Escape' && sspIsAndroid() && !watchMode) {
+      if (dockExpanded) {
+        e.preventDefault(); e.stopPropagation();
+        closePL();
+        sspTvFocusControls('bplt');
+      }
+    }
+  }, true);
+})();
 
 let toastTimer = null;
 function showToast(html, dur = 5000) {
