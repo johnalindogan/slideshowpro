@@ -42,9 +42,9 @@ In the Tauri shell, Open Files / Open Folder / Playlist use `@tauri-apps/plugin-
 
 
 
-## Android TV wrapper (Phase 1 scaffold)
+## Android TV wrapper (Phase 2a — SAF bridge)
 
-Thin Leanback shell: loads the same SlideShowPro.html in a WebView. Does not rewrite Ken Burns or add SAF / media bridges (Phase 2+).
+Thin Leanback shell: loads the same SlideShowPro.html in a WebView, with a Kotlin `AndroidBridge` for SAF DocumentFile / tree URI media ingest (not MediaStore). Does not rewrite Ken Burns or Leanback chrome (P2b/P2c).
 
 ### Prerequisites
 
@@ -58,6 +58,8 @@ Open the android/ folder in Android Studio (not the repo root).
 1. Run the package.json sync-android script (copies HTML into app assets).
 2. From android/, run Gradle assembleDebug.
 3. Sideload the debug APK onto a Google TV / Android TV emulator and open the Leanback launcher entry.
+
+Phase 2a: Open Folder / Files / Playlist via SAF, persistable URI for Continue/last folder, batched cancelable ingest for large trees.
 
 Gradle preBuild also syncs the HTML asset automatically.
 

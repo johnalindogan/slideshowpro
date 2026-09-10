@@ -699,7 +699,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 </div>
 <input type="file" id="fi" multiple accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.ico">
 <input type="file" id="fiadd" multiple accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.ico">
-<input type="file" id="fiplist" accept=".json">
+<input type="file" id="fiplist" accept=".json,.ssp,.m3u,.m3u8,application/json,audio/x-mpegurl">
 <input type="file" id="fiupd" accept=".json">
 
 <div id="viewer">
@@ -982,6 +982,12 @@ function fileExtName(name) {
   return i >= 0 ? n.slice(i + 1).toLowerCase() : '';
 }
 /** Classify media by MIME first, then extension fallback (Windows/WebView2 often blank MIME). */
+function mediaKindFromMime(mime) {
+  const t = String(mime || '').toLowerCase();
+  if (t.startsWith('video/')) return 'video';
+  if (t.startsWith('image/')) return 'image';
+  return null;
+}
 function mediaKindFromName(name) {
   const ext = fileExtName(name);
   if (VIDEO_EXTS.includes(ext)) return 'video';
@@ -990,12 +996,54 @@ function mediaKindFromName(name) {
 }
 function mediaKindFromFile(f) {
   if (!f) return null;
-  const t = (f.type || '').toLowerCase();
-  if (t.startsWith('video/')) return 'video';
-  if (t.startsWith('image/')) return 'image';
-  return mediaKindFromName(f.name);
+  return mediaKindFromMime(f.type) || mediaKindFromName(f.name);
 }
 function isAcceptedMediaFile(f) { return mediaKindFromFile(f) != null; }
+/** Normalize string path or Android {uri,name,mime} entry for ingest. */
+function normalizeMediaPathEntry(entry) {
+  function basename(p) {
+    const s = String(p || '').replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+  if (entry && typeof entry === 'object') {
+    const path = String(entry.uri || entry.path || '');
+    const name = String(entry.name || entry.displayName || basename(path) || '');
+    const mime = String(entry.mime || entry.type || '').toLowerCase();
+    return { path, name, mime };
+  }
+  const path = String(entry || '');
+  return { path, name: basename(path), mime: '' };
+}
+/**
+ * Resolve kind + MIME for a path entry.
+ * Prefer bridge MIME / displayName; fall back to basename extension.
+ * Never drop known image/video MIME or displayName with a media extension.
+ */
+function resolveMediaPathMeta(entry) {
+  const { path, name, mime } = normalizeMediaPathEntry(entry);
+  if (!path && !name) return null;
+  const kind = mediaKindFromMime(mime) || mediaKindFromName(name) || mediaKindFromName(path);
+  if (!kind) return null;
+  const ext = fileExtName(name) || fileExtName(path);
+  let resolvedMime = mime;
+  if (!resolvedMime || resolvedMime === 'application/octet-stream') {
+    resolvedMime = MEDIA_MIME[ext] || (kind === 'video' ? 'video/mp4' : 'image/jpeg');
+  }
+  const displayName = name || (ext ? basenameFallback(path) : (kind === 'video' ? 'video' : 'image'));
+  return { path, name: displayName, mime: resolvedMime, kind };
+}
+function basenameFallback(p) {
+  const s = String(p || '').replace(/\\/g, '/');
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+function mediaPathStrings(paths) {
+  return (paths || []).map((p) => {
+    if (p && typeof p === 'object') return String(p.uri || p.path || '');
+    return String(p || '');
+  }).filter(Boolean);
+}
 async function filesFromDataTransfer(dt) {
   if (!dt) return [];
   if (dt.files && dt.files.length) return Array.from(dt.files);
@@ -1044,8 +1092,81 @@ function tauriDialogOpen(opts) {
   return window.__TAURI__.dialog.open(opts);
 }
 
+/* ── Android TV SAF bridge (Phase 2a) — mirrors Tauri shapes where practical ── */
+function sspIsAndroid() {
+  try {
+    return !!(window.AndroidBridge && typeof window.AndroidBridge.isAvailable === 'function' && window.AndroidBridge.isAvailable());
+  } catch (_) { return false; }
+}
+const __sspAndroidPending = new Map();
+let __sspAndroidReqSeq = 0;
+window.__sspAndroidResolve = function (id, ok, resultJson) {
+  const p = __sspAndroidPending.get(id);
+  if (!p) return;
+  __sspAndroidPending.delete(id);
+  function parsePayload(raw) {
+    if (raw == null) return null;
+    if (typeof raw !== 'string') return raw;
+    // Kotlin delivers via atob(...) — decode bytes as UTF-8 JSON.
+    try {
+      const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
+      raw = new TextDecoder('utf-8').decode(bytes);
+    } catch (_) {}
+    return JSON.parse(raw);
+  }
+  try {
+    if (ok) p.resolve(parsePayload(resultJson));
+    else {
+      const err = parsePayload(resultJson);
+      p.reject(new Error((err && err.message) || 'Android bridge error'));
+    }
+  } catch (e) {
+    if (ok) p.resolve(resultJson);
+    else p.reject(e);
+  }
+};
+function androidCall(method, payload) {
+  return new Promise((resolve, reject) => {
+    if (!sspIsAndroid()) { reject(new Error('AndroidBridge unavailable')); return; }
+    const id = 'a' + (++__sspAndroidReqSeq);
+    __sspAndroidPending.set(id, { resolve, reject });
+    try {
+      const append = !!(payload && payload.append);
+      if (method === 'pickOpenFiles') window.AndroidBridge.pickOpenFiles(id, append ? 'true' : 'false');
+      else if (method === 'pickOpenFolder') window.AndroidBridge.pickOpenFolder(id, append ? 'true' : 'false');
+      else if (method === 'pickPlaylist') window.AndroidBridge.pickPlaylist(id);
+      else if (method === 'reopenPersistedFolder') window.AndroidBridge.reopenPersistedFolder(id, append ? 'true' : 'false');
+      else {
+        __sspAndroidPending.delete(id);
+        reject(new Error('unknown android method ' + method));
+      }
+    } catch (e) {
+      __sspAndroidPending.delete(id);
+      reject(e);
+    }
+  });
+}
+function androidCancelIngest() {
+  try { if (sspIsAndroid()) window.AndroidBridge.cancelIngest(); } catch (_) {}
+}
+function bumpFolderIngestGen() {
+  folderIngestGen++;
+  androidCancelIngest();
+  return folderIngestGen;
+}
+
 /** Tauri: native dialog. Browser: showOpenFilePicker / hidden input. Never reveals inputs in Tauri. */
-async function pickOpenFiles() {
+async function pickOpenFiles(append) {
+  if (sspIsAndroid()) {
+    try {
+      const res = await androidCall('pickOpenFiles', { append: !!append });
+      if (!res || res.kind === 'cancel') return { kind: 'cancel' };
+      return { kind: 'android-paths', paths: res.paths || [], append: !!res.append };
+    } catch (e) {
+      console.warn('Android open files failed', e);
+      return { kind: 'cancel' };
+    }
+  }
   if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
@@ -1074,7 +1195,23 @@ async function pickOpenFiles() {
   return { kind: 'input', inputId: 'fi' };
 }
 
-async function pickOpenFolder() {
+async function pickOpenFolder(append) {
+  if (sspIsAndroid()) {
+    try {
+      const res = await androidCall('pickOpenFolder', { append: !!append });
+      if (!res || res.kind === 'cancel') return { kind: 'cancel' };
+      return {
+        kind: 'android-folder',
+        paths: res.paths || [],
+        truncated: !!res.truncated,
+        root: res.root || '',
+        append: !!res.append
+      };
+    } catch (e) {
+      console.warn('Android open folder failed', e);
+      return { kind: 'cancel' };
+    }
+  }
   if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
@@ -1105,13 +1242,30 @@ async function pickOpenFolder() {
 }
 
 async function pickPlaylist() {
+  if (sspIsAndroid()) {
+    try {
+      const res = await androidCall('pickPlaylist', {});
+      if (!res || res.kind === 'cancel') return { kind: 'cancel' };
+      return {
+        kind: 'android-playlist',
+        uri: res.uri,
+        name: res.name || '',
+        ext: (res.ext || '').toLowerCase(),
+        text: res.text || '',
+        parentUri: res.parentUri || ''
+      };
+    } catch (e) {
+      console.warn('Android playlist dialog failed', e);
+      return { kind: 'cancel' };
+    }
+  }
   if (sspIsTauri()) {
     try {
       const selected = await tauriDialogOpen({
         multiple: false,
         directory: false,
         title: 'Open Playlist',
-        filters: [{ name: 'SlideShowPro Playlist', extensions: ['json'] }]
+        filters: [{ name: 'Playlists', extensions: ['json', 'ssp', 'm3u', 'm3u8'] }]
       });
       if (selected == null) return { kind: 'cancel' };
       const path = Array.isArray(selected) ? selected[0] : selected;
@@ -1124,7 +1278,7 @@ async function pickPlaylist() {
   }
   if ('showOpenFilePicker' in window) {
     try {
-      const [h] = await window.showOpenFilePicker({ types: [{ description: 'SlideShowPro Playlist', accept: { 'application/json': ['.json'] } }] });
+      const [h] = await window.showOpenFilePicker({ types: [{ description: 'Playlists', accept: { 'application/json': ['.json', '.ssp'], 'audio/x-mpegurl': ['.m3u', '.m3u8'], 'application/x-mpegurl': ['.m3u', '.m3u8'] } }] });
       return { kind: 'handle', handle: h };
     } catch (e) {
       if (e && e.name === 'AbortError') return { kind: 'cancel' };
@@ -1156,8 +1310,12 @@ async function pickImageUpdates() {
 }
 
 async function openFilePicker(append) {
-  const picked = await pickOpenFiles();
+  const picked = await pickOpenFiles(append);
   if (picked.kind === 'cancel') return;
+  if (picked.kind === 'android-paths') {
+    await openMediaPaths(picked.paths, { append: !!append || !!picked.append });
+    return;
+  }
   if (picked.kind === 'tauri-paths') {
     await openMediaPaths(picked.paths, { append: !!append });
     return;
@@ -1168,14 +1326,18 @@ async function openFilePicker(append) {
     return;
   }
   if (picked.kind === 'input') {
-    if (sspIsTauri()) return; // never reveal bare Choose File chrome in Tauri
+    if (sspIsTauri() || sspIsAndroid()) return; // never reveal bare Choose File chrome in shells
     g(picked.inputId === 'fi' && append ? 'fiadd' : picked.inputId).click();
   }
 }
 
 async function openFolderPicker(append) {
-  const picked = await pickOpenFolder();
+  const picked = await pickOpenFolder(append);
   if (picked.kind === 'cancel' || picked.kind === 'unsupported') return;
+  if (picked.kind === 'android-folder') {
+    await openAndroidFolder(picked, { append: !!append || !!picked.append });
+    return;
+  }
   if (picked.kind === 'tauri-folder') {
     await openTauriFolder(picked.path, { append: !!append });
     return;
@@ -1188,12 +1350,20 @@ async function openFolderPicker(append) {
 async function openPlaylistPicker() {
   const picked = await pickPlaylist();
   if (picked.kind === 'cancel') return;
+  if (picked.kind === 'android-playlist') {
+    try {
+      await loadPlaylistText(picked.text, picked.name || picked.uri || 'playlist', { parentUri: picked.parentUri || '' });
+    } catch (e) {
+      console.warn(e);
+      showToast('Could not load playlist.', 4000);
+    }
+    return;
+  }
   if (picked.kind === 'tauri-path') {
     try {
       await tauriInvoke('register_allowed_paths', { paths: [picked.path] });
       const text = await tauriInvoke('read_text_file', { path: picked.path });
-      const snap = JSON.parse(text);
-      await restoreFromSnapshot(snap);
+      await loadPlaylistText(text, picked.path, {});
     } catch (e) {
       console.warn(e);
       showToast('Could not load playlist.', 4000);
@@ -1201,11 +1371,12 @@ async function openPlaylistPicker() {
     return;
   }
   if (picked.kind === 'handle') {
-    restoreFromSnapshotFile(await picked.handle.getFile());
+    const file = await picked.handle.getFile();
+    await loadPlaylistText(await file.text(), file.name || 'playlist', {});
     return;
   }
   if (picked.kind === 'input') {
-    if (sspIsTauri()) return;
+    if (sspIsTauri() || sspIsAndroid()) return;
     landingPlaylistMode = true;
     g('fiplist').click();
   }
@@ -1232,7 +1403,7 @@ async function openImageUpdatesPicker() {
     return;
   }
   if (picked.kind === 'input') {
-    if (sspIsTauri()) return;
+    if (sspIsTauri() || sspIsAndroid()) return;
     g('fiupd').click();
   }
 }
@@ -2286,6 +2457,7 @@ function getPlaylistSnapshot() {
         id: it.id,
         type: it.type,
         name: it.name,
+        path: it.path || undefined,
         imageUpdates: {
           clr: it.clr,
           rotation: it.rotation,
@@ -2345,11 +2517,48 @@ function migrateSnapshot(data) {
 }
 async function restoreFromSnapshotFile(file) {
   try {
-    const text = await file.text();
-    const snap = JSON.parse(text);
-    if (!snap.items) { showToast('Invalid playlist file.', 4000); return; }
-    await restoreFromSnapshot(snap);
+    await loadPlaylistText(await file.text(), file.name || 'playlist', {});
   } catch(e) { showToast('Could not load playlist.', 4000); }
+}
+
+function parseM3uPlaylist(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const entries = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    entries.push(line);
+  }
+  return entries;
+}
+
+async function loadPlaylistText(text, name, opts) {
+  const ext = fileExtName(name);
+  if (ext === 'm3u' || ext === 'm3u8') {
+    const entries = parseM3uPlaylist(text);
+    if (!entries.length) { showToast('Empty M3U playlist.', 3500); return; }
+    const paths = [];
+    for (const entry of entries) {
+      if (/^(content:|file:|https?:)/i.test(entry)) {
+        paths.push(entry);
+        continue;
+      }
+      // Relative names: Android parentUri is not a resolvable join for DocumentFile here —
+      // keep basename-only entries for openMediaPaths if they look like media.
+      if (mediaKindFromName(entry)) paths.push(entry);
+    }
+    const mediaPaths = paths.filter(p => mediaKindFromName(p) || /^(content:|file:|https?:)/i.test(p));
+    if (!mediaPaths.length) {
+      showToast('M3U had no supported media paths.', 4000);
+      return;
+    }
+    await openMediaPaths(mediaPaths, { append: false });
+    return;
+  }
+  // .json / .ssp (and unknown) — SSP snapshot JSON
+  const snap = JSON.parse(text);
+  if (!snap || !snap.items) { showToast('Invalid playlist file.', 4000); return; }
+  await restoreFromSnapshot(snap);
 }
 async function ensureReadPermission(handle) {
   if (!handle) return null;
@@ -2370,6 +2579,20 @@ async function restoreFromSnapshot(snap) {
     const sk = entries.map(it => ({type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()}));
     build(sk); return;
   }
+  // Android/Tauri Continue: restore directly from persisted content/file paths.
+  const pathEntries = mediaEntries.filter(e => e.path && (/^(content:|file:|https?:)/i.test(e.path) || sspIsTauri() || sspIsAndroid()));
+  if (pathEntries.length && pathEntries.length === mediaEntries.length) {
+    const paths = pathEntries.map(e => e.path);
+    await openMediaPaths(paths, { append: false });
+    // Re-apply per-item imageUpdates after ingest by name.
+    try {
+      for (const entry of pathEntries) {
+        const it = items.find(x => x.path === entry.path || x.name === entry.name);
+        if (it && entry.imageUpdates) Object.assign(it, entry.imageUpdates);
+      }
+    } catch (_) {}
+    return;
+  }
   const withHandles = await Promise.all(mediaEntries.map(async entry => {
     let handle = null;
     try { handle = await getHandleIDB(entry.id || entry.name); } catch(e) {}
@@ -2386,6 +2609,19 @@ async function restoreFromSnapshot(snap) {
   const total = resolved.filter(r => r.handle).length;
   let unavailCount = 0;
   if (total === 0) {
+    // Last-resort Android: reopen persisted SAF tree if Continue has no IDB handles.
+    if (sspIsAndroid()) {
+      try {
+        const tree = window.AndroidBridge.getPersistedTreeUri && window.AndroidBridge.getPersistedTreeUri();
+        if (tree) {
+          const res = await androidCall('reopenPersistedFolder', { append: false });
+          if (res && res.kind === 'android-folder' && (res.paths || []).length) {
+            await openAndroidFolder(res, { append: false });
+            return;
+          }
+        }
+      } catch (e) { console.warn('persisted folder reopen failed', e); }
+    }
     const sk = entries.map(it => it.type === 'folder'
       ? {type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()}
       : {...it, url:'', unavailable:true});
@@ -2471,7 +2707,7 @@ g('bru').onclick = function() {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   sls.forEach(s => { const v = s.querySelector('video'); if (v) v.pause(); });
   clearTimeout(stagePruneTmr); stagePruneTmr = null;
-  folderIngestGen++;
+  bumpFolderIngestGen();
   if (thumbIO) { thumbIO.disconnect(); thumbIO = null; }
   items = []; sls = []; slByIdx = Object.create(null); stripMounted.clear(); plMounted.clear(); plRows = []; plTotalH = 0; selectedItems.clear(); lastClickedMI = -1;
   [...stage.children].forEach(c => { if (c.id !== 'fnov' && c.id !== 'watchbadge' && c.id !== 'maxcomp' && c.id !== 'maxcomp2') c.remove(); });
@@ -2486,7 +2722,7 @@ g('bru').onclick = function() {
 };
 
 function load(files) {
-  folderIngestGen++;
+  bumpFolderIngestGen();
   const list = Array.from(files || []);
   const acc = list.filter(isAcceptedMediaFile);
   if (!acc.length) {
@@ -2515,7 +2751,7 @@ function load(files) {
 }
 
 function addMoreFiles(files) {
-  folderIngestGen++;
+  bumpFolderIngestGen();
   const list = Array.from(files || []);
   const acc = list.filter(isAcceptedMediaFile);
   if (!acc.length) {
@@ -2543,7 +2779,7 @@ function addMoreFiles(files) {
 }
 
 async function processHandles(handles) {
-  folderIngestGen++;
+  bumpFolderIngestGen();
   const acc = [];
   for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
   if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
@@ -2563,7 +2799,7 @@ async function processHandles(handles) {
   dz.style.display = 'none'; viewer.style.display = 'flex';
 }
 async function addHandles(handles) {
-  folderIngestGen++;
+  bumpFolderIngestGen();
   const acc = [];
   for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
   if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
@@ -2633,7 +2869,7 @@ function yieldToMain() {
 /** Browser Open Folder: full recursive walk with media MIME filter (cap 10k). */
 async function openBrowserFolder(dirHandle, opts) {
   const append = !!(opts && opts.append);
-  const gen = ++folderIngestGen;
+  const gen = bumpFolderIngestGen();
   const acc = [];
   const truncatedRef = { truncated: false };
   try {
@@ -2661,17 +2897,11 @@ async function openBrowserFolder(dirHandle, opts) {
   }
 }
 
-/** Shared Tauri path → item loader (images + videos). Used by Open Files / Folder. */
+/** Shared Tauri/Android path → item loader (images + videos). Used by Open Files / Folder.
+ * Accepts string paths (Tauri/desktop) or Android bridge objects {uri,name,mime}.
+ */
 async function itemsFromMediaPaths(paths) {
   const invoke = tauriInvoke;
-  function basename(p) {
-    const s = String(p).replace(/\\/g, '/');
-    const i = s.lastIndexOf('/');
-    return i >= 0 ? s.slice(i + 1) : s;
-  }
-  function extOf(p) {
-    return fileExtName(basename(p));
-  }
   function mediaBytesToU8(data) {
     if (typeof data === 'string') {
       const bin = atob(data);
@@ -2686,6 +2916,8 @@ async function itemsFromMediaPaths(paths) {
     return new Uint8Array(0);
   }
   function pathToUrl(p, mime) {
+    const s = String(p || '');
+    if (/^(content:|file:|https?:|blob:|data:)/i.test(s)) return s;
     try {
       if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.convertFileSrc === 'function') {
         return window.__TAURI__.core.convertFileSrc(p);
@@ -2694,17 +2926,27 @@ async function itemsFromMediaPaths(paths) {
     return null;
   }
   const pending = [];
-  for (const p of paths) {
-    const ext = extOf(p);
-    const mime = MEDIA_MIME[ext];
-    if (!mime) continue;
-    const name = basename(p);
-    const kind = mediaKindFromName(name) || (mime.startsWith('video/') ? 'video' : 'image');
+  for (const entry of paths) {
+    const meta = resolveMediaPathMeta(entry);
+    // Drop only when neither MIME nor displayName/path extension identifies media.
+    if (!meta) continue;
+    const { path: p, name, mime, kind } = meta;
     let url = pathToUrl(p, mime);
     if (!url) {
-      const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
-      if (!raw.length) throw new Error('empty bytes for ' + name);
-      url = URL.createObjectURL(new Blob([raw], { type: mime }));
+      if (sspIsAndroid()) {
+        try {
+          const b64 = window.AndroidBridge.readMediaBase64(p, 12 * 1024 * 1024);
+          const raw = mediaBytesToU8(b64);
+          if (!raw.length) throw new Error('empty bytes for ' + name);
+          url = URL.createObjectURL(new Blob([raw], { type: mime }));
+        } catch (e) {
+          throw new Error('Android could not open ' + name + ': ' + (e && e.message ? e.message : e));
+        }
+      } else {
+        const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
+        if (!raw.length) throw new Error('empty bytes for ' + name);
+        url = URL.createObjectURL(new Blob([raw], { type: mime }));
+      }
     }
     pending.push(new Promise((resolve) => {
       if (kind === 'video') {
@@ -2727,9 +2969,9 @@ async function itemsFromMediaPaths(paths) {
 async function openMediaPaths(paths, opts) {
   const append = !!(opts && opts.append);
   if (!paths || !paths.length) return;
-  const gen = ++folderIngestGen;
+  const gen = bumpFolderIngestGen();
   try {
-    await tauriInvoke('register_allowed_paths', { paths });
+    if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths: mediaPathStrings(paths) });
     if (gen !== folderIngestGen) return;
     const first = await itemsFromMediaPaths([paths[0]]);
     if (gen !== folderIngestGen) return;
@@ -2762,6 +3004,15 @@ async function openTauriFolder(dirPath, opts) {
     console.error(e);
     showToast('Could not open folder: ' + (e && e.message ? e.message : e), 5000);
   }
+}
+
+/** Android SAF Open Folder: DocumentFile tree URIs → same batched ingest path as Tauri. */
+async function openAndroidFolder(picked, opts) {
+  const append = !!(opts && opts.append) || !!(picked && picked.append);
+  const paths = (picked && picked.paths) || [];
+  if (!paths.length) { showToast('No images or videos found in that folder.', 3500); return; }
+  await openMediaPaths(paths, { append });
+  if (picked && picked.truncated) showToast('Folder truncated at 10000 media files.', 4500);
 }
 
 function finishAdd(newItems, opts) {

@@ -11,8 +11,8 @@ android {
         applicationId = "com.johnalindogan.slideshowpro.tv"
         minSdk = 21
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0-tv-phase1"
+        versionCode = 2
+        versionName = "0.2.0-tv-p2a"
     }
 
     buildTypes {
@@ -40,6 +40,7 @@ dependencies {
     implementation("androidx.leanback:leanback:1.0.0")
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.activity:activity-ktx:1.9.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 }
 
 // Mirror Tauri sync-ui: copy root SlideShowPro.html into assets before every build.
