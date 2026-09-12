@@ -15,7 +15,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Move to the next or previous slide.
 - Reverse playback.
 - Adjust playback speed (toolbar buttons or keyboard: `↑` / `↓` ±5% by default; `,` / `.` remain aliases; remappable via the key editor / `ssp_keymap`). Toast shows the new rate when chrome is hidden.
-- While a **video** is current, `←` / `→` (prev/next bindings) seek **−2s / +2s** (clamped). At the start, `←` goes to the previous media; at the end, `→` goes to the next. Images keep slide prev/next.
+- While a **video** is current, `←` / `→` (prev/next bindings) seek **−2s / +2s** (clamped). **Double** the same key within **350ms** jumps to the previous/next playlist item immediately (a press after 350ms is a fresh seek). At the start, `←` goes to the previous media; at the end, `→` goes to the next. Images keep single-press slide prev/next.
 - Set a default duration for photos.
 - Auto-advance through media during playback.
 

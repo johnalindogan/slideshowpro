@@ -2111,6 +2111,8 @@ let themeCursor = 0;
 let spd = 100;
 const SPD_STEP = 5, SPD_MIN = 5, SPD_MAX = 500;
 const VIDEO_SEEK_SEC = 2;
+const VIDEO_DOUBLE_MS = 350; /* same-key double ←/→ within this window → prev/next item */
+let videoNavLast = { dir: 0, t: 0 };
 
 const KB = [
   {fs:1.0,ts:1.15,fx:0,fy:0,tx:-3,ty:-3},
@@ -5314,9 +5316,20 @@ function findMappedId(k) {
   return null;
 }
 /* Video seek ±VIDEO_SEEK_SEC via prev/next keys when current media is video.
-   At t≈0 + prev → previous slide; at t≈end + next → next slide. Images keep slide nav. */
-function seekCurVideo(dir) {
+   Double same-key within VIDEO_DOUBLE_MS → immediate prev/next item (first press still seeks).
+   At t≈0 + prev → previous slide; at t≈end + next → next slide. Images keep slide nav.
+   Key-repeat is swallowed so hold does not false-double or seek-spam. */
+function seekCurVideo(dir, opts) {
   if (!isV(cur)) return false;
+  const repeat = !!(opts && opts.repeat);
+  if (repeat) return true;
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  if (videoNavLast.dir === dir && (now - videoNavLast.t) <= VIDEO_DOUBLE_MS) {
+    videoNavLast = { dir, t: now };
+    goTo(cur + (dir > 0 ? 1 : -1));
+    return true;
+  }
+  videoNavLast = { dir, t: now };
   const v = getSl(cur)?.querySelector('video');
   if (!v) return false;
   const dur = v.duration;
@@ -5342,12 +5355,12 @@ function runMappedKey(e) {
   switch (id) {
     case 'next':
       e.preventDefault();
-      if (seekCurVideo(1)) break;
+      if (seekCurVideo(1, { repeat: e.repeat })) break;
       goTo(cur + 1);
       break;
     case 'prev':
       e.preventDefault();
-      if (seekCurVideo(-1)) break;
+      if (seekCurVideo(-1, { repeat: e.repeat })) break;
       goTo(cur - 1);
       break;
     case 'play': e.preventDefault(); togglePlay(); break;
