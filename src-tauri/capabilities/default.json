@@ -19,6 +19,7 @@
     "allow-read-text-file",
     "allow-open-playlist-window",
     "allow-close-playlist-window",
-    "allow-focus-playlist-window"
+    "allow-focus-playlist-window",
+    "allow-write-export-file"
   ]
 }

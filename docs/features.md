@@ -41,9 +41,12 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Adjust saturation.
 - Adjust hue.
 - Adjust highlights.
-- Adjust shadows.
-- Adjust gamma.
+- Adjust lowlights (shadows).
+- Adjust gamma (mids).
+- Adjust sharpness (SVG convolve / baked convolution on export).
+- Nudge lowlights / highlights / gamma / sharpness from the keyboard (defaults: Y/U, I/O, 5/6, [/]).
 - Reset any color adjustment back to default.
+- Grades persist per item in `imageUpdates.clr` (localStorage + playlist save).
 
 ## Layout Modes
 
@@ -81,7 +84,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Click a key badge and press a new key to assign; remaps persist in `localStorage` (`ssp_keymap`).
 - Conflict detection: two commands cannot silently share a key (prior owner is unbound, with a toast).
 - Per-command reset and **Reset all to defaults**.
-- Defaults include navigation, play/pause, speed ± (`,` / `.`), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, and edit nudges.
+- Defaults include navigation, play/pause, speed ± (`,` / `.`), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges, screenshot, and export graded (`E`).
 - Fixed (not remappable): Delete / Backspace, Alt+Arrows pan, Escape.
 
 ## Persistence
@@ -93,7 +96,8 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 
 ## Export and Capture
 
-- Save a screenshot of the current view, auto-saving to a Screenshots folder when supported.
+- Save a screenshot of the current view with grades baked (including lowlights/highlights/gamma/sharpness), auto-saving to a Screenshots folder when supported.
+- **Export Graded** (toolbar or `E`): for images, write a JPEG with the full color suite baked via the native save dialog (Tauri) or browser download. For video, best-effort canvas/MediaRecorder WebM bake for short clips (≤45s); otherwise export a `.sspgrade.json` sidecar documenting the grade (ffmpeg is not bundled). Playlist save still keeps grades on the item.
 
 ## Supported Media
 
