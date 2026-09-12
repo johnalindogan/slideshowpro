@@ -1771,6 +1771,7 @@ const FNS = [
   {id:'prev',      label:'Prev Slide',        def:'ArrowLeft',  group:'Playback'},
   {id:'play',      label:'Play / Pause',      def:' ',          group:'Playback'},
   {id:'reverse',   label:'Reverse Play',      def:'b',          group:'Playback'},
+  /* Speed ± defaults: , / . — avoids zoom +/- and sharpness [ ] (remappable via key editor / ssp_keymap) */
   {id:'speedDown', label:'Speed Down',        def:',',          group:'Playback'},
   {id:'speedUp',   label:'Speed Up',          def:'.',          group:'Playback'},
   {id:'watch',     label:'Watch Mode',        def:'F5',         group:'Playback'},
@@ -2033,9 +2034,20 @@ function updSpd() {
   g('slb').textContent = spd + '%';
   sls.forEach(sl => { const v = sl.querySelector('video'); if (v) v.playbackRate = getSpd(); });
 }
-g('bsd').onclick = () => { spd = Math.max(SPD_MIN, spd - SPD_STEP); updSpd(); };
-g('bsu').onclick = () => { spd = Math.min(SPD_MAX, spd + SPD_STEP); updSpd(); };
-g('slb').onclick = () => { spd = 100; updSpd(); };
+/* Step playback speed; toast so feedback remains when #ctrls / #slb are hidden (watch / hide-controls). */
+function bumpSpeed(dir) {
+  const next = Math.max(SPD_MIN, Math.min(SPD_MAX, spd + dir * SPD_STEP));
+  if (next === spd) {
+    showToast('Speed: ' + spd + '% (limit)', 1200);
+    return;
+  }
+  spd = next;
+  updSpd();
+  showToast('Speed: ' + spd + '%', 1200);
+}
+g('bsd').onclick = () => bumpSpeed(-1);
+g('bsu').onclick = () => bumpSpeed(1);
+g('slb').onclick = () => { spd = 100; updSpd(); showToast('Speed: 100%', 1200); };
 
 const isV = i => getMediaItems()[i]?.type === 'video';
 const getDur = () => parseInt(g('dsel').value);
@@ -4327,8 +4339,8 @@ function runMappedKey(e) {
       reversePlay = !reversePlay;
       g('brev').classList.toggle('on', reversePlay);
       break;
-    case 'speedDown': spd = Math.max(SPD_MIN, spd - SPD_STEP); updSpd(); break;
-    case 'speedUp': spd = Math.min(SPD_MAX, spd + SPD_STEP); updSpd(); break;
+    case 'speedDown': e.preventDefault(); bumpSpeed(-1); break;
+    case 'speedUp': e.preventDefault(); bumpSpeed(1); break;
     case 'watch':
       e.preventDefault();
       if (getMediaItems().length) toggleWatchMode();

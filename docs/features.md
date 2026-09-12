@@ -14,7 +14,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Play and pause slides.
 - Move to the next or previous slide.
 - Reverse playback.
-- Adjust playback speed.
+- Adjust playback speed (toolbar buttons or keyboard: `,` slower / `.` faster by default; remappable via the key editor / `ssp_keymap`).
 - Set a default duration for photos.
 - Auto-advance through media during playback.
 
