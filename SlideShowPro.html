@@ -590,26 +590,41 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .pfbtn span{font-size:11px;color:rgba(255,255,255,.3);font-family:system-ui,sans-serif;}
 .soon{font-size:9px;color:rgba(255,255,255,.22);margin-left:auto;font-family:system-ui,sans-serif;border:.5px solid rgba(255,255,255,.1);padding:1px 5px;border-radius:3px;flex-shrink:0;}
 
-/* Keyboard editor modal */
+/* Keyboard editor modal (P4 assignment / editing UI) */
 #keditor{display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:200;align-items:center;justify-content:center;}
 #keditor.open{display:flex;}
-#kedbody{background:#111;border:.5px solid rgba(255,255,255,.15);border-radius:8px;padding:20px 24px;width:460px;max-height:82vh;overflow-y:auto;font-family:system-ui,sans-serif;}
+#kedbody{background:#111;border:.5px solid rgba(255,255,255,.15);border-radius:8px;padding:20px 24px;width:520px;max-width:94vw;max-height:82vh;overflow-y:auto;font-family:system-ui,sans-serif;display:flex;flex-direction:column;}
 #kedbody::-webkit-scrollbar{width:3px;}
 #kedbody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);}
 #kedbody h3{color:#fff;font-size:13px;font-weight:600;margin-bottom:4px;}
-#kedbody p{font-size:11px;color:rgba(255,255,255,.3);margin-bottom:14px;}
+#kedbody > p{font-size:11px;color:rgba(255,255,255,.3);margin-bottom:12px;}
+#kedtoolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;}
+#kedsearch{flex:1;min-width:140px;background:rgba(255,255,255,.06);border:.5px solid rgba(255,255,255,.15);border-radius:4px;color:#fff;font-size:12px;padding:6px 10px;font-family:system-ui,sans-serif;outline:none;}
+#kedsearch::placeholder{color:rgba(255,255,255,.28);}
+#kedsearch:focus{border-color:rgba(255,255,255,.4);}
+#kedresetall{font-size:11px;color:rgba(255,255,255,.55);cursor:pointer;padding:6px 10px;background:transparent;border:.5px solid rgba(255,255,255,.18);border-radius:4px;white-space:nowrap;font-family:system-ui,sans-serif;}
+#kedresetall:hover{color:#fff;border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.06);}
+#kedconflict{display:none;font-size:11px;color:#ffb4b4;background:rgba(180,40,40,.18);border:.5px solid rgba(220,80,80,.35);border-radius:4px;padding:8px 10px;margin-bottom:10px;line-height:1.4;}
+#kedconflict.show{display:block;}
+#kedlist{flex:1;}
 .kerow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:.5px solid rgba(255,255,255,.06);}
+.kerow.conflict{background:rgba(180,40,40,.12);margin:0 -8px;padding-left:8px;padding-right:8px;border-radius:4px;}
+.kerow.modified .kelbl::after{content:' ·';color:rgba(255,255,255,.25);}
 .kesec{font-size:10px;color:rgba(255,255,255,.35);text-transform:uppercase;letter-spacing:.08em;margin-top:14px;margin-bottom:4px;padding-top:8px;border-top:.5px solid rgba(255,255,255,.08);}
 .kesec:first-child{margin-top:0;padding-top:0;border-top:none;}
 .kednote{font-size:10px;color:rgba(255,255,255,.28);margin-top:14px;line-height:1.45;}
-.kelbl{flex:1;font-size:12px;color:rgba(255,255,255,.55);}
+.kelbl{flex:1;font-size:12px;color:rgba(255,255,255,.55);min-width:0;}
+.kedef{font-size:10px;color:rgba(255,255,255,.22);font-family:monospace;min-width:52px;text-align:right;}
 .kekey{min-width:90px;text-align:center;padding:4px 10px;background:rgba(255,255,255,.07);border:.5px solid rgba(255,255,255,.18);border-radius:4px;color:#fff;font-size:12px;cursor:pointer;font-family:monospace;transition:background .15s;}
 .kekey:hover{background:rgba(255,255,255,.12);}
 .kekey.listening{border-color:#fff;background:rgba(255,255,255,.18);animation:kpulse .7s infinite;}
+.kekey.unbound{color:rgba(255,255,255,.35);font-style:italic;}
+.kekey.conflict{border-color:rgba(255,120,120,.7);color:#ffb4b4;}
 @keyframes kpulse{0%,100%{opacity:1}50%{opacity:.4}}
 .kerst{font-size:10px;color:rgba(255,255,255,.28);cursor:pointer;padding:2px 7px;background:transparent;border:.5px solid rgba(255,255,255,.1);border-radius:3px;white-space:nowrap;}
 .kerst:hover{color:#fff;border-color:rgba(255,255,255,.38);}
-#kedclose{margin-top:16px;padding:7px 22px;background:rgba(255,255,255,.09);border:.5px solid rgba(255,255,255,.22);border-radius:5px;color:#fff;cursor:pointer;font-size:12px;font-family:system-ui,sans-serif;}
+#kedactions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:4px;}
+#kedclose{padding:7px 22px;background:rgba(255,255,255,.09);border:.5px solid rgba(255,255,255,.22);border-radius:5px;color:#fff;cursor:pointer;font-size:12px;font-family:system-ui,sans-serif;}
 #kedclose:hover{background:rgba(255,255,255,.18);}
 
 /* Floating show-controls button */
@@ -939,13 +954,20 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
   </div>
 </div>
 
-<!-- Keyboard editor modal -->
-<div id="keditor">
+<!-- Keyboard editor modal (P4 assignment / editing) -->
+<div id="keditor" role="dialog" aria-modal="true" aria-labelledby="kedtitle">
   <div id="kedbody">
-    <h3>Keyboard Shortcuts</h3>
-    <p>Click a key badge then press any key to remap. Escape cancels.</p>
+    <h3 id="kedtitle">Keyboard Shortcuts</h3>
+    <p>Click a key badge, then press a new key to assign. Escape cancels capture. Two commands cannot share a key.</p>
+    <div id="kedtoolbar">
+      <input type="search" id="kedsearch" placeholder="Filter commands…" autocomplete="off" aria-label="Filter shortcut commands">
+      <button type="button" id="kedresetall" title="Restore every command to its default key">Reset all to defaults</button>
+    </div>
+    <div id="kedconflict" role="status" aria-live="polite"></div>
     <div id="kedlist"></div>
-    <button id="kedclose">Close</button>
+    <div id="kedactions">
+      <button type="button" id="kedclose">Close</button>
+    </div>
   </div>
 </div>
 
@@ -1831,20 +1853,106 @@ function saveKeyMap() {
 loadKeyMap();
 
 function keyLabel(k) {
+  if (k == null || k === '') return 'None';
   if (k === ' ') return 'Space';
   return {ArrowRight:'→',ArrowLeft:'←',ArrowUp:'↑',ArrowDown:'↓'}[k] || k;
 }
 function keysEqual(bound, pressed) {
   /* Exact match only — letter bindings like r vs R must stay distinct (Rotate CW/CCW). */
-  if (bound == null || pressed == null) return false;
+  if (bound == null || bound === '' || pressed == null || pressed === '') return false;
   return bound === pressed;
 }
+const RESERVED_KEYS = new Set(['Escape', 'Delete', 'Backspace']);
 let listeningEl = null, listeningId = null;
+let kedFilter = '';
+
+function fnById(id) { return FNS.find(f => f.id === id); }
+
+/** Map bound key → command ids that currently claim it (ignores unbound). */
+function keyOwnerIndex() {
+  const idx = Object.create(null);
+  FNS.forEach(f => {
+    const k = keyMap[f.id];
+    if (k == null || k === '') return;
+    (idx[k] || (idx[k] = [])).push(f.id);
+  });
+  return idx;
+}
+function conflictIds() {
+  const ids = new Set();
+  const idx = keyOwnerIndex();
+  Object.keys(idx).forEach(k => {
+    if (idx[k].length > 1) idx[k].forEach(id => ids.add(id));
+  });
+  return ids;
+}
+function ownersOfKey(k, exceptId) {
+  if (k == null || k === '') return [];
+  return FNS.filter(f => f.id !== exceptId && keysEqual(keyMap[f.id], k));
+}
+
+/** Assign a key to one command. Unbinds any other owners so keys never silently share. */
+function assignMappedKey(id, key) {
+  if (RESERVED_KEYS.has(key)) {
+    if (typeof showToast === 'function') showToast('Reserved key — Escape / Delete / Backspace cannot be remapped.');
+    return false;
+  }
+  const others = ownersOfKey(key, id);
+  others.forEach(o => { keyMap[o.id] = ''; });
+  keyMap[id] = key;
+  saveKeyMap();
+  if (others.length && typeof showToast === 'function') {
+    const names = others.map(o => o.label).join(', ');
+    showToast('Key ' + keyLabel(key) + ' reassigned — unbound: ' + names);
+  }
+  return true;
+}
+function resetOneKey(id) {
+  const fn = fnById(id);
+  if (!fn) return;
+  /* Reclaim default even if another command currently holds it. */
+  assignMappedKey(id, fn.def);
+}
+function resetAllKeys() {
+  FNS.forEach(f => { keyMap[f.id] = f.def; });
+  saveKeyMap();
+  if (typeof showToast === 'function') showToast('Keyboard shortcuts restored to defaults');
+}
+function cancelKeyListen() {
+  if (!listeningEl) { listeningEl = null; listeningId = null; return; }
+  const k = keyMap[listeningId];
+  listeningEl.textContent = keyLabel(k);
+  listeningEl.classList.toggle('unbound', !k);
+  listeningEl.classList.remove('listening', 'conflict');
+  listeningEl = null; listeningId = null;
+}
+
+function updateConflictBanner() {
+  const banner = g('kedconflict');
+  if (!banner) return;
+  const bad = conflictIds();
+  if (!bad.size) {
+    banner.classList.remove('show');
+    banner.textContent = '';
+    return;
+  }
+  const labels = [...bad].map(id => (fnById(id) || {}).label || id).join(', ');
+  banner.textContent = bad.size + ' conflicting shortcut' + (bad.size > 1 ? 's' : '') +
+    ' — two commands share a key (' + labels + '). Reassign or use Reset all to defaults.';
+  banner.classList.add('show');
+}
 
 function renderKeyEditor() {
   const list = g('kedlist'); list.innerHTML = '';
+  const filter = (kedFilter || '').trim().toLowerCase();
+  const conflicts = conflictIds();
   let lastGroup = null;
+  let shown = 0;
   FNS.forEach(fn => {
+    const bound = keyMap[fn.id];
+    const hay = (fn.label + ' ' + fn.group + ' ' + keyLabel(bound) + ' ' + fn.def + ' ' + fn.id).toLowerCase();
+    if (filter && !hay.includes(filter)) return;
+    shown++;
     if (fn.group !== lastGroup) {
       lastGroup = fn.group;
       const sec = document.createElement('div');
@@ -1852,31 +1960,82 @@ function renderKeyEditor() {
       sec.textContent = fn.group;
       list.appendChild(sec);
     }
-    const row = document.createElement('div'); row.className = 'kerow';
-    const lbl = document.createElement('span'); lbl.className = 'kelbl'; lbl.textContent = fn.label;
-    const key = document.createElement('button'); key.className = 'kekey'; key.textContent = keyLabel(keyMap[fn.id]);
+    const row = document.createElement('div');
+    row.className = 'kerow' + (conflicts.has(fn.id) ? ' conflict' : '') +
+      (bound !== fn.def ? ' modified' : '');
+    row.dataset.id = fn.id;
+    const lbl = document.createElement('span');
+    lbl.className = 'kelbl';
+    lbl.textContent = fn.label;
+    const def = document.createElement('span');
+    def.className = 'kedef';
+    def.title = 'Default';
+    def.textContent = keyLabel(fn.def);
+    const key = document.createElement('button');
+    key.type = 'button';
+    key.className = 'kekey' + (!bound ? ' unbound' : '') + (conflicts.has(fn.id) ? ' conflict' : '');
+    key.textContent = keyLabel(bound);
+    key.title = 'Click, then press a new key';
+    key.setAttribute('aria-label', fn.label + ' shortcut, currently ' + keyLabel(bound));
     key.onclick = () => {
-      if (listeningEl) { listeningEl.textContent = keyLabel(keyMap[listeningId]); listeningEl.classList.remove('listening'); }
+      if (listeningId === fn.id) { cancelKeyListen(); return; }
+      cancelKeyListen();
       listeningEl = key; listeningId = fn.id;
-      key.classList.add('listening'); key.textContent = 'Press key…';
+      key.classList.add('listening');
+      key.classList.remove('unbound', 'conflict');
+      key.textContent = 'Press key…';
     };
-    const rst = document.createElement('button'); rst.className = 'kerst'; rst.textContent = 'reset';
+    const rst = document.createElement('button');
+    rst.type = 'button';
+    rst.className = 'kerst';
+    rst.textContent = 'reset';
+    rst.title = 'Restore default (' + keyLabel(fn.def) + ')';
     rst.onclick = () => {
-      keyMap[fn.id] = fn.def; key.textContent = keyLabel(fn.def); saveKeyMap();
-      if (listeningId === fn.id) { listeningEl = null; listeningId = null; key.classList.remove('listening'); }
+      if (listeningId === fn.id) cancelKeyListen();
+      resetOneKey(fn.id);
+      renderKeyEditor();
     };
-    row.appendChild(lbl); row.appendChild(key); row.appendChild(rst);
+    row.appendChild(lbl); row.appendChild(def); row.appendChild(key); row.appendChild(rst);
     list.appendChild(row);
   });
+  if (!shown) {
+    const empty = document.createElement('p');
+    empty.className = 'kednote';
+    empty.textContent = 'No commands match this filter.';
+    list.appendChild(empty);
+  }
   const note = document.createElement('p');
   note.className = 'kednote';
-  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Arrows pan; Esc exits watch mode / cancels remap.';
+  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Arrows pan; Esc exits watch mode / cancels remap / closes this editor. Speed − / + default to , / .';
   list.appendChild(note);
+  updateConflictBanner();
 }
-function toggleKeyEditor() { const open = g('keditor').classList.toggle('open'); if (open) renderKeyEditor(); }
-g('bked').onclick = toggleKeyEditor;
-g('kedclose').onclick = toggleKeyEditor;
-g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(); });
+function toggleKeyEditor(force) {
+  const el = g('keditor');
+  const open = typeof force === 'boolean' ? force : !el.classList.contains('open');
+  el.classList.toggle('open', open);
+  if (open) {
+    kedFilter = g('kedsearch')?.value || '';
+    renderKeyEditor();
+    setTimeout(() => g('kedsearch')?.focus(), 0);
+  } else {
+    cancelKeyListen();
+  }
+}
+g('bked').onclick = () => toggleKeyEditor();
+g('kedclose').onclick = () => toggleKeyEditor(false);
+g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(false); });
+g('kedresetall').onclick = () => {
+  cancelKeyListen();
+  if (!confirm('Reset all keyboard shortcuts to defaults?')) return;
+  resetAllKeys();
+  renderKeyEditor();
+};
+g('kedsearch').addEventListener('input', () => {
+  kedFilter = g('kedsearch').value || '';
+  cancelKeyListen();
+  renderKeyEditor();
+});
 
 /* ── Ken Burns modal ── */
 function applyKBNow() {
@@ -4387,24 +4546,26 @@ function runMappedKey(e) {
   return true;
 }
 document.addEventListener('keydown', e => {
-  /* Key remapper */
+  /* Key remapper (P4 editor capture) */
   if (listeningEl && listeningId) {
     if (e.key === 'Escape') {
-      listeningEl.textContent = keyLabel(keyMap[listeningId]);
-      listeningEl.classList.remove('listening');
-      listeningEl = null; listeningId = null;
+      cancelKeyListen();
+    } else if (RESERVED_KEYS.has(e.key)) {
+      if (typeof showToast === 'function') showToast('Reserved key — Escape / Delete / Backspace cannot be remapped.');
+      cancelKeyListen();
+      renderKeyEditor();
     } else {
-      keyMap[listeningId] = e.key;
-      listeningEl.textContent = keyLabel(e.key);
-      listeningEl.classList.remove('listening');
-      listeningEl = null; listeningId = null;
-      saveKeyMap();
+      const id = listeningId;
+      cancelKeyListen();
+      assignMappedKey(id, e.key);
+      renderKeyEditor();
     }
     e.preventDefault(); return;
   }
 
-  /* Escape: exit watch mode, close overflow, or clear selection (fixed) */
+  /* Escape: close shortcut editor, exit watch mode, close overflow, or clear selection (fixed) */
   if (e.key === 'Escape') {
+    if (g('keditor')?.classList.contains('open')) { toggleKeyEditor(false); return; }
     if (watchMode) { toggleWatchMode(); return; }
     if (g('ctrls-overflow')?.classList.contains('open')) { setOverflowOpen(false); return; }
     if (selectedItems.size > 0) { selectedItems.clear(); updSelBadge(); if (g('media-dock').classList.contains('expanded')) renderPlaylist(); }
