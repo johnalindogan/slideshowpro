@@ -22,3 +22,8 @@ commands.allow = ["list_folder_media"]
 identifier = "allow-read-text-file"
 description = "Allow reading allowlisted text files (playlist JSON)"
 commands.allow = ["read_text_file"]
+
+[[permission]]
+identifier = "allow-media-file-size"
+description = "Allow probing allowlisted media file sizes for blob vs convertFileSrc ingest"
+commands.allow = ["media_file_size"]

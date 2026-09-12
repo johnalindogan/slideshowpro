@@ -1945,6 +1945,15 @@ function applySharpenKernel(shp) {
   }
   el.setAttribute('kernelMatrix', km);
 }
+/** SVG feComponentTransfer + cross-origin (asset:// / http(s) asset.localhost) → black stage in Chromium/WebView2. */
+function isCrossOriginStageUrl(url) {
+  const s = String(url || '');
+  if (!s) return false;
+  if (/^(blob:|data:)/i.test(s)) return false;
+  // Tauri convertFileSrc: asset://… or http(s)://asset.localhost/…
+  if (/^(asset:|https?:)/i.test(s) || /asset\.localhost/i.test(s)) return true;
+  return false;
+}
 function applyColorToStage(clr) {
   const c = {...CLR_DEF, ...clr};
   const gv = c.g/100, hl = c.hl/100, sh = c.sh/100;
@@ -1961,7 +1970,15 @@ function applyColorToStage(clr) {
     e.setAttribute('type','table'); e.setAttribute('tableValues', lut);
   });
   applySharpenKernel(c.shp);
-  stage.style.filter = `url(#gf) brightness(${c.b/100}) contrast(${c.c/100}) hue-rotate(${c.h}deg) saturate(${c.s/100})`;
+  const cssFilters = `brightness(${c.b/100}) contrast(${c.c/100}) hue-rotate(${c.h}deg) saturate(${c.s/100})`;
+  const mi = getMediaItems();
+  const curUrl = (mi[cur] && mi[cur].url) || '';
+  // Same-origin blob:/data: can use SVG LUT; asset/http(s) cross-origin → CSS only.
+  if (isCrossOriginStageUrl(curUrl)) {
+    stage.style.filter = cssFilters;
+  } else {
+    stage.style.filter = `url(#gf) ${cssFilters}`;
+  }
 }
 function applyColor() {
   const mi = getMediaItems(), item = mi[cur]; if (!item) return;
@@ -2609,18 +2626,25 @@ async function restoreFromSnapshot(snap) {
     const sk = entries.map(it => ({type:'folder',name:it.name,open:it.open!==false,id:it.id || makeItemId()}));
     build(sk); return;
   }
-  // Android/Tauri Continue: restore directly from persisted content/file paths.
+  // Android/Tauri Continue: restore from persisted content/file paths when present.
+  // Prefer path ingest for any entries that have paths (not only when ALL do) —
+  // Tauri has no IDB File System Access handles, so requiring 100% paths used to
+  // fail the whole playlist when savePlaylist omitted path.
   const pathEntries = mediaEntries.filter(e => e.path && (/^(content:|file:|https?:)/i.test(e.path) || sspIsTauri() || sspIsAndroid()));
-  if (pathEntries.length && pathEntries.length === mediaEntries.length) {
+  if (pathEntries.length) {
     const paths = pathEntries.map(e => e.path);
     await openMediaPaths(paths, { append: false });
-    // Re-apply per-item imageUpdates after ingest by name.
+    // Re-apply per-item imageUpdates after ingest by name/path.
     try {
       for (const entry of pathEntries) {
         const it = items.find(x => x.path === entry.path || x.name === entry.name);
         if (it && entry.imageUpdates) Object.assign(it, entry.imageUpdates);
       }
     } catch (_) {}
+    const missing = mediaEntries.length - pathEntries.length;
+    if (missing > 0) {
+      showToast(`${missing} file${missing>1?'s':''} unavailable — no path to restore.`, 5000);
+    }
     return;
   }
   const withHandles = await Promise.all(mediaEntries.map(async entry => {
@@ -2932,6 +2956,7 @@ async function openBrowserFolder(dirHandle, opts) {
  */
 async function itemsFromMediaPaths(paths) {
   const invoke = tauriInvoke;
+  const HUGE_VIDEO_BYTES = 80 * 1024 * 1024;
   function mediaBytesToU8(data) {
     if (typeof data === 'string') {
       const bin = atob(data);
@@ -2945,9 +2970,7 @@ async function itemsFromMediaPaths(paths) {
     if (data && data.type === 'Buffer' && Array.isArray(data.data)) return Uint8Array.from(data.data);
     return new Uint8Array(0);
   }
-  function pathToUrl(p, mime) {
-    const s = String(p || '');
-    if (/^(content:|file:|https?:|blob:|data:)/i.test(s)) return s;
+  function convertFileSrcUrl(p) {
     try {
       if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.convertFileSrc === 'function') {
         return window.__TAURI__.core.convertFileSrc(p);
@@ -2955,40 +2978,64 @@ async function itemsFromMediaPaths(paths) {
     } catch (_) {}
     return null;
   }
+  /** Prefer same-origin blob (SVG LUT safe). convertFileSrc is fallback for huge video / read failure. */
+  async function resolveLocalMediaUrl(p, mime, kind) {
+    const s = String(p || '');
+    if (/^(content:|file:|https?:|blob:|data:)/i.test(s)) return s;
+    if (sspIsAndroid()) {
+      const b64 = window.AndroidBridge.readMediaBase64(p, 12 * 1024 * 1024);
+      const raw = mediaBytesToU8(b64);
+      if (!raw.length) throw new Error('empty bytes for ' + p);
+      return URL.createObjectURL(new Blob([raw], { type: mime }));
+    }
+    // Tauri desktop: blob first (same-origin). Huge videos (>80MB) skip straight to convertFileSrc.
+    if (sspIsTauri() && kind === 'video') {
+      try {
+        const sz = await invoke('media_file_size', { path: p });
+        if (typeof sz === 'number' && sz > HUGE_VIDEO_BYTES) {
+          const assetUrl = convertFileSrcUrl(p);
+          if (assetUrl) return assetUrl;
+        }
+      } catch (_) { /* size probe optional — fall through to blob attempt */ }
+    }
+    try {
+      const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
+      if (!raw.length) throw new Error('empty bytes for ' + p);
+      return URL.createObjectURL(new Blob([raw], { type: mime }));
+    } catch (blobErr) {
+      const assetUrl = convertFileSrcUrl(p);
+      if (assetUrl) return assetUrl;
+      throw blobErr;
+    }
+  }
   const pending = [];
   for (const entry of paths) {
     const meta = resolveMediaPathMeta(entry);
     // Drop only when neither MIME nor displayName/path extension identifies media.
     if (!meta) continue;
     const { path: p, name, mime, kind } = meta;
-    let url = pathToUrl(p, mime);
+    let url;
+    try {
+      url = await resolveLocalMediaUrl(p, mime, kind);
+    } catch (e) {
+      showToast('Could not open ' + name + ': ' + (e && e.message ? e.message : e), 4000);
+      continue;
+    }
     if (!url) {
-      if (sspIsAndroid()) {
-        try {
-          const b64 = window.AndroidBridge.readMediaBase64(p, 12 * 1024 * 1024);
-          const raw = mediaBytesToU8(b64);
-          if (!raw.length) throw new Error('empty bytes for ' + name);
-          url = URL.createObjectURL(new Blob([raw], { type: mime }));
-        } catch (e) {
-          throw new Error('Android could not open ' + name + ': ' + (e && e.message ? e.message : e));
-        }
-      } else {
-        const raw = mediaBytesToU8(await invoke('read_media_file', { path: p }));
-        if (!raw.length) throw new Error('empty bytes for ' + name);
-        url = URL.createObjectURL(new Blob([raw], { type: mime }));
-      }
+      showToast('Could not open ' + name, 4000);
+      continue;
     }
     pending.push(new Promise((resolve) => {
       if (kind === 'video') {
         const v = document.createElement('video'); v.preload = 'metadata';
-        const fin = () => resolve({ url, type: 'video', w: v.videoWidth || 1920, h: v.videoHeight || 1080, name, path: p });
-        v.onloadedmetadata = fin;
-        v.onerror = () => { showToast('Could not read video: ' + name, 4000); fin(); };
+        v.onloadedmetadata = () => resolve({ url, type: 'video', w: v.videoWidth || 1920, h: v.videoHeight || 1080, name, path: p });
+        // Do not enqueue a black/broken slide — toast and skip.
+        v.onerror = () => { showToast('Could not read video: ' + name, 4000); resolve(null); };
         v.src = url;
       } else {
         const img = new Image();
         img.onload = () => resolve({ url, type: 'image', w: img.naturalWidth, h: img.naturalHeight, name, path: p });
-        img.onerror = () => { showToast('Could not read image: ' + name, 4000); resolve({ url, type: 'image', w: 1920, h: 1080, name, path: p }); };
+        img.onerror = () => { showToast('Could not read image: ' + name, 4000); resolve(null); };
         img.src = url;
       }
     }));
@@ -3782,6 +3829,7 @@ function savePlaylist() {
       id: it.id,
       type: it.type,
       name: it.name,
+      path: it.path || undefined,
       imageUpdates: {
         clr: it.clr,
         rotation: it.rotation,
