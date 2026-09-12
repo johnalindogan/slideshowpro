@@ -1,6 +1,6 @@
-# SlideShowPro Features
+# SlideShowX Features
 
-SlideShowPro is a single-file slideshow viewer and playlist tool. The current app includes:
+SlideShowX is a single-file slideshow viewer and playlist tool. The current app includes:
 
 ## Media Import
 
