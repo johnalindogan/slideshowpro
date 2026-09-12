@@ -1,6 +1,6 @@
 [package]
 name = "slideshowpro"
-version = "0.1.0"
+version = "0.1.1"
 description = "Thin Tauri Windows wrapper for SlideShowX"
 authors = ["johnalindogan"]
 edition = "2021"
