@@ -1484,12 +1484,18 @@ async function undockPlaylistWindow() {
 }
 
 let _plCloseBound = false;
-function tryBindPlaylistWindowClosed() {
+function tryBindPlaylistWindowClosed(attempt) {
   if (_plCloseBound || !window.__TAURI__) return;
   const WW = window.__TAURI__.webviewWindow && window.__TAURI__.webviewWindow.WebviewWindow;
   if (!WW || !WW.getByLabel) return;
+  const n = attempt || 0;
+  // open_playlist_window returns before build() finishes — retry until label exists.
   WW.getByLabel('playlist').then(w => {
-    if (!w || _plCloseBound) return;
+    if (!w) {
+      if (n < 50) setTimeout(() => tryBindPlaylistWindowClosed(n + 1), 40);
+      return;
+    }
+    if (_plCloseBound) return;
     _plCloseBound = true;
     const onClosed = () => {
       _plCloseBound = false;
@@ -1510,7 +1516,9 @@ function tryBindPlaylistWindowClosed() {
     };
     try { w.once('tauri://destroyed', onClosed); } catch (_) {}
     try { w.once('tauri://close-requested', onClosed); } catch (_) {}
-  }).catch(() => {});
+  }).catch(() => {
+    if (n < 50) setTimeout(() => tryBindPlaylistWindowClosed(n + 1), 40);
+  });
 }
 
 async function dockPlaylistWindow() {

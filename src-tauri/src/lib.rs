@@ -311,25 +311,44 @@ fn read_text_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<Stri
 }
 
 
+/// Open (or focus) the undocked Media Manager window.
+///
+/// Must return promptly: on Windows, calling `WebviewWindowBuilder::build()`
+/// from a *sync* IPC command deadlocks (WebView2). Even in an async command,
+/// awaiting `build()` can leave the frontend `invoke` hanging. Schedule create
+/// on the async runtime and resolve the invoke immediately so main can set
+/// `playlistUndocked` / hide the dock without waiting for the child to load.
 #[tauri::command]
-fn open_playlist_window(app: AppHandle) -> Result<(), String> {
+async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("playlist") {
         let _ = w.show();
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(
-        &app,
-        "playlist",
-        WebviewUrl::App("index.html?sspWindow=playlist".into()),
-    )
-    .title("SlideShowX — Media Manager")
-    .inner_size(560.0, 820.0)
-    .min_inner_size(360.0, 420.0)
-    .resizable(true)
-    .focused(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(w) = handle.get_webview_window("playlist") {
+            let _ = w.show();
+            let _ = w.set_focus();
+            return;
+        }
+        if let Err(e) = WebviewWindowBuilder::new(
+            &handle,
+            "playlist",
+            WebviewUrl::App("index.html?sspWindow=playlist".into()),
+        )
+        .title("SlideShowX — Media Manager")
+        .inner_size(560.0, 820.0)
+        .min_inner_size(360.0, 420.0)
+        .resizable(true)
+        .focused(true)
+        .build()
+        {
+            eprintln!("[slideshowpro] open_playlist_window build failed: {e}");
+        }
+    });
+
     Ok(())
 }
 
