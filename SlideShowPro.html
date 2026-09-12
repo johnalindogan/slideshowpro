@@ -74,21 +74,25 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 /* Horizontal Max Mode: portrait on landscape screen — left/right split */
 #stage.hmax .sl.on{right:auto!important;bottom:auto!important;left:0!important;top:0!important;width:50%!important;height:100%!important;}
 #stage.hmax #maxcomp{display:block;left:50%;top:0;width:50%;height:100%;}
-#stage.hmax .sl.on img,#stage.hmax .sl.on video,#stage.hmax #maxcomp img,#stage.hmax #maxcomp video{object-fit:cover!important;}
+#stage.hmax .sl.on img,#stage.hmax #maxcomp img{object-fit:cover!important;}
+#stage.hmax .sl.on video,#stage.hmax #maxcomp video{object-fit:contain!important;}
 /* Vertical Max Mode: landscape on portrait screen — top/bottom split */
 #stage.vmax .sl.on{right:auto!important;left:0!important;top:0!important;width:100%!important;height:50%!important;}
 #stage.vmax #maxcomp{display:block;left:0;top:50%;width:100%;height:50%;}
-#stage.vmax .sl.on img,#stage.vmax .sl.on video,#stage.vmax #maxcomp img,#stage.vmax #maxcomp video{object-fit:cover!important;}
+#stage.vmax .sl.on img,#stage.vmax #maxcomp img{object-fit:cover!important;}
+#stage.vmax .sl.on video,#stage.vmax #maxcomp video{object-fit:contain!important;}
 /* Same Side 3: 3-panel left/right */
 #stage.hmax3 .sl.on{right:auto!important;bottom:auto!important;left:33.333%!important;top:0!important;width:33.333%!important;height:100%!important;}
 #stage.hmax3 #maxcomp{display:block;left:0;top:0;width:33.333%;height:100%;}
 #stage.hmax3 #maxcomp2{display:block;left:66.667%;top:0;width:33.333%;height:100%;}
-#stage.hmax3 .sl.on img,#stage.hmax3 .sl.on video,#stage.hmax3 #maxcomp img,#stage.hmax3 #maxcomp video,#stage.hmax3 #maxcomp2 img,#stage.hmax3 #maxcomp2 video{object-fit:cover!important;}
+#stage.hmax3 .sl.on img,#stage.hmax3 #maxcomp img,#stage.hmax3 #maxcomp2 img{object-fit:cover!important;}
+#stage.hmax3 .sl.on video,#stage.hmax3 #maxcomp video,#stage.hmax3 #maxcomp2 video{object-fit:contain!important;}
 /* Same Side 3: 3-panel top/bottom */
 #stage.vmax3 .sl.on{right:auto!important;left:0!important;top:33.333%!important;width:100%!important;height:33.333%!important;}
 #stage.vmax3 #maxcomp{display:block;left:0;top:0;width:100%;height:33.333%;}
 #stage.vmax3 #maxcomp2{display:block;left:0;top:66.667%;width:100%;height:33.333%;}
-#stage.vmax3 .sl.on img,#stage.vmax3 .sl.on video,#stage.vmax3 #maxcomp img,#stage.vmax3 #maxcomp video,#stage.vmax3 #maxcomp2 img,#stage.vmax3 #maxcomp2 video{object-fit:cover!important;}
+#stage.vmax3 .sl.on img,#stage.vmax3 #maxcomp img,#stage.vmax3 #maxcomp2 img{object-fit:cover!important;}
+#stage.vmax3 .sl.on video,#stage.vmax3 #maxcomp video,#stage.vmax3 #maxcomp2 video{object-fit:contain!important;}
 
 #cpanel{display:none;flex-direction:column;gap:8px;padding:11px 16px;background:rgba(6,6,6,.99);border-top:.5px solid rgba(255,255,255,.08);}
 #cpanel.show{display:flex;}
@@ -2106,6 +2110,9 @@ let themeCursor = 0;
 /* Speed: 5–500% in steps of 5 */
 let spd = 100;
 const SPD_STEP = 5, SPD_MIN = 5, SPD_MAX = 500;
+const VIDEO_SEEK_SEC = 2;
+const VIDEO_DOUBLE_MS = 350; /* same-key double ←/→ within this window → prev/next item */
+let videoNavLast = { dir: 0, t: 0 };
 
 const KB = [
   {fs:1.0,ts:1.15,fx:0,fy:0,tx:-3,ty:-3},
@@ -2312,9 +2319,9 @@ const FNS = [
   {id:'prev',      label:'Prev Slide',        def:'ArrowLeft',  group:'Playback'},
   {id:'play',      label:'Play / Pause',      def:' ',          group:'Playback'},
   {id:'reverse',   label:'Reverse Play',      def:'b',          group:'Playback'},
-  /* Speed ± defaults: , / . — avoids zoom +/- and sharpness [ ] (remappable via key editor / ssp_keymap) */
-  {id:'speedDown', label:'Speed Down',        def:',',          group:'Playback'},
-  {id:'speedUp',   label:'Speed Up',          def:'.',          group:'Playback'},
+  /* Speed ± defaults: ArrowDown / ArrowUp (±5%, same as toolbar). , / . remain aliases when defaults are arrows. Alt+Arrows stay pan. */
+  {id:'speedDown', label:'Speed Down',        def:'ArrowDown',  group:'Playback'},
+  {id:'speedUp',   label:'Speed Up',          def:'ArrowUp',    group:'Playback'},
   {id:'watch',     label:'Watch Mode',        def:'F5',         group:'Playback'},
   /* View */
   {id:'addMedia',  label:'Add Media',         def:'a',          group:'View'},
@@ -2926,8 +2933,10 @@ function mediaPrefix() {
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const m = getSl(cur)?.querySelector('img,video'); if (!m) return;
-  const p = getKBPreset(cur);
+  /* Videos: full frame (contain) + zoom/pan only — no Ken Burns end-frame offsets. */
+  const p = isV(cur) ? null : getKBPreset(cur);
   const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
+  if (m.tagName === 'VIDEO') m.style.objectFit = 'contain';
   m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
 }
 
@@ -3109,7 +3118,8 @@ function makeCompMed(item) {
   } else {
     med = document.createElement('img'); med.src = item.url; med.draggable = false;
   }
-  med.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform-origin:center center;';
+  const fit = item.type === 'video' ? 'contain' : 'cover';
+  med.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' + fit + ';transform-origin:center center;';
   return med;
 }
 function showMaxCompanion(curIdx) {
@@ -5305,15 +5315,54 @@ function findMappedId(k) {
   }
   return null;
 }
+/* Video seek ±VIDEO_SEEK_SEC via prev/next keys when current media is video.
+   Double same-key within VIDEO_DOUBLE_MS → immediate prev/next item (first press still seeks).
+   At t≈0 + prev → previous slide; at t≈end + next → next slide. Images keep slide nav.
+   Key-repeat is swallowed so hold does not false-double or seek-spam. */
+function seekCurVideo(dir, opts) {
+  if (!isV(cur)) return false;
+  const repeat = !!(opts && opts.repeat);
+  if (repeat) return true;
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  if (videoNavLast.dir === dir && (now - videoNavLast.t) <= VIDEO_DOUBLE_MS) {
+    videoNavLast = { dir, t: now };
+    goTo(cur + (dir > 0 ? 1 : -1));
+    return true;
+  }
+  videoNavLast = { dir, t: now };
+  const v = getSl(cur)?.querySelector('video');
+  if (!v) return false;
+  const dur = v.duration;
+  if (!dur || !isFinite(dur)) return false;
+  const t = v.currentTime || 0;
+  const eps = 0.05;
+  if (dir < 0 && t <= eps) { goTo(cur - 1); return true; }
+  if (dir > 0 && t >= dur - eps) { goTo(cur + 1); return true; }
+  const next = Math.max(0, Math.min(dur, t + dir * VIDEO_SEEK_SEC));
+  try { v.currentTime = next; } catch (_) {}
+  g('pb').style.width = Math.min((next / dur) * 100, 100).toFixed(1) + '%';
+  return true;
+}
 function runMappedKey(e) {
   const k = e.key;
   let id = findMappedId(k);
   /* keep '=' as zoom-in alias when default '+' is bound */
   if (!id && k === '=' && keysEqual(keyMap.zoomIn, '+')) id = 'zoomIn';
+  /* keep , / . as speed aliases when defaults are ArrowDown / ArrowUp */
+  if (!id && k === ',' && keysEqual(keyMap.speedDown, 'ArrowDown')) id = 'speedDown';
+  if (!id && k === '.' && keysEqual(keyMap.speedUp, 'ArrowUp')) id = 'speedUp';
   if (!id) return false;
   switch (id) {
-    case 'next': goTo(cur + 1); break;
-    case 'prev': goTo(cur - 1); break;
+    case 'next':
+      e.preventDefault();
+      if (seekCurVideo(1, { repeat: e.repeat })) break;
+      goTo(cur + 1);
+      break;
+    case 'prev':
+      e.preventDefault();
+      if (seekCurVideo(-1, { repeat: e.repeat })) break;
+      goTo(cur - 1);
+      break;
     case 'play': e.preventDefault(); togglePlay(); break;
     case 'reverse':
       reversePlay = !reversePlay;
