@@ -14,7 +14,8 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Play and pause slides.
 - Move to the next or previous slide.
 - Reverse playback.
-- Adjust playback speed (toolbar buttons or keyboard: `,` slower / `.` faster by default; remappable via the key editor / `ssp_keymap`).
+- Adjust playback speed (toolbar buttons or keyboard: `↑` / `↓` ±5% by default; `,` / `.` remain aliases; remappable via the key editor / `ssp_keymap`). Toast shows the new rate when chrome is hidden.
+- While a **video** is current, `←` / `→` (prev/next bindings) seek **−2s / +2s** (clamped). At the start, `←` goes to the previous media; at the end, `→` goes to the next. Images keep slide prev/next.
 - Set a default duration for photos.
 - Auto-advance through media during playback.
 
@@ -30,6 +31,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 
 - Zoom in and out.
 - Reset pan and zoom.
+- Videos show the **full frame** (`object-fit: contain`, letterbox/pillarbox OK). Ken Burns motion stays **images-only**; zoom/pan/drag still apply to the uncropped video frame.
 - Mirror horizontally or vertically.
 - Rotate clockwise or counterclockwise.
 - Mute playback and adjust volume.
@@ -84,8 +86,8 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Click a key badge and press a new key to assign; remaps persist in `localStorage` (`ssp_keymap`).
 - Conflict detection: two commands cannot silently share a key (prior owner is unbound, with a toast).
 - Per-command reset and **Reset all to defaults**.
-- Defaults include navigation, play/pause, speed ± (`,` / `.`), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges, screenshot, and export graded (`E`).
-- Fixed (not remappable): Delete / Backspace, Alt+Arrows pan, Escape.
+- Defaults include navigation (`←`/`→`; context-sensitive seek on video), play/pause, speed ± (`↑`/`↓`, with `,`/`.` aliases), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges, screenshot, and export graded (`E`).
+- Fixed (not remappable): Delete / Backspace, Alt+Arrows pan (does not collide with speed arrows), Escape.
 
 ## Persistence
 
