@@ -12,6 +12,7 @@
     "dialog:default",
     "allow-get-launch-paths",
     "allow-read-media-file",
+    "allow-media-file-size",
     "allow-register-allowed-paths",
     "allow-list-folder-media",
     "allow-read-text-file"

@@ -267,6 +267,19 @@ fn list_folder_media(
     })
 }
 
+/// Soft cap for base64 blob ingest — huge videos fall back to convertFileSrc in JS.
+const BLOB_INGEST_MAX_BYTES: u64 = 80 * 1024 * 1024;
+
+#[tauri::command]
+fn media_file_size(path: String, allowed: State<'_, AllowedMedia>) -> Result<u64, String> {
+    let canonical = canonicalize_path(Path::new(&path))?;
+    if !is_path_allowed(&canonical, &allowed) {
+        return Err("path not in allowed set".into());
+    }
+    let meta = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+    Ok(meta.len())
+}
+
 #[tauri::command]
 fn read_media_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<String, String> {
     let canonical = canonicalize_path(Path::new(&path))?;
@@ -275,6 +288,10 @@ fn read_media_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<Str
     }
     if !is_media_path(&canonical) {
         return Err("unsupported extension".into());
+    }
+    let meta = std::fs::metadata(&canonical).map_err(|e| e.to_string())?;
+    if meta.len() > BLOB_INGEST_MAX_BYTES {
+        return Err("file too large for blob ingest".into());
     }
     let bytes = std::fs::read(&canonical).map_err(|e| e.to_string())?;
     Ok(B64.encode(bytes))
@@ -302,6 +319,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_launch_paths,
             read_media_file,
+            media_file_size,
             register_allowed_paths,
             list_folder_media,
             read_text_file
