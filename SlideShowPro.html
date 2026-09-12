@@ -817,9 +817,10 @@ body.ssp-playlist-window #dock-toggle-btn {
     <div class="cr"><span class="clbl">Saturation</span><input type="range" id="cps" min="0" max="300" value="100" step="1" oninput="applyColor()"><span class="cv" id="cvs">100%</span><button class="crst" onclick="rcol('s')">reset</button></div>
     <div class="cr"><span class="clbl">Hue</span><input type="range" id="cph" min="-180" max="180" value="0" step="1" oninput="applyColor()"><span class="cv" id="cvh">0°</span><button class="crst" onclick="rcol('h')">reset</button></div>
     <div class="cr"><span class="clbl">Highlights</span><input type="range" id="cphl" min="-100" max="100" value="0" step="1" oninput="applyColor()"><span class="cv" id="cvhl">0</span><button class="crst" onclick="rcol('hl')">reset</button></div>
-    <div class="cr"><span class="clbl">Shadows</span><input type="range" id="cpsh" min="-100" max="100" value="0" step="1" oninput="applyColor()"><span class="cv" id="cvsh">0</span><button class="crst" onclick="rcol('sh')">reset</button></div>
+    <div class="cr"><span class="clbl">Lowlights</span><input type="range" id="cpsh" min="-100" max="100" value="0" step="1" oninput="applyColor()"><span class="cv" id="cvsh">0</span><button class="crst" onclick="rcol('sh')">reset</button></div>
     <div class="cr"><span class="clbl">Mids (Gamma)</span><input type="range" id="cpg" min="20" max="500" value="100" step="1" oninput="applyColor()"><span class="cv" id="cvg">1.0</span><button class="crst" onclick="rcol('g')">reset</button></div>
     <div class="cr"><span class="clbl">Sharpness</span><input type="range" id="cpshp" min="0" max="200" value="100" step="1" oninput="applyColor()"><span class="cv" id="cvshp">100%</span><button class="crst" onclick="rcol('shp')">reset</button></div>
+    <p style="margin:8px 4px 0;font-size:11px;color:rgba(255,255,255,.45);line-height:1.35">Suite: lowlights · highlights · gamma · sharpness. Export (E) bakes grades into a still, or a short WebM / grade sidecar for video. Playlist save keeps <code style="color:rgba(255,255,255,.55)">imageUpdates.clr</code>.</p>
   </div>
 
   <div id="ctrls">
@@ -934,6 +935,9 @@ body.ssp-playlist-window #dock-toggle-btn {
       </button>
       <button class="cb" id="bss" title="Save screenshot">
         <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+      </button>
+      <button class="cb" id="bexport" title="Export graded image / video (E)">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
       <button class="cb" id="btheme" title="Themes">
         <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
@@ -1199,6 +1203,12 @@ function tauriDialogOpen(opts) {
     return Promise.reject(new Error('Tauri dialog plugin unavailable'));
   }
   return window.__TAURI__.dialog.open(opts);
+}
+function tauriDialogSave(opts) {
+  if (!(window.__TAURI__ && window.__TAURI__.dialog && window.__TAURI__.dialog.save)) {
+    return Promise.reject(new Error('Tauri dialog save unavailable'));
+  }
+  return window.__TAURI__.dialog.save(opts);
 }
 
 /* ── P3: undocked playlist window role + live sync ── */
@@ -2309,6 +2319,7 @@ const FNS = [
   /* View */
   {id:'addMedia',  label:'Add Media',         def:'a',          group:'View'},
   {id:'screenshot',label:'Screenshot',        def:'s',          group:'View'},
+  {id:'exportGraded',label:'Export Graded',   def:'e',          group:'View'},
   {id:'theme',     label:'Themes',            def:'t',          group:'View'},
   {id:'zoomIn',    label:'Zoom In',           def:'+',          group:'View'},
   {id:'zoomOut',   label:'Zoom Out',          def:'-',          group:'View'},
@@ -2334,8 +2345,8 @@ const FNS = [
   {id:'satUp',          label:'Saturation +',     def:'8', group:'Edit nudges'},
   {id:'hueDown',        label:'Hue −',            def:'9', group:'Edit nudges'},
   {id:'hueUp',          label:'Hue +',            def:'0', group:'Edit nudges'},
-  {id:'shadowsDown',    label:'Shadows −',        def:'y', group:'Edit nudges'},
-  {id:'shadowsUp',      label:'Shadows +',        def:'u', group:'Edit nudges'},
+  {id:'shadowsDown',    label:'Lowlights −',      def:'y', group:'Edit nudges'},
+  {id:'shadowsUp',      label:'Lowlights +',      def:'u', group:'Edit nudges'},
   {id:'highlightsDown', label:'Highlights −',     def:'i', group:'Edit nudges'},
   {id:'highlightsUp',   label:'Highlights +',     def:'o', group:'Edit nudges'},
   {id:'sharpnessDown',  label:'Sharpness −',      def:'[', group:'Edit nudges'},
@@ -2598,6 +2609,105 @@ function buildLUT(gv, hl, sh) {
   }
   return vals.join(' ');
 }
+/** 256-entry LUT matching buildLUT (gamma / lowlights / highlights) for canvas bake. */
+function buildByteLUT(gv, hl, sh) {
+  const lut = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    const v = i / 255; let r = gv !== 1 ? Math.pow(Math.max(0, v), 1 / gv) : v;
+    const sw = v < 0.5 ? Math.pow(1 - v * 2, 2) : 0; r += sw * sh * 0.45;
+    const hw = v > 0.5 ? Math.pow((v - 0.5) * 2, 2) : 0; r += hw * hl * 0.45;
+    lut[i] = Math.round(Math.max(0, Math.min(1, r)) * 255);
+  }
+  return lut;
+}
+function applyByteLUTToImageData(id, lut) {
+  const d = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]];
+  }
+}
+/** Canvas-space sharpen/soften matching feConvolveMatrix gfSharp. */
+function applySharpenToImageData(id, shp) {
+  const t = ((shp != null ? shp : 100) - 100) / 100;
+  if (Math.abs(t) < 0.001) return;
+  const w = id.width, h = id.height, src = id.data;
+  const out = new Uint8ClampedArray(src);
+  const idx = (x, y) => ((y * w + x) << 2);
+  const sample = (x, y, c) => {
+    if (x < 0) x = 0; else if (x >= w) x = w - 1;
+    if (y < 0) y = 0; else if (y >= h) y = h - 1;
+    return src[idx(x, y) + c];
+  };
+  if (t > 0) {
+    const center = 1 + 4 * t, edge = -t;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const o = idx(x, y);
+        for (let c = 0; c < 3; c++) {
+          let v = sample(x, y, c) * center
+            + sample(x - 1, y, c) * edge + sample(x + 1, y, c) * edge
+            + sample(x, y - 1, c) * edge + sample(x, y + 1, c) * edge;
+          out[o + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+        out[o + 3] = src[o + 3];
+      }
+    }
+  } else {
+    const b = -t;
+    const corner = b / 16, edge = b / 8, center = 1 - b * 0.75;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const o = idx(x, y);
+        for (let c = 0; c < 3; c++) {
+          let v = sample(x, y, c) * center
+            + sample(x - 1, y, c) * edge + sample(x + 1, y, c) * edge
+            + sample(x, y - 1, c) * edge + sample(x, y + 1, c) * edge
+            + sample(x - 1, y - 1, c) * corner + sample(x + 1, y - 1, c) * corner
+            + sample(x - 1, y + 1, c) * corner + sample(x + 1, y + 1, c) * corner;
+          out[o + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+        out[o + 3] = src[o + 3];
+      }
+    }
+  }
+  id.data.set(out);
+}
+function cssFiltersFromClr(clr) {
+  const c = {...CLR_DEF, ...clr};
+  return `brightness(${c.b / 100}) contrast(${c.c / 100}) hue-rotate(${c.h}deg) saturate(${c.s / 100})`;
+}
+function needsLutBake(clr) {
+  const c = {...CLR_DEF, ...clr};
+  return Math.abs(c.g / 100 - 1) > 0.01 || Math.abs(c.hl) > 0.01 || Math.abs(c.sh) > 0.01;
+}
+function needsSharpenBake(clr) {
+  const c = {...CLR_DEF, ...clr};
+  return Math.abs((c.shp != null ? c.shp : 100) - 100) > 0.5;
+}
+/** Draw media into a canvas with full color suite baked (B/C/H/S + LUT + sharpness). */
+function renderGradedCanvas(med, item, opts) {
+  const clr = {...CLR_DEF, ...(item && item.clr)};
+  let w = (opts && opts.width) || item.w || med.videoWidth || med.naturalWidth || 0;
+  let h = (opts && opts.height) || item.h || med.videoHeight || med.naturalHeight || 0;
+  if (!w || !h) throw new Error('Unknown media dimensions');
+  const maxW = (opts && opts.maxWidth) || 0;
+  if (maxW && w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+  const can = document.createElement('canvas');
+  can.width = w; can.height = h;
+  const ctx = can.getContext('2d', { willReadFrequently: true });
+  ctx.filter = cssFiltersFromClr(clr);
+  ctx.drawImage(med, 0, 0, w, h);
+  ctx.filter = 'none';
+  if (needsLutBake(clr) || needsSharpenBake(clr)) {
+    const id = ctx.getImageData(0, 0, w, h);
+    if (needsLutBake(clr)) {
+      applyByteLUTToImageData(id, buildByteLUT(clr.g / 100, clr.hl / 100, clr.sh / 100));
+    }
+    if (needsSharpenBake(clr)) applySharpenToImageData(id, clr.shp);
+    ctx.putImageData(id, 0, 0);
+  }
+  return can;
+}
 function applySharpenKernel(shp) {
   const el = g('gfSharp'); if (!el) return;
   const t = ((shp != null ? shp : 100) - 100) / 100;
@@ -2654,6 +2764,7 @@ function applyColor() {
   const mi = getMediaItems(), item = mi[cur]; if (!item) return;
   item.clr = {b:+g('cpb').value,c:+g('cpc').value,s:+g('cps').value,h:+g('cph').value,g:+g('cpg').value,hl:+g('cphl').value,sh:+g('cpsh').value,shp:+g('cpshp').value};
   saveItemLS(item);
+  schedAutoSave();
   applyColorToStage(item.clr);
 }
 window.applyColor = applyColor;
@@ -4947,31 +5058,205 @@ function togglePlay() {
   }
 }
 
-/* ── Screenshot ── */
+/* ── Screenshot + graded export ── */
+function sspExportStamp() {
+  const ts = new Date();
+  return `${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}`;
+}
+function sspBaseName(name) {
+  const n = String(name || 'media').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'media';
+  return n.replace(/\.[^.]+$/, '') || 'media';
+}
+async function blobToBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+/** Save blob via Tauri dialog+write_export_file, showSaveFilePicker, or <a download>. */
+async function saveExportBlob(defaultName, blob, filters) {
+  if (!blob) return { ok: false, reason: 'empty' };
+  if (sspIsTauri()) {
+    try {
+      const path = await tauriDialogSave({
+        title: 'Export graded media',
+        defaultPath: defaultName,
+        filters: filters || [{ name: 'Files', extensions: [defaultName.split('.').pop() || 'bin'] }]
+      });
+      if (path == null) return { ok: false, reason: 'cancel' };
+      const b64 = await blobToBase64(blob);
+      await tauriInvoke('write_export_file', { path, data_b64: b64 });
+      return { ok: true, path, via: 'tauri' };
+    } catch (e) {
+      console.warn('Tauri export failed', e);
+      showToast('Export write failed: ' + ((e && e.message) || e), 5000);
+      return { ok: false, reason: 'error', error: e };
+    }
+  }
+  if (window.showSaveFilePicker) {
+    try {
+      const ext = (defaultName.split('.').pop() || 'bin').toLowerCase();
+      const handle = await window.showSaveFilePicker({
+        suggestedName: defaultName,
+        types: [{ description: 'Export', accept: { [blob.type || 'application/octet-stream']: ['.' + ext] } }]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return { ok: true, path: handle.name, via: 'picker' };
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { ok: false, reason: 'cancel' };
+      console.warn(e);
+    }
+  }
+  const a = document.createElement('a');
+  a.download = defaultName;
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return { ok: true, path: defaultName, via: 'download' };
+}
+function buildGradeSidecar(item) {
+  const clr = {...CLR_DEF, ...(item.clr || {})};
+  return {
+    sspGradeVersion: 1,
+    app: 'SlideShowX',
+    savedAt: new Date().toISOString(),
+    source: { name: item.name || null, path: item.path || null, type: item.type || null, id: item.id || null },
+    clr,
+    note: 'Playback already applies these grades via playlist imageUpdates.clr. This sidecar is for external tools or re-import. Full video re-encode is best-effort (canvas/MediaRecorder WebM); ffmpeg is not bundled.'
+  };
+}
+const VIDEO_BAKE_MAX_SEC = 45;
+const VIDEO_BAKE_MAX_WIDTH = 1280;
+async function exportGradedVideoWebm(item, med) {
+  if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder unavailable');
+  const dur = Number.isFinite(med.duration) ? med.duration : 0;
+  if (!(dur > 0) || dur > VIDEO_BAKE_MAX_SEC) {
+    const err = new Error('Video too long or duration unknown for baked export');
+    err.code = 'TOO_LONG';
+    throw err;
+  }
+  const mimeCandidates = [
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ];
+  const mime = mimeCandidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+  if (!mime) throw new Error('No WebM MediaRecorder mime type supported');
+
+  const wasPlaying = !med.paused;
+  const startT = med.currentTime || 0;
+  med.pause();
+  med.muted = true;
+  try { med.currentTime = 0; } catch (_) {}
+  await waitForVideoFrame(med);
+
+  const can = renderGradedCanvas(med, item, { maxWidth: VIDEO_BAKE_MAX_WIDTH });
+  const ctx = can.getContext('2d', { willReadFrequently: true });
+  const stream = can.captureStream(30);
+  const chunks = [];
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+  rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+
+  const done = new Promise((resolve, reject) => {
+    rec.onstop = () => resolve(new Blob(chunks, { type: mime.split(';')[0] || 'video/webm' }));
+    rec.onerror = () => reject(new Error('MediaRecorder failed'));
+  });
+
+  showToast('Baking graded WebM…', 8000);
+  rec.start(250);
+  const fps = 24;
+  const frameCount = Math.max(1, Math.ceil(dur * fps));
+  for (let i = 0; i < frameCount; i++) {
+    const t = Math.min(dur - 0.001, i / fps);
+    try { med.currentTime = t; } catch (_) {}
+    await waitForVideoFrame(med);
+    const frame = renderGradedCanvas(med, item, { width: can.width, height: can.height });
+    ctx.clearRect(0, 0, can.width, can.height);
+    ctx.drawImage(frame, 0, 0);
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  rec.stop();
+  const blob = await done;
+  try { med.currentTime = startT; } catch (_) {}
+  med.muted = !!muted;
+  if (wasPlaying) med.play().catch(() => {});
+  if (!blob || !blob.size) throw new Error('Empty WebM export');
+  return blob;
+}
+async function exportGradedCurrent() {
+  const mi = getMediaItems(), item = mi[cur], med = getSl(cur)?.querySelector('img,video');
+  if (!med || !item) { showToast('Nothing to export.', 2500); return; }
+  const stamp = sspExportStamp();
+  const base = sspBaseName(item.name);
+
+  if (item.type === 'video' || med.tagName === 'VIDEO') {
+    // Prefer baked WebM for short clips; otherwise sidecar grade JSON.
+    let baked = null;
+    try {
+      baked = await exportGradedVideoWebm(item, med);
+    } catch (e) {
+      console.warn('Video bake skipped/failed', e);
+      baked = null;
+      if (e && e.code !== 'TOO_LONG') {
+        showToast('Baked video export unavailable — writing grade sidecar.', 4000);
+      } else {
+        showToast('Video longer than ' + VIDEO_BAKE_MAX_SEC + 's — writing grade sidecar (no ffmpeg).', 4500);
+      }
+    }
+    if (baked) {
+      const fn = `SlideShowX_${base}_${stamp}_graded.webm`;
+      const res = await saveExportBlob(fn, baked, [{ name: 'WebM Video', extensions: ['webm'] }]);
+      if (res.ok) {
+        showToast(`<b style="color:#fff">${fn}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Graded WebM exported (best-effort canvas bake).</span>`, 4500);
+        return;
+      }
+      if (res.reason === 'cancel') return;
+    }
+    const sideName = `SlideShowX_${base}_${stamp}.sspgrade.json`;
+    const sideBlob = new Blob([JSON.stringify(buildGradeSidecar(item), null, 2)], { type: 'application/json' });
+    const res = await saveExportBlob(sideName, sideBlob, [{ name: 'SlideShowX Grade', extensions: ['json'] }]);
+    if (res.ok) {
+      showToast(`<b style="color:#fff">${sideName}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Grade sidecar saved. Grades also stay in playlist imageUpdates.clr.</span>`, 5000);
+    } else if (res.reason !== 'cancel') {
+      showToast('Grade sidecar export failed.', 3500);
+    }
+    return;
+  }
+
+  // Image: bake full color suite into JPEG.
+  try {
+    if (med.decode) await med.decode().catch(() => {});
+    const can = renderGradedCanvas(med, item);
+    const fn = `SlideShowX_${base}_${stamp}_graded.jpg`;
+    const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', 0.95));
+    if (!blob) { showToast('Image export failed.', 3000); return; }
+    const res = await saveExportBlob(fn, blob, [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }]);
+    if (res.ok) {
+      showToast(`<b style="color:#fff">${fn}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Graded still exported (lowlights/highlights/gamma/sharpness baked).</span>`, 4500);
+    } else if (res.reason !== 'cancel') {
+      showToast('Graded image export failed.', 3500);
+    }
+  } catch (e) {
+    console.warn(e);
+    showToast('Graded image export failed: ' + ((e && e.message) || e), 4000);
+  }
+}
+window.exportGradedCurrent = exportGradedCurrent;
+
 g('bss').onclick = async function() {
   const mi = getMediaItems(), item = mi[cur], med = getSl(cur)?.querySelector('img,video');
   if (!med || !item) return;
   if (med.tagName === 'VIDEO') await waitForVideoFrame(med);
-  const can = document.createElement('canvas'); can.width = item.w; can.height = item.h;
-  const ctx = can.getContext('2d');
-  const clr = item.clr || CLR_DEF;
-  ctx.filter = `brightness(${clr.b/100}) contrast(${clr.c/100}) hue-rotate(${clr.h}deg) saturate(${clr.s/100})`;
-  try { ctx.drawImage(med, 0, 0, can.width, can.height); } catch(e) { alert('Screenshot failed.'); return; }
-  const gv = clr.g/100, hl = clr.hl/100, sh = clr.sh/100;
-  if (Math.abs(gv-1) > 0.01 || Math.abs(hl) > 0.01 || Math.abs(sh) > 0.01) {
-    const id = ctx.getImageData(0,0,can.width,can.height), d = id.data;
-    const lut = new Uint8Array(256);
-    for (let i = 0; i < 256; i++) {
-      const v = i/255; let r = gv !== 1 ? Math.pow(v,1/gv) : v;
-      const sw = v < 0.5 ? Math.pow(1-v*2,2) : 0; r += sw*sh*0.45;
-      const hw = v > 0.5 ? Math.pow((v-0.5)*2,2) : 0; r += hw*hl*0.45;
-      lut[i] = Math.round(Math.max(0,Math.min(1,r))*255);
-    }
-    for (let i = 0; i < d.length; i+=4) { d[i]=lut[d[i]]; d[i+1]=lut[d[i+1]]; d[i+2]=lut[d[i+2]]; }
-    ctx.putImageData(id, 0, 0);
-  }
-  const ts = new Date();
-  const fn = `SlideShowX_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.jpg`;
+  let can;
+  try { can = renderGradedCanvas(med, item); }
+  catch (e) { alert('Screenshot failed.'); return; }
+  const fn = `SlideShowX_${sspExportStamp()}.jpg`;
   const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', .95));
   if (!blob) { alert('Screenshot failed.'); return; }
   const saved = await saveScreenshotFile(fn, blob);
@@ -4982,6 +5267,7 @@ g('bss').onclick = async function() {
     showToast('Screenshot ready to download.', 3000);
   }
 };
+g('bexport').onclick = () => { exportGradedCurrent(); };
 
 /* ── Wire controls ── */
 g('bcol').onclick = function() { const p = g('cpanel'); p.classList.toggle('show'); this.classList.toggle('on', p.classList.contains('show')); };
@@ -5041,6 +5327,7 @@ function runMappedKey(e) {
       break;
     case 'addMedia': e.preventDefault(); g('pladd').click(); break;
     case 'screenshot': g('bss').click(); break;
+    case 'exportGraded': e.preventDefault(); exportGradedCurrent(); break;
     case 'theme':
       e.preventDefault();
       if (e.shiftKey) applyThemeToCurrent(true);

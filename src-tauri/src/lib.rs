@@ -297,6 +297,32 @@ fn read_media_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<Str
     Ok(B64.encode(bytes))
 }
 
+/// Write an export file chosen via the native save dialog (graded still, WebM, or grade sidecar).
+const EXPORT_MAX_BYTES: usize = 200 * 1024 * 1024;
+const EXPORT_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "webp", "webm", "mp4", "mov", "json", "sspgrade",
+];
+
+#[tauri::command]
+fn write_export_file(path: String, data_b64: String) -> Result<(), String> {
+    let bytes = B64.decode(data_b64.as_bytes()).map_err(|e| format!("base64 decode: {e}"))?;
+    if bytes.len() > EXPORT_MAX_BYTES {
+        return Err("export too large".into());
+    }
+    let pb = PathBuf::from(&path);
+    let ext = ext_lower(&pb).unwrap_or_default();
+    if !EXPORT_EXTS.iter().any(|x| *x == ext) {
+        return Err(format!("unsupported export extension: {ext}"));
+    }
+    if let Some(parent) = pb.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(&pb, &bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn read_text_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<String, String> {
     let canonical = canonicalize_path(Path::new(&path))?;
@@ -386,7 +412,8 @@ pub fn run() {
             read_text_file,
             open_playlist_window,
             close_playlist_window,
-            focus_playlist_window
+            focus_playlist_window,
+            write_export_file
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
