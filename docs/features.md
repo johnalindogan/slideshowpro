@@ -73,8 +73,12 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 
 ## Keyboard Shortcuts
 
-- Customizable shortcut editor built into the app.
-- Defaults include navigation, play/pause, zoom, fullscreen, mute, mirror, rotation, hide controls, and filename toggle.
+- Customizable shortcut assignment editor (toolbar keyboard button) lists remappable commands from the app key map.
+- Click a key badge and press a new key to assign; remaps persist in `localStorage` (`ssp_keymap`).
+- Conflict detection: two commands cannot silently share a key (prior owner is unbound, with a toast).
+- Per-command reset and **Reset all to defaults**.
+- Defaults include navigation, play/pause, speed ± (`,` / `.`), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, and edit nudges.
+- Fixed (not remappable): Delete / Backspace, Alt+Arrows pan, Escape.
 
 ## Persistence
 
