@@ -5089,7 +5089,7 @@ async function saveExportBlob(defaultName, blob, filters) {
       });
       if (path == null) return { ok: false, reason: 'cancel' };
       const b64 = await blobToBase64(blob);
-      await tauriInvoke('write_export_file', { path, data_b64: b64 });
+      await tauriInvoke('write_export_file', { path, dataB64: b64 });
       return { ok: true, path, via: 'tauri' };
     } catch (e) {
       console.warn('Tauri export failed', e);
