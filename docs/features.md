@@ -51,6 +51,10 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Vertical Max mode for landscape media on portrait screens.
 - 3-panel max modes for same-side layouts.
 
+## Playlist
+
+- Undock the Media Manager into its own native desktop window (Windows Tauri), including its toolbar (add/folder/shuffle/save/load). Dock back or close the window to restore chrome on the main window without losing playlist state.
+
 ## Playlist Management
 
 - Open and manage playlists in a side panel.

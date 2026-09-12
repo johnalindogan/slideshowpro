@@ -312,6 +312,88 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
   width: 100%;
 }
 
+/* P3: undocked playlist window — Media Manager fills the native window */
+body.ssp-playlist-window {
+  background: #0a0a0c;
+}
+body.ssp-playlist-window #dz,
+body.ssp-playlist-window #viewer,
+body.ssp-playlist-window #ctrls,
+body.ssp-playlist-window #cpanel,
+body.ssp-playlist-window #ctrls-overflow,
+body.ssp-playlist-window #kbmodal,
+body.ssp-playlist-window #ctxmenu,
+body.ssp-playlist-window .landing-only-hide {
+  display: none !important;
+}
+body.ssp-playlist-window #app {
+  display: block;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+body.ssp-playlist-window #media-dock,
+body.ssp-playlist-window #media-dock.expanded,
+body.ssp-playlist-window #media-dock.collapsed {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh !important;
+  z-index: 200;
+  border-top: none;
+}
+body.ssp-playlist-window #media-dock.collapsed #dock-hdr > *,
+body.ssp-playlist-window #media-dock.collapsed #dock-hdr #dock-toggle-btn {
+  display: flex !important;
+  pointer-events: auto;
+}
+body.ssp-playlist-window #media-dock.collapsed #dock-hdr {
+  position: relative;
+  width: 100%;
+  height: 40px;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  padding: 8px 16px;
+}
+body.ssp-playlist-window #media-dock.collapsed #dock-body,
+body.ssp-playlist-window #dock-body {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+body.ssp-playlist-window #media-dock.collapsed #dock-tree-view,
+body.ssp-playlist-window #dock-tree-view {
+  display: flex;
+  width: min(420px, 42vw);
+  height: 100%;
+}
+body.ssp-playlist-window #dock-timeline-view {
+  display: flex;
+}
+body.ssp-main-undocked #media-dock {
+  display: none !important;
+}
+#plundock, #pldockback {
+  display: none;
+}
+body.ssp-tauri #plundock {
+  display: inline-flex;
+}
+body.ssp-playlist-window #plundock {
+  display: none !important;
+}
+body.ssp-playlist-window #pldockback {
+  display: inline-flex !important;
+}
+body.ssp-playlist-window #dock-toggle-btn {
+  display: none !important;
+}
+#dock-btns button#plundock,
+#dock-btns button#pldockback {
+  font-size: 10px;
+}
+
+
 #tstrip {
   display: block;
   padding: 10px 0;
@@ -886,6 +968,8 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
         <button id="plnewfolder" title="New Folder">&#128193;</button>
         <button id="plsave" title="Save Playlist">&#128190;</button>
         <button id="plload" title="Load Playlist">&#128194;</button>
+        <button id="plundock" title="Undock Media Manager">Undock</button>
+        <button id="pldockback" title="Dock back to main window">Dock</button>
       </div>
       <button id="dock-toggle-btn" title="Expand/Collapse Panel">
         <svg viewBox="0 0 24 24" class="chevron-up"><polyline points="18 15 12 9 6 15"/></svg>
@@ -1116,6 +1200,423 @@ function tauriDialogOpen(opts) {
   }
   return window.__TAURI__.dialog.open(opts);
 }
+
+/* ── P3: undocked playlist window role + live sync ── */
+const SSP_WINDOW_ROLE = (function () {
+  try {
+    const q = new URLSearchParams(location.search || '');
+    const w = (q.get('sspWindow') || '').toLowerCase();
+    if (w === 'playlist' || w === 'media') return 'playlist';
+  } catch (_) {}
+  return 'main';
+})();
+const SSP_IS_PLAYLIST_WINDOW = SSP_WINDOW_ROLE === 'playlist';
+let playlistUndocked = false;
+let plSyncSeq = 0;
+let plSyncApplied = 0;
+let plSyncMute = false;
+let plSyncTimer = null;
+let plSyncChannel = null;
+try {
+  if (typeof BroadcastChannel !== 'undefined') {
+    plSyncChannel = new BroadcastChannel('ssp-playlist-sync');
+  }
+} catch (_) { plSyncChannel = null; }
+
+function playlistChromeOpen() {
+  if (SSP_IS_PLAYLIST_WINDOW) return true;
+  const dock = g('media-dock');
+  return !!(dock && dock.classList.contains('expanded'));
+}
+
+function itemSyncKey(it) {
+  if (!it) return '';
+  if (it.type === 'folder') return 'f:' + (it.id || '') + ':' + (it.name || '');
+  return 'm:' + (it.path || '') + ':' + (it.id || '') + ':' + (it.name || '');
+}
+
+function getLiveSyncPayload() {
+  const snap = getPlaylistSnapshot();
+  try {
+    (snap.items || []).forEach(it => {
+      if (it && it.imageUpdates && it.imageUpdates.thumbnailUrl) {
+        delete it.imageUpdates.thumbnailUrl;
+      }
+    });
+  } catch (_) {}
+  return {
+    v: 1,
+    seq: ++plSyncSeq,
+    origin: SSP_WINDOW_ROLE,
+    cur,
+    selected: Array.from(selectedItems),
+    lastClickedMI,
+    search: plSearchQuery || '',
+    snap
+  };
+}
+
+function playlistSyncActive() {
+  return SSP_IS_PLAYLIST_WINDOW || playlistUndocked || !!(plSyncChannel && SSP_IS_PLAYLIST_WINDOW);
+}
+
+function notifyPlaylistSync() {
+  if (plSyncMute) return;
+  if (!(SSP_IS_PLAYLIST_WINDOW || playlistUndocked)) return;
+  clearTimeout(plSyncTimer);
+  plSyncTimer = setTimeout(broadcastPlaylistSync, 48);
+}
+
+async function broadcastPlaylistSync() {
+  if (plSyncMute) return;
+  if (!(SSP_IS_PLAYLIST_WINDOW || playlistUndocked)) return;
+  let payload;
+  try { payload = getLiveSyncPayload(); } catch (e) { console.warn('sync payload failed', e); return; }
+  try {
+    if (plSyncChannel) plSyncChannel.postMessage(payload);
+  } catch (_) {}
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+      await window.__TAURI__.event.emit('ssp-pl-sync', payload);
+    }
+  } catch (e) { console.warn('ssp-pl-sync emit failed', e); }
+}
+
+async function applyLivePlaylistSnapshot(snap) {
+  snap = migrateSnapshot(snap);
+  if (!snap || !Array.isArray(snap.items)) return 'empty';
+  const entries = snap.items;
+  const curKeys = items.map(itemSyncKey).join('\0');
+  const newKeys = entries.map(itemSyncKey).join('\0');
+  if (curKeys && curKeys === newKeys) {
+    entries.forEach((entry, i) => {
+      const it = items[i];
+      if (!it) return;
+      if (entry.type === 'folder') {
+        it.open = entry.open !== false;
+        if (entry.name) it.name = entry.name;
+      } else if (entry.imageUpdates) {
+        const iu = Object.assign({}, entry.imageUpdates);
+        delete iu.thumbnailUrl;
+        Object.assign(it, iu);
+      }
+    });
+    return 'meta';
+  }
+
+  const buckets = new Map();
+  items.forEach(it => {
+    const k = itemSyncKey(it);
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(it);
+  });
+
+  const next = [];
+  const needLoad = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const k = itemSyncKey(entry);
+    const bucket = buckets.get(k);
+    if (bucket && bucket.length) {
+      const it = bucket.shift();
+      if (entry.type === 'folder') {
+        it.open = entry.open !== false;
+        if (entry.name) it.name = entry.name;
+      } else if (entry.imageUpdates) {
+        const iu = Object.assign({}, entry.imageUpdates);
+        delete iu.thumbnailUrl;
+        Object.assign(it, iu);
+      }
+      next.push(it);
+      continue;
+    }
+    if (entry.type === 'folder') {
+      next.push({ type: 'folder', id: entry.id || makeItemId(), name: entry.name || 'Folder', open: entry.open !== false });
+      continue;
+    }
+    if (entry.path && (sspIsTauri() || sspIsAndroid() || /^(content:|file:|https?:)/i.test(entry.path))) {
+      needLoad.push({ index: next.length, entry });
+      next.push(null);
+    } else {
+      next.push({
+        id: entry.id || makeItemId(),
+        type: entry.type || mediaKindFromName(entry.name) || 'image',
+        name: entry.name || 'Slide',
+        url: '',
+        unavailable: true,
+        path: entry.path
+      });
+    }
+  }
+
+  if (needLoad.length) {
+    const paths = needLoad.map(x => x.entry.path);
+    let loaded = [];
+    try {
+      if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths: mediaPathStrings(paths) });
+      loaded = await itemsFromMediaPaths(paths);
+    } catch (e) {
+      console.warn('sync path ingest failed', e);
+      loaded = [];
+    }
+    const byPath = new Map();
+    loaded.forEach(it => { if (it && it.path && !byPath.has(it.path)) byPath.set(it.path, it); });
+    needLoad.forEach(({ index, entry }) => {
+      let it = byPath.get(entry.path);
+      if (!it) {
+        it = {
+          id: entry.id || makeItemId(),
+          type: entry.type || mediaKindFromName(entry.name) || 'image',
+          name: entry.name || 'Slide',
+          url: '',
+          unavailable: true,
+          path: entry.path
+        };
+      } else {
+        if (entry.id) it.id = entry.id;
+        if (entry.imageUpdates) {
+          const iu = Object.assign({}, entry.imageUpdates);
+          delete iu.thumbnailUrl;
+          Object.assign(it, iu);
+        }
+      }
+      next[index] = it;
+    });
+  }
+
+  items = next.filter(Boolean);
+  items.forEach(it => initItem(it));
+  if (SSP_IS_PLAYLIST_WINDOW) {
+    // Keep a lightweight stage model for filmstrip thumbs; no autoplay in the dock window.
+    try { buildSlideDOM(); } catch (_) {}
+  } else {
+    rebuildSlides(typeof cur === 'number' ? cur : 0);
+  }
+  return 'rebuild';
+}
+
+async function applyLiveSync(payload) {
+  if (!payload || payload.v !== 1) return;
+  if (payload.origin === SSP_WINDOW_ROLE) return;
+  if (typeof payload.seq === 'number' && payload.seq <= plSyncApplied) return;
+  if (typeof payload.seq === 'number') plSyncApplied = payload.seq;
+  plSyncMute = true;
+  try {
+    await applyLivePlaylistSnapshot(payload.snap || { items: [] });
+    const miLen = getMediaItems().length;
+    cur = Math.max(0, Math.min(payload.cur | 0, Math.max(0, miLen - 1)));
+    selectedItems = new Set(Array.isArray(payload.selected) ? payload.selected : []);
+    lastClickedMI = payload.lastClickedMI != null ? payload.lastClickedMI : -1;
+    plSearchQuery = payload.search || '';
+    const searchEl = g('dock-search');
+    if (searchEl && searchEl.value !== plSearchQuery) searchEl.value = plSearchQuery;
+    if (!SSP_IS_PLAYLIST_WINDOW && miLen) {
+      try {
+        applySlideSettings(cur);
+        showSlide(cur);
+        const sc = g('sc');
+        if (sc) sc.textContent = (cur + 1) + '/' + miLen;
+        try { updStripActive(cur); scrollStripTo(cur, false); } catch (_) {}
+      } catch (_) {}
+    } else if (SSP_IS_PLAYLIST_WINDOW && miLen) {
+      try { updStripActive(cur); scrollStripTo(cur, false); } catch (_) {}
+    }
+    if (playlistChromeOpen()) renderPlaylist();
+    else {
+      try { buildPlRows(); } catch (_) {}
+      updSelBadge();
+    }
+    if (SSP_IS_PLAYLIST_WINDOW) {
+      try { updPlCur(); } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('applyLiveSync failed', e);
+  } finally {
+    plSyncMute = false;
+  }
+}
+
+function requestPlaylistSync() {
+  try {
+    if (plSyncChannel) plSyncChannel.postMessage({ v: 1, type: 'request', origin: SSP_WINDOW_ROLE });
+  } catch (_) {}
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+      window.__TAURI__.event.emit('ssp-pl-request', { origin: SSP_WINDOW_ROLE });
+    }
+  } catch (_) {}
+}
+
+function applyUndockedMainChrome() {
+  document.body.classList.toggle('ssp-main-undocked', !SSP_IS_PLAYLIST_WINDOW && playlistUndocked);
+  const bplt = g('bplt');
+  if (bplt && !SSP_IS_PLAYLIST_WINDOW) {
+    bplt.classList.toggle('on', playlistUndocked || dockExpanded);
+    bplt.title = playlistUndocked ? 'Focus undocked Media Manager' : 'Playlist';
+  }
+}
+
+async function undockPlaylistWindow() {
+  if (SSP_IS_PLAYLIST_WINDOW) return;
+  if (!sspIsTauri()) {
+    showToast('Undock requires the SlideShowX desktop app.', 3500);
+    return;
+  }
+  try {
+    await tauriInvoke('open_playlist_window');
+  } catch (e) {
+    console.warn(e);
+    showToast('Could not open playlist window: ' + (e && e.message ? e.message : e), 5000);
+    return;
+  }
+  playlistUndocked = true;
+  dockExpanded = false;
+  const dock = g('media-dock');
+  if (dock) {
+    dock.classList.remove('expanded');
+    dock.classList.add('collapsed');
+  }
+  applyUndockedMainChrome();
+  notifyPlaylistSync();
+  // Detect close → dock chrome back without losing playlist state.
+  tryBindPlaylistWindowClosed();
+  showToast('Media Manager undocked.', 2200);
+}
+
+let _plCloseBound = false;
+function tryBindPlaylistWindowClosed() {
+  if (_plCloseBound || !window.__TAURI__) return;
+  const WW = window.__TAURI__.webviewWindow && window.__TAURI__.webviewWindow.WebviewWindow;
+  if (!WW || !WW.getByLabel) return;
+  WW.getByLabel('playlist').then(w => {
+    if (!w || _plCloseBound) return;
+    _plCloseBound = true;
+    const onClosed = () => {
+      _plCloseBound = false;
+      if (!playlistUndocked) return;
+      playlistUndocked = false;
+      applyUndockedMainChrome();
+      // Restore dock chrome expanded so toolbar/list return to main.
+      dockExpanded = true;
+      const dock = g('media-dock');
+      if (dock) {
+        dock.classList.add('expanded');
+        dock.classList.remove('collapsed');
+      }
+      const bplt = g('bplt');
+      if (bplt) bplt.classList.add('on');
+      renderPlaylist();
+      showToast('Media Manager docked.', 2000);
+    };
+    try { w.once('tauri://destroyed', onClosed); } catch (_) {}
+    try { w.once('tauri://close-requested', onClosed); } catch (_) {}
+  }).catch(() => {});
+}
+
+async function dockPlaylistWindow() {
+  if (SSP_IS_PLAYLIST_WINDOW) {
+    // Push latest state then ask main to restore chrome / close us.
+    try { await broadcastPlaylistSync(); } catch (_) {}
+    try {
+      if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+        await window.__TAURI__.event.emit('ssp-pl-dock', { origin: 'playlist' });
+      }
+    } catch (_) {}
+    try { await tauriInvoke('close_playlist_window'); } catch (_) {
+      try { window.close(); } catch (__) {}
+    }
+    return;
+  }
+  // Main: close child if any and show dock.
+  playlistUndocked = false;
+  applyUndockedMainChrome();
+  try { await tauriInvoke('close_playlist_window'); } catch (_) {}
+  dockExpanded = true;
+  const dock = g('media-dock');
+  if (dock) {
+    dock.classList.add('expanded');
+    dock.classList.remove('collapsed');
+  }
+  g('bplt') && g('bplt').classList.add('on');
+  renderPlaylist();
+}
+
+function enterPlaylistWindowShell() {
+  if (!SSP_IS_PLAYLIST_WINDOW) return;
+  document.body.classList.add('ssp-playlist-window');
+  document.title = 'SlideShowX — Media Manager';
+  const dock = g('media-dock');
+  if (dock) {
+    dock.classList.add('expanded');
+    dock.classList.remove('collapsed');
+  }
+  dockExpanded = true;
+  // Hide landing / force app shell if present
+  try {
+    if (dz) dz.style.display = 'none';
+    if (viewer) viewer.style.display = 'none';
+  } catch (_) {}
+  const ctrls = g('ctrls');
+  if (ctrls) ctrls.style.display = 'none';
+  setTimeout(() => {
+    try { g('dock-search') && g('dock-search').focus(); } catch (_) {}
+    requestPlaylistSync();
+  }, 120);
+}
+
+function initPlaylistWindowSync() {
+  if (sspIsTauri()) document.body.classList.add('ssp-tauri');
+  if (plSyncChannel) {
+    plSyncChannel.onmessage = (ev) => {
+      const data = ev && ev.data;
+      if (!data) return;
+      if (data.type === 'request') {
+        if (data.origin !== SSP_WINDOW_ROLE && (playlistUndocked || !SSP_IS_PLAYLIST_WINDOW)) {
+          broadcastPlaylistSync();
+        }
+        return;
+      }
+      applyLiveSync(data);
+    };
+  }
+  function bindTauriEvents() {
+    if (!(window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen)) return false;
+    window.__TAURI__.event.listen('ssp-pl-sync', (event) => {
+      applyLiveSync(event && event.payload);
+    }).catch(() => {});
+    window.__TAURI__.event.listen('ssp-pl-request', (event) => {
+      const origin = event && event.payload && event.payload.origin;
+      if (origin === SSP_WINDOW_ROLE) return;
+      if (SSP_IS_PLAYLIST_WINDOW) return; // main answers
+      if (playlistUndocked || items.length) broadcastPlaylistSync();
+    }).catch(() => {});
+    if (!SSP_IS_PLAYLIST_WINDOW) {
+      window.__TAURI__.event.listen('ssp-pl-dock', () => {
+        playlistUndocked = false;
+        applyUndockedMainChrome();
+        dockExpanded = true;
+        const dock = g('media-dock');
+        if (dock) {
+          dock.classList.add('expanded');
+          dock.classList.remove('collapsed');
+        }
+        g('bplt') && g('bplt').classList.add('on');
+        renderPlaylist();
+      }).catch(() => {});
+    }
+    return true;
+  }
+  let tries = 0;
+  (function tick() {
+    if (bindTauriEvents() || !sspIsTauri()) {
+      if (SSP_IS_PLAYLIST_WINDOW) enterPlaylistWindowShell();
+      return;
+    }
+    if (++tries < 40) setTimeout(tick, 50);
+    else if (SSP_IS_PLAYLIST_WINDOW) enterPlaylistWindowShell();
+  })();
+}
+
 
 /* ── Android TV SAF bridge (Phase 2a) — mirrors Tauri shapes where practical ── */
 function sspIsAndroid() {
@@ -2698,6 +3199,7 @@ function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeo
 function autoSave() {
   clearTimeout(autoSaveTimer);
   try { localStorage.setItem('ssp_autosave', JSON.stringify(getPlaylistSnapshot())); } catch(e) {}
+  try { notifyPlaylistSync(); } catch (_) {}
   getMediaItems().forEach(it => {
     if (!it.fileHandle) return;
     saveHandleIDB(it.id || it.name, it.fileHandle).catch(() => {});
@@ -3313,7 +3815,7 @@ function finishAdd(newItems, opts) {
     remountStripWindow();
     const mi = getMediaItems();
     if (mi.length) g('sc').textContent = (cur + 1) + '/' + mi.length;
-    if (g('media-dock').classList.contains('expanded')) renderPlaylist();
+    if (playlistChromeOpen()) renderPlaylist();
     autoSave();
     return;
   }
@@ -3330,7 +3832,7 @@ function shufflePlaylist() {
   selectedItems.clear();
   lastClickedMI = -1;
   rebuildSlides(0);
-  if (!g('media-dock').classList.contains('expanded')) buildPlRows();
+  if (!playlistChromeOpen()) buildPlRows();
   autoSave();
 }
 
@@ -3622,15 +4124,32 @@ function rebuildSlides(newCur) {
   const mi = getMediaItems();
   let nc = curItem ? mi.indexOf(curItem) : -1;
   if (nc < 0) nc = newCur ?? 0;
-  cur = Math.max(0, Math.min(nc, mi.length - 1));
+  cur = Math.max(0, Math.min(nc, Math.max(0, mi.length - 1)));
+  if (SSP_IS_PLAYLIST_WINDOW) {
+    // Undocked Media Manager: keep list/filmstrip in sync but do not drive hidden stage playback.
+    try { updStripActive(cur); scrollStripTo(cur, false); } catch (_) {}
+    if (playlistChromeOpen()) renderPlaylist();
+    return;
+  }
   playing = true; updPlayBtn();
   applySlideSettings(cur);
   showSlide(cur); schedNext();
-  if (g('media-dock').classList.contains('expanded')) renderPlaylist();
+  if (playlistChromeOpen()) renderPlaylist();
 }
 
 /* ── Playlist ── */
 function togglePL() {
+  if (SSP_IS_PLAYLIST_WINDOW) {
+    try { g('dock-search') && g('dock-search').focus(); } catch (_) {}
+    return;
+  }
+  if (playlistUndocked) {
+    // Focus the undocked Media Manager instead of re-expanding local chrome.
+    if (sspIsTauri()) {
+      tauriInvoke('focus_playlist_window').catch(() => undockPlaylistWindow());
+    }
+    return;
+  }
   dockExpanded = !dockExpanded;
   const dock = g('media-dock');
   dock.classList.toggle('expanded', dockExpanded);
@@ -3642,6 +4161,7 @@ function togglePL() {
   }
 }
 function closePL() {
+  if (SSP_IS_PLAYLIST_WINDOW) return;
   dockExpanded = false;
   const dock = g('media-dock');
   dock.classList.remove('expanded');
@@ -3650,13 +4170,16 @@ function closePL() {
 }
 g('bplt').onclick = togglePL;
 g('dock-toggle-btn').onclick = togglePL;
+if (g('plundock')) g('plundock').onclick = () => undockPlaylistWindow();
+if (g('pldockback')) g('pldockback').onclick = () => dockPlaylistWindow();
 g('dock-search').oninput = function() {
   plSearchQuery = this.value;
   renderPlaylist();
+  try { notifyPlaylistSync(); } catch (_) {}
 };
 
 function updPlCur() {
-  if (!g('media-dock').classList.contains('expanded')) return;
+  if (!playlistChromeOpen()) return;
   plMounted.forEach((el, idx) => {
     const row = plRows[idx];
     if (row && row.kind === 'media') el.classList.toggle('plcur', row.mi === cur);
@@ -3667,6 +4190,7 @@ function updSelBadge() {
   const badge = g('plselbadge');
   if (selectedItems.size > 0) { badge.textContent = selectedItems.size + ' selected'; badge.classList.add('show'); }
   else badge.classList.remove('show');
+  try { notifyPlaylistSync(); } catch (_) {}
 }
 
 function plRowHeight(item) {
@@ -3796,12 +4320,12 @@ function createPlFolderRow(row) {
     inp.value = item.name;
     inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
     name.replaceWith(inp); inp.focus(); inp.select();
-    const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); };
+    const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); autoSave(); };
     inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
   };
   const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
-  del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); };
-  div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); };
+  del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); autoSave(); };
+  div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); notifyPlaylistSync(); };
   div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
 
   div.addEventListener('dragstart', e => { plDragStart(e, itemsIdx, div); });
@@ -4117,11 +4641,12 @@ function dropItemsAt(srcIdx, tgtIdx, after) {
   }
   // Always rebuild stage + filmstrip from the new items order; playlist remounts when dock is open.
   rebuildSlides(cur);
-  if (!g('media-dock').classList.contains('expanded')) {
+  if (!playlistChromeOpen()) {
     // Keep virtualized row model in sync even while collapsed so the next expand is correct.
     buildPlRows();
   }
   schedAutoSave();
+  try { notifyPlaylistSync(); } catch (_) {}
 }
 
 g('plnewfolder').onclick = () => {
@@ -4129,6 +4654,7 @@ g('plnewfolder').onclick = () => {
   if (!name) return;
   items.push({type:'folder', name:name.trim()||'Folder', open:true, id:makeItemId()});
   renderPlaylist();
+  autoSave();
 };
 
 /* ── Save / Load Playlist ── */
@@ -4377,6 +4903,7 @@ function goTo(i) {
   else { startKB(cur); startProg(); if (playing) schedNext(); }
   updPlCur();
   scheduleStagePrune(cur);
+  try { notifyPlaylistSync(); } catch (_) {}
 }
 
 function updPlayBtn() {
@@ -4568,7 +5095,7 @@ document.addEventListener('keydown', e => {
     if (g('keditor')?.classList.contains('open')) { toggleKeyEditor(false); return; }
     if (watchMode) { toggleWatchMode(); return; }
     if (g('ctrls-overflow')?.classList.contains('open')) { setOverflowOpen(false); return; }
-    if (selectedItems.size > 0) { selectedItems.clear(); updSelBadge(); if (g('media-dock').classList.contains('expanded')) renderPlaylist(); }
+    if (selectedItems.size > 0) { selectedItems.clear(); updSelBadge(); if (playlistChromeOpen()) renderPlaylist(); }
     return;
   }
 
@@ -4577,6 +5104,12 @@ document.addEventListener('keydown', e => {
 
   if (!getMediaItems().length) {
     if (keysEqual(keyMap.watch, e.key)) return;
+    // Undocked Media Manager: still allow Add / playlist focus with empty list.
+    if (SSP_IS_PLAYLIST_WINDOW || playlistUndocked) {
+      const idEmpty = findMappedId(e.key);
+      if (idEmpty === 'addMedia') { e.preventDefault(); g('pladd').click(); return; }
+      if (idEmpty === 'playlist') { e.preventDefault(); togglePL(); return; }
+    }
     return;
   }
   const t = e.target.tagName;
@@ -4751,6 +5284,8 @@ window.confirmDeleteFile = async function() {
   }
 
   function start() {
+    // Playlist undock window is a view — do not steal Open-with / launch ingest.
+    if (typeof SSP_IS_PLAYLIST_WINDOW !== 'undefined' && SSP_IS_PLAYLIST_WINDOW) return;
     let tries = 0;
     const maxTries = 40; // ~2s if __TAURI__ injects slightly after DOM
     (function tick() {
@@ -4772,6 +5307,8 @@ window.confirmDeleteFile = async function() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
+
+try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync init failed', e); }
 
 </script>
 <div id="toast"></div>

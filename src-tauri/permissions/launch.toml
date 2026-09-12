@@ -27,3 +27,18 @@ commands.allow = ["read_text_file"]
 identifier = "allow-media-file-size"
 description = "Allow probing allowlisted media file sizes for blob vs convertFileSrc ingest"
 commands.allow = ["media_file_size"]
+
+[[permission]]
+identifier = "allow-open-playlist-window"
+description = "Allow opening the undocked Media Manager playlist window"
+commands.allow = ["open_playlist_window"]
+
+[[permission]]
+identifier = "allow-close-playlist-window"
+description = "Allow closing the undocked Media Manager playlist window"
+commands.allow = ["close_playlist_window"]
+
+[[permission]]
+identifier = "allow-focus-playlist-window"
+description = "Allow focusing the undocked Media Manager playlist window"
+commands.allow = ["focus_playlist_window"]

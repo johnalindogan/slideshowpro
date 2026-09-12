@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
@@ -310,6 +310,48 @@ fn read_text_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<Stri
     std::fs::read_to_string(&canonical).map_err(|e| e.to_string())
 }
 
+
+#[tauri::command]
+fn open_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "playlist",
+        WebviewUrl::App("index.html?sspWindow=playlist".into()),
+    )
+    .title("SlideShowX — Media Manager")
+    .inner_size(560.0, 820.0)
+    .min_inner_size(360.0, 420.0)
+    .resizable(true)
+    .focused(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        Ok(())
+    } else {
+        Err("playlist window not open".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -322,7 +364,10 @@ pub fn run() {
             media_file_size,
             register_allowed_paths,
             list_folder_media,
-            read_text_file
+            read_text_file,
+            open_playlist_window,
+            close_playlist_window,
+            focus_playlist_window
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
