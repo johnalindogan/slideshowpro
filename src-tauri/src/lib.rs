@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
@@ -310,6 +310,67 @@ fn read_text_file(path: String, allowed: State<'_, AllowedMedia>) -> Result<Stri
     std::fs::read_to_string(&canonical).map_err(|e| e.to_string())
 }
 
+
+/// Open (or focus) the undocked Media Manager window.
+///
+/// Must return promptly: on Windows, calling `WebviewWindowBuilder::build()`
+/// from a *sync* IPC command deadlocks (WebView2). Even in an async command,
+/// awaiting `build()` can leave the frontend `invoke` hanging. Schedule create
+/// on the async runtime and resolve the invoke immediately so main can set
+/// `playlistUndocked` / hide the dock without waiting for the child to load.
+#[tauri::command]
+async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(w) = handle.get_webview_window("playlist") {
+            let _ = w.show();
+            let _ = w.set_focus();
+            return;
+        }
+        if let Err(e) = WebviewWindowBuilder::new(
+            &handle,
+            "playlist",
+            WebviewUrl::App("index.html?sspWindow=playlist".into()),
+        )
+        .title("SlideShowX — Media Manager")
+        .inner_size(560.0, 820.0)
+        .min_inner_size(360.0, 420.0)
+        .resizable(true)
+        .focused(true)
+        .build()
+        {
+            eprintln!("[slideshowpro] open_playlist_window build failed: {e}");
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn close_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn focus_playlist_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("playlist") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        Ok(())
+    } else {
+        Err("playlist window not open".into())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -322,7 +383,10 @@ pub fn run() {
             media_file_size,
             register_allowed_paths,
             list_folder_media,
-            read_text_file
+            read_text_file,
+            open_playlist_window,
+            close_playlist_window,
+            focus_playlist_window
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
