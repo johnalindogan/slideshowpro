@@ -1,6 +1,6 @@
-# SlideShow Pro — Android TV (Phase 2a)
+# SlideShowX — Android TV (Phase 2a)
 
-Thin Leanback / Android TV shell that loads the existing SlideShowPro.html viewer in a WebView,
+Thin Leanback / Android TV shell for **SlideShowX** that loads the existing SlideShowPro.html viewer in a WebView,
 plus a SAF / DocumentFile media bridge (Kotlin ↔ JS). Same idea as the Tauri wrapper: no engine rewrite.
 
 ## Package

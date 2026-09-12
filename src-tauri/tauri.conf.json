@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SlideShowPro",
+  "productName": "SlideShowX",
   "version": "0.1.0",
   "identifier": "com.johnalindogan.slideshowpro",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SlideShowPro",
+        "title": "SlideShowX",
         "width": 1280,
         "height": 800,
         "resizable": true,

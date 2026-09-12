@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlideShowPro</title>
+<title>SlideShowX</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#000;height:100%;overflow:hidden;}
@@ -228,7 +228,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <div id="app">
 <div id="dz">
   <div id="landing">
-    <div id="llogo">SlideShow<span>Pro</span></div>
+    <div id="llogo">SlideShow<span>X</span></div>
     <div id="lbtns">
       <button id="lbopen">
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
@@ -497,7 +497,7 @@ g('lbopen').onclick = () => openFilePicker();
 g('lbplist').onclick = async () => {
   if ('showOpenFilePicker' in window) {
     try {
-      const [h] = await window.showOpenFilePicker({ types: [{ description: 'SlideShowPro Playlist', accept: { 'application/json': ['.json'] } }] });
+      const [h] = await window.showOpenFilePicker({ types: [{ description: 'SlideShowX Playlist', accept: { 'application/json': ['.json'] } }] });
       restoreFromSnapshotFile(await h.getFile());
     } catch(e) { if (e.name !== 'AbortError') { landingPlaylistMode = true; g('fiplist').click(); } }
   } else { landingPlaylistMode = true; g('fiplist').click(); }
@@ -1898,7 +1898,7 @@ function savePlaylist() {
     };
   });
   const blob = new Blob([JSON.stringify({sspVersion:1,version:2,items:data},null,2)],{type:'application/json'});
-  const a = document.createElement('a'); a.download = 'SlideShowPro_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
+  const a = document.createElement('a'); a.download = 'SlideShowX_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
 }
 
 function loadPlaylistJSON(file) {
@@ -2082,7 +2082,7 @@ g('bss').onclick = async function() {
     ctx.putImageData(id, 0, 0);
   }
   const ts = new Date();
-  const fn = `SlideShowPro_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.jpg`;
+  const fn = `SlideShowX_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}${String(ts.getSeconds()).padStart(2,'0')}.jpg`;
   const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', .95));
   if (!blob) { alert('Screenshot failed.'); return; }
   const saved = await saveScreenshotFile(fn, blob);
