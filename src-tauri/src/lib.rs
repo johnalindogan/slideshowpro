@@ -362,7 +362,7 @@ async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
         if let Err(e) = WebviewWindowBuilder::new(
             &handle,
             "playlist",
-            WebviewUrl::App("index.html?sspWindow=playlist".into()),
+            WebviewUrl::App("index.html?sspWindow=playlist#sspWindow=playlist".into()),
         )
         .title("SlideShowX — Media Manager")
         .inner_size(560.0, 820.0)
@@ -428,6 +428,13 @@ pub fn run() {
         // Re-inject after the page finishes loading — setup/eval can race the webview.
         .on_page_load(|webview, payload| {
             if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            if webview.label() == "playlist" {
+                // Ensure JS role even if asset URL drops ?sspWindow= (installed builds).
+                let _ = webview.eval(
+                    "try{window.__SSP_WINDOW_ROLE='playlist';}catch(_e){}",
+                );
                 return;
             }
             if webview.label() != "main" {

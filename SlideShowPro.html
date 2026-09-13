@@ -1216,21 +1216,128 @@ function tauriDialogSave(opts) {
 }
 
 /* ── P3: undocked playlist window role + live sync ── */
-const SSP_WINDOW_ROLE = (function () {
+let SSP_WINDOW_ROLE = (function () {
   try {
     const q = new URLSearchParams(location.search || '');
     const w = (q.get('sspWindow') || '').toLowerCase();
     if (w === 'playlist' || w === 'media') return 'playlist';
   } catch (_) {}
+  try {
+    // Hash backup for asset-protocol builds that drop query strings.
+    const h = String(location.hash || '').replace(/^#/, '');
+    if (h) {
+      const qh = new URLSearchParams(h.includes('=') ? h : ('sspWindow=' + h));
+      const w = (qh.get('sspWindow') || h).toLowerCase();
+      if (w === 'playlist' || w === 'media') return 'playlist';
+    }
+  } catch (_) {}
   return 'main';
 })();
-const SSP_IS_PLAYLIST_WINDOW = SSP_WINDOW_ROLE === 'playlist';
+let SSP_IS_PLAYLIST_WINDOW = SSP_WINDOW_ROLE === 'playlist';
 let playlistUndocked = false;
 let plSyncSeq = 0;
 let plSyncApplied = 0;
 let plSyncMute = false;
 let plSyncTimer = null;
 let plSyncChannel = null;
+let plSyncReceived = false;
+let _plUndockPushTimer = null;
+let _plChildRequestTimer = null;
+const PL_SYNC_HANDSHAKE_TRIES = 12;
+const PL_SYNC_HANDSHAKE_MS = 80;
+
+/** Late-bind role from Tauri window label when URL query/hash was stripped. */
+function refreshWindowRoleFromTauri() {
+  if (SSP_IS_PLAYLIST_WINDOW) return true;
+  try {
+    if (window.__SSP_WINDOW_ROLE === 'playlist') {
+      SSP_WINDOW_ROLE = 'playlist';
+      SSP_IS_PLAYLIST_WINDOW = true;
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const WW = window.__TAURI__ && window.__TAURI__.webviewWindow;
+    if (!WW) return false;
+    const cur = (typeof WW.getCurrentWebviewWindow === 'function'
+      ? WW.getCurrentWebviewWindow()
+      : (WW.WebviewWindow && typeof WW.WebviewWindow.getCurrent === 'function'
+        ? WW.WebviewWindow.getCurrent()
+        : null));
+    if (cur && cur.label === 'playlist') {
+      SSP_WINDOW_ROLE = 'playlist';
+      SSP_IS_PLAYLIST_WINDOW = true;
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function stopUndockSyncPush() {
+  if (_plUndockPushTimer) {
+    clearTimeout(_plUndockPushTimer);
+    _plUndockPushTimer = null;
+  }
+}
+
+/** Main: push playlist state repeatedly for ~1s so child listeners cannot miss create race. */
+function startUndockSyncPush() {
+  stopUndockSyncPush();
+  let tries = 0;
+  const tick = () => {
+    _plUndockPushTimer = null;
+    if (!playlistUndocked) return;
+    try { broadcastPlaylistSync(); } catch (_) {}
+    tries += 1;
+    if (tries < PL_SYNC_HANDSHAKE_TRIES) {
+      _plUndockPushTimer = setTimeout(tick, PL_SYNC_HANDSHAKE_MS);
+    }
+  };
+  tick();
+}
+
+function stopChildSyncRequest() {
+  if (_plChildRequestTimer) {
+    clearTimeout(_plChildRequestTimer);
+    _plChildRequestTimer = null;
+  }
+}
+
+/** Child: request sync repeatedly until a payload is applied or ~1s elapses. */
+function startChildSyncRequest() {
+  stopChildSyncRequest();
+  plSyncReceived = false;
+  let tries = 0;
+  const tick = () => {
+    _plChildRequestTimer = null;
+    if (!SSP_IS_PLAYLIST_WINDOW || plSyncReceived) return;
+    try { requestPlaylistSync(); } catch (_) {}
+    tries += 1;
+    if (tries < PL_SYNC_HANDSHAKE_TRIES) {
+      _plChildRequestTimer = setTimeout(tick, PL_SYNC_HANDSHAKE_MS);
+    }
+  };
+  tick();
+}
+
+async function emitPlaylistSyncAck(payload) {
+  if (!SSP_IS_PLAYLIST_WINDOW) return;
+  const ack = {
+    v: 1,
+    type: 'ack',
+    origin: SSP_WINDOW_ROLE,
+    seq: payload && typeof payload.seq === 'number' ? payload.seq : plSyncApplied,
+    itemCount: items.length
+  };
+  try {
+    if (plSyncChannel) plSyncChannel.postMessage(ack);
+  } catch (_) {}
+  try {
+    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
+      await window.__TAURI__.event.emit('ssp-pl-ack', ack);
+    }
+  } catch (_) {}
+}
 try {
   if (typeof BroadcastChannel !== 'undefined') {
     plSyncChannel = new BroadcastChannel('ssp-playlist-sync');
@@ -1443,6 +1550,9 @@ async function applyLiveSync(payload) {
     if (SSP_IS_PLAYLIST_WINDOW) {
       try { updPlCur(); } catch (_) {}
     }
+    plSyncReceived = true;
+    stopChildSyncRequest();
+    try { emitPlaylistSyncAck(payload); } catch (_) {}
   } catch (e) {
     console.warn('applyLiveSync failed', e);
   } finally {
@@ -1492,6 +1602,7 @@ async function undockPlaylistWindow() {
   }
   applyUndockedMainChrome();
   notifyPlaylistSync();
+  startUndockSyncPush();
   // Detect close → dock chrome back without losing playlist state.
   tryBindPlaylistWindowClosed();
   showToast('Media Manager undocked.', 2200);
@@ -1513,6 +1624,7 @@ function tryBindPlaylistWindowClosed(attempt) {
     _plCloseBound = true;
     const onClosed = () => {
       _plCloseBound = false;
+      stopUndockSyncPush();
       if (!playlistUndocked) return;
       playlistUndocked = false;
       applyUndockedMainChrome();
@@ -1550,6 +1662,7 @@ async function dockPlaylistWindow() {
     return;
   }
   // Main: close child if any and show dock.
+  stopUndockSyncPush();
   playlistUndocked = false;
   applyUndockedMainChrome();
   try { await tauriInvoke('close_playlist_window'); } catch (_) {}
@@ -1580,14 +1693,15 @@ function enterPlaylistWindowShell() {
   } catch (_) {}
   const ctrls = g('ctrls');
   if (ctrls) ctrls.style.display = 'none';
-  setTimeout(() => {
-    try { g('dock-search') && g('dock-search').focus(); } catch (_) {}
-    requestPlaylistSync();
-  }, 120);
+  // Show toolbar/list chrome immediately; items fill in via handshake.
+  try { renderPlaylist(); } catch (_) {}
+  try { g('dock-search') && g('dock-search').focus(); } catch (_) {}
+  startChildSyncRequest();
 }
 
 function initPlaylistWindowSync() {
   if (sspIsTauri()) document.body.classList.add('ssp-tauri');
+  try { refreshWindowRoleFromTauri(); } catch (_) {}
   if (plSyncChannel) {
     plSyncChannel.onmessage = (ev) => {
       const data = ev && ev.data;
@@ -1598,11 +1712,16 @@ function initPlaylistWindowSync() {
         }
         return;
       }
+      if (data.type === 'ack') {
+        if (!SSP_IS_PLAYLIST_WINDOW && playlistUndocked) stopUndockSyncPush();
+        return;
+      }
       applyLiveSync(data);
     };
   }
   function bindTauriEvents() {
     if (!(window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen)) return false;
+    try { refreshWindowRoleFromTauri(); } catch (_) {}
     window.__TAURI__.event.listen('ssp-pl-sync', (event) => {
       applyLiveSync(event && event.payload);
     }).catch(() => {});
@@ -1612,8 +1731,14 @@ function initPlaylistWindowSync() {
       if (SSP_IS_PLAYLIST_WINDOW) return; // main answers
       if (playlistUndocked || items.length) broadcastPlaylistSync();
     }).catch(() => {});
+    window.__TAURI__.event.listen('ssp-pl-ack', (event) => {
+      const origin = event && event.payload && event.payload.origin;
+      if (origin === SSP_WINDOW_ROLE) return;
+      if (!SSP_IS_PLAYLIST_WINDOW && playlistUndocked) stopUndockSyncPush();
+    }).catch(() => {});
     if (!SSP_IS_PLAYLIST_WINDOW) {
       window.__TAURI__.event.listen('ssp-pl-dock', () => {
+        stopUndockSyncPush();
         playlistUndocked = false;
         applyUndockedMainChrome();
         dockExpanded = true;
@@ -1630,6 +1755,7 @@ function initPlaylistWindowSync() {
   }
   let tries = 0;
   (function tick() {
+    try { refreshWindowRoleFromTauri(); } catch (_) {}
     if (bindTauriEvents() || !sspIsTauri()) {
       if (SSP_IS_PLAYLIST_WINDOW) enterPlaylistWindowShell();
       return;
