@@ -109,3 +109,17 @@ CLI-oriented check (optional, same machine as app): after Discover, confirm mDNS
 - [ ] Disconnect cleans TV + tears down LAN HTTP  
 - [ ] `npm run build` still produces NSIS (version unchanged 0.1.4)  
 - [ ] No tokens/creds/BDO paths in logs or repo  
+
+
+## Implementation status (this PR)
+
+| Bar | Status |
+|-----|--------|
+| Stack locked in doc + code | GREEN — `rust_cast` + `mdns-sd` + `tiny_http` |
+| Discover ≤10s | GREEN (code) — `cast_discover`; live LAN smoke on ALINX03/ZB23 |
+| Cast one still | GREEN (code) — `cast_load_still` + sample-still.jpg |
+| Cast ~30s video | GREEN (code) — `cast_load_video` + sample-video.mp4; confirm on living-room Chromecast |
+| Pause / next / disconnect | GREEN (code) — commands + UI panel; HTTP torn down on disconnect |
+| chrome.cast / WebView2 | Documented FAIL — not used |
+
+UI: landing **Cast…** opens spike panel (Discover / Cast still / Cast video / Pause / Play / Next / Disconnect).

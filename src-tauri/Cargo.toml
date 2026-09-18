@@ -20,6 +20,11 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 url = "2"
 base64 = "0.22"
+# Cast spike (locked stack): Cast V2 + mDNS + LAN HTTP → Default Media Receiver
+rust_cast = "0.21"
+mdns-sd = "0.13"
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 panic = "abort"

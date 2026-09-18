@@ -2,7 +2,10 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for SlideShowPro desktop wrapper",
-  "windows": ["main", "playlist"],
+  "windows": [
+    "main",
+    "playlist"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -20,6 +23,14 @@
     "allow-open-playlist-window",
     "allow-close-playlist-window",
     "allow-focus-playlist-window",
-    "allow-write-export-file"
+    "allow-write-export-file",
+    "allow-cast-discover",
+    "allow-cast-load-still",
+    "allow-cast-load-video",
+    "allow-cast-pause",
+    "allow-cast-play",
+    "allow-cast-next",
+    "allow-cast-disconnect",
+    "allow-cast-session"
   ]
 }

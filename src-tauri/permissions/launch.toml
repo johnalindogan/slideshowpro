@@ -47,3 +47,43 @@ commands.allow = ["focus_playlist_window"]
 identifier = "allow-write-export-file"
 description = "Allow writing graded image/video/sidecar exports to a user-chosen path"
 commands.allow = ["write_export_file"]
+
+[[permission]]
+identifier = "allow-cast-discover"
+description = "Allow mDNS discovery of Chromecast / Google TV devices on LAN"
+commands.allow = ["cast_discover"]
+
+[[permission]]
+identifier = "allow-cast-load-still"
+description = "Allow casting the spike sample still to Default Media Receiver"
+commands.allow = ["cast_load_still"]
+
+[[permission]]
+identifier = "allow-cast-load-video"
+description = "Allow casting the spike sample video to Default Media Receiver"
+commands.allow = ["cast_load_video"]
+
+[[permission]]
+identifier = "allow-cast-pause"
+description = "Allow pausing active cast media"
+commands.allow = ["cast_pause"]
+
+[[permission]]
+identifier = "allow-cast-play"
+description = "Allow resuming active cast media"
+commands.allow = ["cast_play"]
+
+[[permission]]
+identifier = "allow-cast-next"
+description = "Allow swapping still/video on active cast session"
+commands.allow = ["cast_next"]
+
+[[permission]]
+identifier = "allow-cast-disconnect"
+description = "Allow clean cast disconnect and LAN HTTP teardown"
+commands.allow = ["cast_disconnect"]
+
+[[permission]]
+identifier = "allow-cast-session"
+description = "Allow reading active cast session info"
+commands.allow = ["cast_session"]

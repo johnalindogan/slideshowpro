@@ -1,3 +1,5 @@
+mod cast;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -397,12 +399,76 @@ fn focus_playlist_window(app: AppHandle) -> Result<(), String> {
     }
 }
 
+
+#[tauri::command]
+fn cast_discover(timeout_ms: Option<u64>) -> Result<Vec<cast::CastDeviceInfo>, String> {
+    cast::discover_devices(timeout_ms)
+}
+
+#[tauri::command]
+fn cast_load_still(
+    state: State<'_, cast::CastState>,
+    host: String,
+    port: u16,
+    name: Option<String>,
+) -> Result<cast::CastSessionInfo, String> {
+    let device = cast::CastDeviceInfo {
+        name: name.unwrap_or_else(|| "Chromecast".into()),
+        host,
+        port,
+        model: None,
+    };
+    state.load_still(&device)
+}
+
+#[tauri::command]
+fn cast_load_video(
+    state: State<'_, cast::CastState>,
+    host: String,
+    port: u16,
+    name: Option<String>,
+) -> Result<cast::CastSessionInfo, String> {
+    let device = cast::CastDeviceInfo {
+        name: name.unwrap_or_else(|| "Chromecast".into()),
+        host,
+        port,
+        model: None,
+    };
+    state.load_video(&device)
+}
+
+#[tauri::command]
+fn cast_pause(state: State<'_, cast::CastState>) -> Result<(), String> {
+    state.pause()
+}
+
+#[tauri::command]
+fn cast_play(state: State<'_, cast::CastState>) -> Result<(), String> {
+    state.play()
+}
+
+#[tauri::command]
+fn cast_next(state: State<'_, cast::CastState>) -> Result<cast::CastSessionInfo, String> {
+    state.next()
+}
+
+#[tauri::command]
+fn cast_disconnect(state: State<'_, cast::CastState>) -> Result<(), String> {
+    state.disconnect()
+}
+
+#[tauri::command]
+fn cast_session(state: State<'_, cast::CastState>) -> Result<Option<cast::CastSessionInfo>, String> {
+    Ok(state.session_info().ok())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(LaunchState::default())
         .manage(AllowedMedia::default())
+        .manage(cast::CastState::default())
         .invoke_handler(tauri::generate_handler![
             get_launch_paths,
             read_media_file,
@@ -413,7 +479,15 @@ pub fn run() {
             open_playlist_window,
             close_playlist_window,
             focus_playlist_window,
-            write_export_file
+            write_export_file,
+            cast_discover,
+            cast_load_still,
+            cast_load_video,
+            cast_pause,
+            cast_play,
+            cast_next,
+            cast_disconnect,
+            cast_session
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]

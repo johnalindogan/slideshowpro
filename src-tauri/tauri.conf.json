@@ -148,6 +148,9 @@
         "role": "Viewer",
         "rank": "Alternate"
       }
+    ],
+    "resources": [
+      "resources/cast-spike/*"
     ]
   }
 }
