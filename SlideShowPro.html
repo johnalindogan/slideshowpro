@@ -757,6 +757,18 @@ body.ssp-playlist-window #dock-toggle-btn {
 #kbclose{margin-top:16px;padding:7px 22px;background:rgba(255,255,255,.09);border:.5px solid rgba(255,255,255,.22);border-radius:5px;color:#fff;cursor:pointer;font-size:12px;font-family:system-ui,sans-serif;}
 #kbclose:hover{background:rgba(255,255,255,.18);}
 </style>
+<style>
+#castPanel{display:none;position:fixed;right:16px;bottom:16px;z-index:9999;width:320px;max-width:calc(100vw - 32px);background:#1a2230;border:1px solid rgba(90,180,255,.35);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 14px 12px;color:#e8eef7;font:13px/1.4 system-ui,sans-serif;}
+#castPanel.open{display:block;}
+#castPanel h3{margin:0 0 8px;font-size:14px;font-weight:600;color:#9fd0ff;}
+#castPanel .row{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;}
+#castPanel button{background:#243247;border:1px solid rgba(255,255,255,.12);color:#e8eef7;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px;}
+#castPanel button:hover{border-color:rgba(90,180,255,.5);}
+#castPanel button:disabled{opacity:.45;cursor:default;}
+#castPanel select{flex:1;min-width:140px;background:#0f1622;color:#e8eef7;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 8px;}
+#castStatus{margin-top:8px;font-size:11px;color:#9aa8bc;min-height:2.6em;white-space:pre-wrap;}
+#lbcast{border-color:rgba(90,180,255,.45)!important;color:#9fd0ff!important;}
+</style>
 </head>
 <body>
 
@@ -791,6 +803,10 @@ body.ssp-playlist-window #dock-toggle-btn {
       <button id="lbplist">
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Open Playlist
+      </button>
+      <button id="lbcast" type="button" title="Chromecast / Google TV content cast spike">
+        <svg viewBox="0 0 24 24"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+        Cast…
       </button>
       <button id="lbdebuginject" type="button" style="display:none;border-color:rgba(255,180,60,.45);color:#ffcc66" title="DEBUG only — inject ≠ SAF PASS">
         <svg viewBox="0 0 24 24"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
@@ -5782,5 +5798,127 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
 
 </script>
 <div id="toast"></div>
+
+<script>
+
+(/* Cast spike UI */)();
+(function initCastSpike(){
+  const panel = document.getElementById('castPanel');
+  const statusEl = document.getElementById('castStatus');
+  const sel = document.getElementById('castDevice');
+  if (!panel || !statusEl || !sel) return;
+  let devices = [];
+  function setStatus(msg){ statusEl.textContent = msg; }
+  function selectedDevice(){
+    const i = sel.selectedIndex;
+    if (i < 0 || !devices[i]) return null;
+    return devices[i];
+  }
+  function fillDevices(list){
+    devices = list || [];
+    sel.innerHTML = '';
+    if (!devices.length){
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = '(no devices)';
+      sel.appendChild(o);
+      return;
+    }
+    devices.forEach((d, idx) => {
+      const o = document.createElement('option');
+      o.value = String(idx);
+      o.textContent = (d.name || 'Cast') + ' · ' + d.host + ':' + d.port + (d.model ? ' · ' + d.model : '');
+      sel.appendChild(o);
+    });
+  }
+  async function call(cmd, args){
+    if (typeof invoke !== 'function') throw new Error('Tauri invoke unavailable (open in SlideShowX app)');
+    return invoke(cmd, args || {});
+  }
+  document.getElementById('lbcast')?.addEventListener('click', () => {
+    panel.classList.add('open');
+    setStatus('Ready. Discover on same Wi‑Fi (≤10s). Content cast only — not desktop mirror.');
+  });
+  document.getElementById('castClose')?.addEventListener('click', () => panel.classList.remove('open'));
+  document.getElementById('castDiscover')?.addEventListener('click', async () => {
+    setStatus('Discovering… (mDNS _googlecast._tcp, ≤10s)');
+    try {
+      const result = await call('cast_discover', { timeoutMs: 8000 });
+      const list = (result && result.devices) ? result.devices : (Array.isArray(result) ? result : []);
+      fillDevices(list);
+      const diag = (result && result.diagnostic) ? String(result.diagnostic) : '';
+      if (list.length) {
+        setStatus('Found ' + list.length + ' device(s). Select + Cast still/video.' + (diag ? '\n' + diag : ''));
+      } else {
+        setStatus(diag || 'No Cast devices found (Wi‑Fi isolation / firewall / VPN / Tailscale?).');
+      }
+    } catch (e) {
+      setStatus('Discover FAIL: ' + (e?.message || e));
+    }
+  });
+  document.getElementById('castStill')?.addEventListener('click', async () => {
+    const d = selectedDevice();
+    if (!d) { setStatus('Select a device first.'); return; }
+    setStatus('Casting still…');
+    try {
+      const info = await call('cast_load_still', { host: d.host, port: d.port, name: d.name });
+      setStatus('Still casting → ' + (info.device_name||'') + ' (http :' + info.http_port + ')');
+    } catch (e) {
+      setStatus('Still FAIL: ' + (e?.message || e));
+    }
+  });
+  document.getElementById('castVideo')?.addEventListener('click', async () => {
+    const d = selectedDevice();
+    if (!d) { setStatus('Select a device first.'); return; }
+    setStatus('Casting ~30s video…');
+    try {
+      const info = await call('cast_load_video', { host: d.host, port: d.port, name: d.name });
+      setStatus('Video casting → ' + (info.device_name||'') + ' (http :' + info.http_port + ')');
+    } catch (e) {
+      setStatus('Video FAIL: ' + (e?.message || e));
+    }
+  });
+  document.getElementById('castPause')?.addEventListener('click', async () => {
+    try { await call('cast_pause'); setStatus('Paused.'); }
+    catch (e) { setStatus('Pause FAIL: ' + (e?.message || e)); }
+  });
+  document.getElementById('castPlay')?.addEventListener('click', async () => {
+    try { await call('cast_play'); setStatus('Playing.'); }
+    catch (e) { setStatus('Play FAIL: ' + (e?.message || e)); }
+  });
+  document.getElementById('castNext')?.addEventListener('click', async () => {
+    try {
+      const info = await call('cast_next');
+      setStatus('Next → ' + (info.media_kind||'') + ' on ' + (info.device_name||''));
+    } catch (e) { setStatus('Next FAIL: ' + (e?.message || e)); }
+  });
+  document.getElementById('castDisconnect')?.addEventListener('click', async () => {
+    try { await call('cast_disconnect'); setStatus('Disconnected. LAN HTTP torn down.'); }
+    catch (e) { setStatus('Disconnect FAIL: ' + (e?.message || e)); }
+  });
+})();
+
+</script>
+<div id="castPanel" aria-label="Cast spike panel">
+  <h3>Cast spike (LAN · content)</h3>
+  <div class="row">
+    <button type="button" id="castDiscover">Discover</button>
+    <select id="castDevice"><option value="">(no devices)</option></select>
+  </div>
+  <div class="row">
+    <button type="button" id="castStill">Cast still</button>
+    <button type="button" id="castVideo">Cast video</button>
+  </div>
+  <div class="row">
+    <button type="button" id="castPause">Pause</button>
+    <button type="button" id="castPlay">Play</button>
+    <button type="button" id="castNext">Next</button>
+    <button type="button" id="castDisconnect">Disconnect</button>
+  </div>
+  <div class="row">
+    <button type="button" id="castClose">Close</button>
+  </div>
+  <div id="castStatus">Stack: Rust Cast V2 + mDNS + LAN HTTP → Default Media Receiver. Not chrome.cast / not mirror.</div>
+</div>
+
 </body>
 </html>
