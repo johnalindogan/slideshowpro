@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
 use rust_cast::channels::media::{Media, StreamType};
 use rust_cast::channels::receiver::CastDeviceApp;
 use rust_cast::{CastDevice, ChannelMessage};
@@ -39,8 +39,8 @@ pub struct CastDiscoverResult {
     pub devices: Vec<CastDeviceInfo>,
     /// Effective browse timeout (ms), after clamp.
     pub timeout_ms: u64,
-    /// Non-loopback IPv4 interfaces present when browse ran (name + ip).
-    /// mdns-sd browses on all eligible ifaces; this lists what was available.
+    /// IPv4 interfaces used (or intended) for mDNS browse (name + ip).
+    /// Prefer RFC1918 LAN; Tailscale / link-local are excluded when possible.
     pub interfaces: Vec<String>,
     /// mdns-sd / daemon error string if browse failed (no UUIDs/tokens/creds).
     pub error: Option<String>,
@@ -190,25 +190,112 @@ fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
-/// Non-loopback IPv4 interfaces (name + ip) for Discover diagnostics.
-/// mdns-sd browses across eligible ifaces; listing them helps explain empty results
-/// (e.g. Tailscale / VPN adapters present while Wi‑Fi mDNS is muted).
-fn list_ipv4_interfaces() -> Vec<String> {
-    match if_addrs::get_if_addrs() {
-        Ok(addrs) => {
-            let mut out: Vec<String> = addrs
-                .into_iter()
-                .filter(|i| !i.is_loopback())
-                .filter_map(|i| match i.ip() {
-                    IpAddr::V4(v4) => Some(format!("{} ({})", i.name, v4)),
-                    IpAddr::V6(_) => None,
-                })
-                .collect();
-            out.sort();
-            out.dedup();
-            out
+/// Label for Discover diagnostics: `Name (a.b.c.d)`.
+fn iface_label(name: &str, v4: Ipv4Addr) -> String {
+    format!("{name} ({v4})")
+}
+
+/// RFC1918 private LAN (10/8, 172.16–31/12, 192.168/16) — typical home Wi‑Fi.
+fn is_rfc1918_v4(v4: Ipv4Addr) -> bool {
+    v4.is_private()
+}
+
+/// 169.254/16 link-local (APIPA); Tailscale on Windows often shows here too.
+fn is_link_local_v4(v4: Ipv4Addr) -> bool {
+    v4.is_link_local()
+}
+
+/// 100.64.0.0/10 CGNAT — Tailscale's usual userspace range when not APIPA.
+fn is_cgnat_tailscale_v4(v4: Ipv4Addr) -> bool {
+    let o = v4.octets();
+    o[0] == 100 && (o[1] & 0xc0) == 64
+}
+
+fn is_tailscale_named(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("tailscale")
+}
+
+/// Skip Tailscale / link-local / CGNAT so Discover is not noisy when VPN is up.
+fn should_skip_browse_iface(name: &str, v4: Ipv4Addr) -> bool {
+    is_link_local_v4(v4) || is_cgnat_tailscale_v4(v4) || is_tailscale_named(name)
+}
+
+/// Prefer private LAN Wi‑Fi (RFC1918), excluding Tailscale / link-local.
+fn is_preferred_browse_iface(name: &str, v4: Ipv4Addr) -> bool {
+    is_rfc1918_v4(v4) && !should_skip_browse_iface(name, v4)
+}
+
+struct BrowseIfaces {
+    /// Labels for ifaces we intend to browse on (preferred LAN, or fallback).
+    browse: Vec<String>,
+    browse_addrs: Vec<Ipv4Addr>,
+    /// Labels briefly noted as skipped in the diagnostic.
+    skipped: Vec<String>,
+    skipped_addrs: Vec<Ipv4Addr>,
+    /// True when browse list is RFC1918-preferred (not "everything left after skip").
+    preferred_mode: bool,
+}
+
+/// Classify non-loopback IPv4 ifaces for mDNS browse preference.
+fn classify_browse_ifaces() -> BrowseIfaces {
+    let addrs = match if_addrs::get_if_addrs() {
+        Ok(a) => a,
+        Err(e) => {
+            return BrowseIfaces {
+                browse: vec![format!("(iface enum failed: {e})")],
+                browse_addrs: vec![],
+                skipped: vec![],
+                skipped_addrs: vec![],
+                preferred_mode: false,
+            };
         }
-        Err(e) => vec![format!("(iface enum failed: {e})")],
+    };
+
+    let mut preferred: Vec<(String, Ipv4Addr)> = Vec::new();
+    let mut skipped: Vec<(String, Ipv4Addr)> = Vec::new();
+    let mut other: Vec<(String, Ipv4Addr)> = Vec::new();
+
+    for i in addrs {
+        if i.is_loopback() {
+            continue;
+        }
+        let IpAddr::V4(v4) = i.ip() else {
+            continue;
+        };
+        let label = iface_label(&i.name, v4);
+        if should_skip_browse_iface(&i.name, v4) {
+            skipped.push((label, v4));
+        } else if is_preferred_browse_iface(&i.name, v4) {
+            preferred.push((label, v4));
+        } else {
+            other.push((label, v4));
+        }
+    }
+
+    preferred.sort_by(|a, b| a.0.cmp(&b.0));
+    skipped.sort_by(|a, b| a.0.cmp(&b.0));
+    other.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let skipped_labels: Vec<String> = skipped.iter().map(|(l, _)| l.clone()).collect();
+    let skipped_addrs: Vec<Ipv4Addr> = skipped.iter().map(|(_, a)| *a).collect();
+
+    if !preferred.is_empty() {
+        BrowseIfaces {
+            browse: preferred.iter().map(|(l, _)| l.clone()).collect(),
+            browse_addrs: preferred.iter().map(|(_, a)| *a).collect(),
+            skipped: skipped_labels,
+            skipped_addrs,
+            preferred_mode: true,
+        }
+    } else {
+        // No RFC1918 Wi‑Fi — still exclude Tailscale/link-local; browse whatever remains.
+        BrowseIfaces {
+            browse: other.iter().map(|(l, _)| l.clone()).collect(),
+            browse_addrs: other.iter().map(|(_, a)| *a).collect(),
+            skipped: skipped_labels,
+            skipped_addrs,
+            preferred_mode: false,
+        }
     }
 }
 
@@ -220,23 +307,59 @@ fn iface_summary(interfaces: &[String]) -> String {
     }
 }
 
+fn discover_iface_diagnostic(pick: &BrowseIfaces) -> String {
+    let browse = iface_summary(&pick.browse);
+    if pick.skipped.is_empty() {
+        format!("browse ifaces: [{browse}]")
+    } else {
+        let skipped = iface_summary(&pick.skipped);
+        format!("browse ifaces: [{browse}]; skipped: [{skipped}]")
+    }
+}
+
+/// Prefer RFC1918 LAN ifaces for mDNS; disable Tailscale / link-local / CGNAT.
+fn apply_browse_iface_preference(daemon: &ServiceDaemon, pick: &BrowseIfaces) {
+    if pick.preferred_mode && !pick.browse_addrs.is_empty() {
+        // Bind browse to preferred LAN only (drop Tailscale / link-local / other).
+        let _ = daemon.disable_interface(IfKind::All);
+        let kinds: Vec<IfKind> = pick
+            .browse_addrs
+            .iter()
+            .map(|a| IfKind::Addr(IpAddr::V4(*a)))
+            .collect();
+        let _ = daemon.enable_interface(kinds);
+        return;
+    }
+    // Fallback: no RFC1918 — just disable noisy Tailscale / link-local / CGNAT.
+    if !pick.skipped_addrs.is_empty() {
+        let kinds: Vec<IfKind> = pick
+            .skipped_addrs
+            .iter()
+            .map(|a| IfKind::Addr(IpAddr::V4(*a)))
+            .collect();
+        let _ = daemon.disable_interface(kinds);
+    }
+}
+
 /// Discover Cast devices via mDNS. Caps at 10s.
+/// Prefers RFC1918 LAN ifaces (e.g. 192.168.x Wi‑Fi); skips Tailscale / link-local / CGNAT.
 /// Always returns a [`CastDiscoverResult`] (devices may be empty) so the UI can show
-/// which interfaces were present, the timeout used, and any mdns-sd error string.
+/// browse/skipped ifaces, the timeout used, and any mdns-sd error string.
 pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, String> {
     let ms = timeout_ms
         .unwrap_or(DISCOVER_DEFAULT_MS)
         .min(DISCOVER_MAX_MS)
         .max(500);
-    let interfaces = list_ipv4_interfaces();
-    let ifaces = iface_summary(&interfaces);
+    let pick = classify_browse_ifaces();
+    let interfaces = pick.browse.clone();
+    let iface_diag = discover_iface_diagnostic(&pick);
 
     let daemon = match ServiceDaemon::new() {
         Ok(d) => d,
         Err(e) => {
             let err = format!("mdns daemon: {e}");
             let diagnostic = format!(
-                "Discover FAIL: {err}. timeout {ms}ms; ifaces: [{ifaces}]"
+                "Discover FAIL: {err}. timeout {ms}ms; {iface_diag}"
             );
             eprintln!("[cast-spike] {diagnostic}");
             return Ok(CastDiscoverResult {
@@ -248,13 +371,14 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, S
             });
         }
     };
+    apply_browse_iface_preference(&daemon, &pick);
     let receiver = match daemon.browse(CAST_SERVICE) {
         Ok(r) => r,
         Err(e) => {
             let _ = daemon.shutdown();
             let err = format!("mdns browse: {e}");
             let diagnostic = format!(
-                "Discover FAIL: {err}. timeout {ms}ms; ifaces: [{ifaces}]"
+                "Discover FAIL: {err}. timeout {ms}ms; {iface_diag}"
             );
             eprintln!("[cast-spike] {diagnostic}");
             return Ok(CastDiscoverResult {
@@ -333,13 +457,13 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, S
             .map(|e| format!("; mdns: {e}"))
             .unwrap_or_default();
         let diagnostic = format!(
-            "No Cast devices. mDNS {CAST_SERVICE} timeout {ms}ms; ifaces: [{ifaces}]{err_bit}"
+            "No Cast devices. mDNS {CAST_SERVICE} timeout {ms}ms; {iface_diag}{err_bit}"
         );
         (err, diagnostic)
     } else {
         (
             None,
-            format!("browsed on [{ifaces}]; timeout {ms}ms"),
+            format!("{iface_diag}; timeout {ms}ms"),
         )
     };
 

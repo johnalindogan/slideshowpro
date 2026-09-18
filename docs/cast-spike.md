@@ -45,9 +45,9 @@
 ### Discovery flow
 
 1. Frontend calls `cast_discover({ timeout_ms })` (default 8000, max 10000).
-2. Rust enumerates non-loopback IPv4 interfaces (for diagnostic), starts `mdns-sd` ServiceDaemon, browses `_googlecast._tcp.local.`.
+2. Rust classifies IPv4 ifaces (prefer RFC1918 LAN e.g. `192.168.x` Wi‑Fi; skip Tailscale / `169.254` link-local / `100.64/10` CGNAT), binds `mdns-sd` browse to preferred ifaces, then browses `_googlecast._tcp.local.`.
 3. Collect unique `(ip, port, friendly_name, model)` until timeout.
-4. Return `{ devices, timeout_ms, interfaces, error?, diagnostic }` to UI. On empty/error, Cast status shows iface list + timeout + mdns error string. On success, optional one-liner `browsed on […]`. **Do not log device UUIDs / tokens.**
+4. Return `{ devices, timeout_ms, interfaces, error?, diagnostic }` to UI. On empty/error, Cast status shows preferred browse ifaces (+ brief skipped) + timeout + mdns error string. **Do not log device UUIDs / tokens.**
 
 ### Cast still / video flow
 
@@ -73,7 +73,7 @@
 | PC & Chromecast on different Wi‑Fi / guest isolation | Discovery empty or cast stalls on HTTP fetch | Same SSID; disable AP/client isolation |
 | Windows Firewall blocks inbound HTTP / mDNS | Discover OK but TV black / LOAD fails | Allow SlideShowX inbound on Private networks; UDP 5353 |
 | mDNS blocked / VPN (NordVPN, OpenVPN, etc.) | Slow or empty discovery | Spike timeout ≤10s; Discover UI shows iface + timeout diagnostic |
-| **Tailscale up** (even with Nord/OpenVPN off) | Discover empty while Chromecast is on same Wi‑Fi SSID | Tailscale can mute/partition mDNS on Windows. Turn Tailscale off (or exit) and re-Discover; compare diagnostic ifaces (expect Wi‑Fi LAN IP, e.g. 192.168.x.x). Empty + only Tailscale iface ⇒ network path, not Cast stack. |
+| **Tailscale up** (even with Nord/OpenVPN off) | Discover empty while Chromecast is on same Wi‑Fi SSID | Spike prefers `192.168.x` (RFC1918) browse ifaces and skips Tailscale/`169.254`/`100.64`; diagnostic lists browse + skipped. If still empty, turn Tailscale off and re-Discover. |
 | Discover empty / mdns-sd error | Status shows diagnostic | `cast_discover` returns `devices` plus `timeout_ms`, `interfaces` (name+IPv4), optional `error`, and `diagnostic` string for Cast UI — no device UUIDs/tokens/creds |
 | WebView2 `chrome.cast` | API undefined | Expected — native stack used instead |
 | DHCP / IP conflict (living-room may share/conflict `.56`) | Stale IP after lease change | Re-run Discover before cast |
