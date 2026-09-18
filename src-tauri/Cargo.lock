@@ -3188,6 +3188,7 @@ name = "slideshowpro"
 version = "0.1.4"
 dependencies = [
  "base64 0.22.1",
+ "if-addrs",
  "mdns-sd",
  "rust_cast",
  "serde",

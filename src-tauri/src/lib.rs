@@ -401,7 +401,7 @@ fn focus_playlist_window(app: AppHandle) -> Result<(), String> {
 
 
 #[tauri::command]
-fn cast_discover(timeout_ms: Option<u64>) -> Result<Vec<cast::CastDeviceInfo>, String> {
+fn cast_discover(timeout_ms: Option<u64>) -> Result<cast::CastDiscoverResult, String> {
     cast::discover_devices(timeout_ms)
 }
 

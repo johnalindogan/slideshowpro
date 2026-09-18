@@ -23,6 +23,7 @@ base64 = "0.22"
 # Cast spike (locked stack): Cast V2 + mDNS + LAN HTTP → Default Media Receiver
 rust_cast = "0.21"
 mdns-sd = "0.13"
+if-addrs = "0.13"  # enumerate ifaces for Discover diagnostic (also used by mdns-sd)
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
 

@@ -33,6 +33,21 @@ pub struct CastDeviceInfo {
     pub model: Option<String>,
 }
 
+/// Result of `cast_discover` — devices plus a short diagnostic for empty/error smoke.
+#[derive(Debug, Clone, Serialize)]
+pub struct CastDiscoverResult {
+    pub devices: Vec<CastDeviceInfo>,
+    /// Effective browse timeout (ms), after clamp.
+    pub timeout_ms: u64,
+    /// Non-loopback IPv4 interfaces present when browse ran (name + ip).
+    /// mdns-sd browses on all eligible ifaces; this lists what was available.
+    pub interfaces: Vec<String>,
+    /// mdns-sd / daemon error string if browse failed (no UUIDs/tokens/creds).
+    pub error: Option<String>,
+    /// One-line (or short) human summary for Cast UI status.
+    pub diagnostic: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CastSessionInfo {
     pub device_name: String,
@@ -175,19 +190,86 @@ fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
+/// Non-loopback IPv4 interfaces (name + ip) for Discover diagnostics.
+/// mdns-sd browses across eligible ifaces; listing them helps explain empty results
+/// (e.g. Tailscale / VPN adapters present while Wi‑Fi mDNS is muted).
+fn list_ipv4_interfaces() -> Vec<String> {
+    match if_addrs::get_if_addrs() {
+        Ok(addrs) => {
+            let mut out: Vec<String> = addrs
+                .into_iter()
+                .filter(|i| !i.is_loopback())
+                .filter_map(|i| match i.ip() {
+                    IpAddr::V4(v4) => Some(format!("{} ({})", i.name, v4)),
+                    IpAddr::V6(_) => None,
+                })
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        }
+        Err(e) => vec![format!("(iface enum failed: {e})")],
+    }
+}
+
+fn iface_summary(interfaces: &[String]) -> String {
+    if interfaces.is_empty() {
+        "none".into()
+    } else {
+        interfaces.join(", ")
+    }
+}
+
 /// Discover Cast devices via mDNS. Caps at 10s.
-pub fn discover_devices(timeout_ms: Option<u64>) -> Result<Vec<CastDeviceInfo>, String> {
+/// Always returns a [`CastDiscoverResult`] (devices may be empty) so the UI can show
+/// which interfaces were present, the timeout used, and any mdns-sd error string.
+pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, String> {
     let ms = timeout_ms
         .unwrap_or(DISCOVER_DEFAULT_MS)
         .min(DISCOVER_MAX_MS)
         .max(500);
-    let daemon = ServiceDaemon::new().map_err(|e| format!("mdns daemon: {e}"))?;
-    let receiver = daemon
-        .browse(CAST_SERVICE)
-        .map_err(|e| format!("mdns browse: {e}"))?;
+    let interfaces = list_ipv4_interfaces();
+    let ifaces = iface_summary(&interfaces);
+
+    let daemon = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            let err = format!("mdns daemon: {e}");
+            let diagnostic = format!(
+                "Discover FAIL: {err}. timeout {ms}ms; ifaces: [{ifaces}]"
+            );
+            eprintln!("[cast-spike] {diagnostic}");
+            return Ok(CastDiscoverResult {
+                devices: vec![],
+                timeout_ms: ms,
+                interfaces,
+                error: Some(err),
+                diagnostic,
+            });
+        }
+    };
+    let receiver = match daemon.browse(CAST_SERVICE) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = daemon.shutdown();
+            let err = format!("mdns browse: {e}");
+            let diagnostic = format!(
+                "Discover FAIL: {err}. timeout {ms}ms; ifaces: [{ifaces}]"
+            );
+            eprintln!("[cast-spike] {diagnostic}");
+            return Ok(CastDiscoverResult {
+                devices: vec![],
+                timeout_ms: ms,
+                interfaces,
+                error: Some(err),
+                diagnostic,
+            });
+        }
+    };
 
     let deadline = Instant::now() + Duration::from_millis(ms);
     let mut found: HashMap<String, CastDeviceInfo> = HashMap::new();
+    let mut last_recv_err: Option<String> = None;
 
     while Instant::now() < deadline {
         let remain = deadline.saturating_duration_since(Instant::now());
@@ -230,18 +312,49 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<Vec<CastDeviceInfo>, 
                 );
             }
             Ok(_) => {}
-            Err(_) => {}  // flume RecvTimeoutError::Timeout | Disconnected
+            Err(e) => {
+                // Timeout is normal between events; Disconnected is noteworthy.
+                let s = e.to_string();
+                if !s.to_lowercase().contains("timeout") {
+                    last_recv_err = Some(s);
+                }
+            }
         }
     }
 
     let _ = daemon.shutdown();
     let mut list: Vec<_> = found.into_values().collect();
     list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    let (error, diagnostic) = if list.is_empty() {
+        let err = last_recv_err;
+        let err_bit = err
+            .as_ref()
+            .map(|e| format!("; mdns: {e}"))
+            .unwrap_or_default();
+        let diagnostic = format!(
+            "No Cast devices. mDNS {CAST_SERVICE} timeout {ms}ms; ifaces: [{ifaces}]{err_bit}"
+        );
+        (err, diagnostic)
+    } else {
+        (
+            None,
+            format!("browsed on [{ifaces}]; timeout {ms}ms"),
+        )
+    };
+
     eprintln!(
-        "[cast-spike] discover done in ≤{ms}ms → {} device(s)",
-        list.len()
+        "[cast-spike] discover done in ≤{ms}ms → {} device(s); {}",
+        list.len(),
+        diagnostic
     );
-    Ok(list)
+    Ok(CastDiscoverResult {
+        devices: list,
+        timeout_ms: ms,
+        interfaces,
+        error,
+        diagnostic,
+    })
 }
 
 struct MediaHttp {

@@ -45,9 +45,9 @@
 ### Discovery flow
 
 1. Frontend calls `cast_discover({ timeout_ms })` (default 8000, max 10000).
-2. Rust starts `mdns-sd` ServiceDaemon, browses `_googlecast._tcp.local.`.
+2. Rust enumerates non-loopback IPv4 interfaces (for diagnostic), starts `mdns-sd` ServiceDaemon, browses `_googlecast._tcp.local.`.
 3. Collect unique `(ip, port, friendly_name, model)` until timeout.
-4. Return list to UI (friendly name + ip:port). **Do not log device UUIDs / tokens.**
+4. Return `{ devices, timeout_ms, interfaces, error?, diagnostic }` to UI. On empty/error, Cast status shows iface list + timeout + mdns error string. On success, optional one-liner `browsed on […]`. **Do not log device UUIDs / tokens.**
 
 ### Cast still / video flow
 
@@ -72,7 +72,9 @@
 |---------|---------|-------------------|
 | PC & Chromecast on different Wi‑Fi / guest isolation | Discovery empty or cast stalls on HTTP fetch | Same SSID; disable AP/client isolation |
 | Windows Firewall blocks inbound HTTP / mDNS | Discover OK but TV black / LOAD fails | Allow SlideShowX inbound on Private networks; UDP 5353 |
-| mDNS blocked / VPN | Slow or empty discovery | Spike timeout ≤10s; document FAIL if empty |
+| mDNS blocked / VPN (NordVPN, OpenVPN, etc.) | Slow or empty discovery | Spike timeout ≤10s; Discover UI shows iface + timeout diagnostic |
+| **Tailscale up** (even with Nord/OpenVPN off) | Discover empty while Chromecast is on same Wi‑Fi SSID | Tailscale can mute/partition mDNS on Windows. Turn Tailscale off (or exit) and re-Discover; compare diagnostic ifaces (expect Wi‑Fi LAN IP, e.g. 192.168.x.x). Empty + only Tailscale iface ⇒ network path, not Cast stack. |
+| Discover empty / mdns-sd error | Status shows diagnostic | `cast_discover` returns `devices` plus `timeout_ms`, `interfaces` (name+IPv4), optional `error`, and `diagnostic` string for Cast UI — no device UUIDs/tokens/creds |
 | WebView2 `chrome.cast` | API undefined | Expected — native stack used instead |
 | DHCP / IP conflict (living-room may share/conflict `.56`) | Stale IP after lease change | Re-run Discover before cast |
 | Codec / MIME unsupported on receiver | Video FAIL | Prefer H.264 + AAC MP4 (sample-video.mp4); document FAIL with receiver error |
@@ -84,7 +86,7 @@
 
 1. Launch spike build of SlideShowX.
 2. Landing / viewer: open **Cast…** panel.
-3. **Discover** — expect living-room (or any Cast device) within ≤10s.
+3. **Discover** — expect living-room (or any Cast device) within ≤10s. If empty, read status diagnostic (ifaces + timeout); if Tailscale was up, turn it off and retry before blaming the Cast stack.
 4. Select device → **Cast still** — TV shows sample still full-screen (not PC desktop).
 5. **Cast video** — ~30s sample plays; or note FAIL reason from UI/status.
 6. **Pause** / **Play** (or **Next** to swap still↔video) from PC.

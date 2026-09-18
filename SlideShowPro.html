@@ -5842,9 +5842,15 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
   document.getElementById('castDiscover')?.addEventListener('click', async () => {
     setStatus('Discovering… (mDNS _googlecast._tcp, ≤10s)');
     try {
-      const list = await call('cast_discover', { timeoutMs: 8000 });
+      const result = await call('cast_discover', { timeoutMs: 8000 });
+      const list = (result && result.devices) ? result.devices : (Array.isArray(result) ? result : []);
       fillDevices(list);
-      setStatus(list.length ? ('Found ' + list.length + ' device(s). Select + Cast still/video.') : 'No Cast devices found (Wi‑Fi isolation / firewall / VPN?).');
+      const diag = (result && result.diagnostic) ? String(result.diagnostic) : '';
+      if (list.length) {
+        setStatus('Found ' + list.length + ' device(s). Select + Cast still/video.' + (diag ? '\n' + diag : ''));
+      } else {
+        setStatus(diag || 'No Cast devices found (Wi‑Fi isolation / firewall / VPN / Tailscale?).');
+      }
     } catch (e) {
       setStatus('Discover FAIL: ' + (e?.message || e));
     }
