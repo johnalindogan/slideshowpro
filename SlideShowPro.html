@@ -115,8 +115,14 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .cb svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
 #bmore{margin-left:auto;}
 .cs{font-size:12px;background:#111;border:.5px solid rgba(255,255,255,.22);border-radius:4px;color:#fff;padding:3px 5px;cursor:pointer;flex-shrink:0;font-family:var(--font-main);}
-#pbw{flex:1;min-width:48px;max-width:160px;height:3px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;flex-shrink:1;cursor:pointer;}
-#pb{height:100%;width:0%;background:#fff;border-radius:2px;transition:width .1s linear;}
+#pbw{flex:1;min-width:48px;max-width:160px;height:3px;background:rgba(255,255,255,.12);border-radius:2px;overflow:hidden;flex-shrink:1;cursor:default;position:relative;display:none;align-items:center;}
+#pbw.slide-prog{display:flex;cursor:default;overflow:hidden;}
+#pbw.video-seek{display:flex;height:14px;max-width:220px;min-width:72px;cursor:pointer;overflow:visible;background:transparent;padding:5px 0;box-sizing:border-box;}
+#pbw.video-seek::before{content:'';position:absolute;left:0;right:0;top:50%;height:3px;transform:translateY(-50%);background:rgba(255,255,255,.12);border-radius:2px;pointer-events:none;}
+#pb{height:3px;width:0%;background:#fff;border-radius:2px;transition:width .1s linear;position:relative;z-index:1;align-self:center;}
+#pbw.video-seek #pb{height:3px;transition:none;}
+#pbw.video-seek #pb::after{content:'';position:absolute;right:-5px;top:50%;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.35);pointer-events:none;}
+#pbw.video-seek.dragging #pb{transition:none;}
 .sp{width:.5px;height:20px;background:rgba(255,255,255,.12);flex-shrink:0;}
 .lb{font-size:12px;color:rgba(255,255,255,.45);min-width:32px;text-align:center;flex-shrink:0;font-family:var(--font-main);}
 #vsl{width:64px;accent-color:#fff;cursor:pointer;}
@@ -127,6 +133,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 @media (max-width:720px){
   #ctrls-primary{gap:4px;padding:7px 8px;}
   #pbw{max-width:96px;min-width:36px;}
+  #pbw.video-seek{max-width:140px;min-width:56px;}
 }
 
 /* Media Dock styling */
@@ -856,7 +863,7 @@ body.ssp-playlist-window #dock-toggle-btn {
           <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
       </div>
-      <div id="pbw"><div id="pb"></div></div>
+      <div id="pbw" class="slide-prog" title="Progress" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="pb"></div></div>
       <span class="lb" id="sc">1/1</span>
       <div class="sp"></div>
       <div class="ctrls-cluster">
@@ -949,6 +956,8 @@ body.ssp-playlist-window #dock-toggle-btn {
         <option value="zoom">Zoom</option>
         <option value="none">None</option>
       </select>
+      <label class="lb" for="vskip" title="Video ←/→ skip seconds" style="min-width:auto;margin-left:2px;">Skip</label>
+      <input type="number" class="cs" id="vskip" min="1" max="30" step="1" value="5" title="Video ←/→ skip seconds (1–30)" style="width:52px" aria-label="Video skip seconds">
       <div class="sp"></div>
       <button class="cb" id="bcol" title="Color controls">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
@@ -2252,8 +2261,31 @@ let themeCursor = 0;
 /* Speed: 5–500% in steps of 5 */
 let spd = 100;
 const SPD_STEP = 5, SPD_MIN = 5, SPD_MAX = 500;
-const VIDEO_SEEK_SEC = 2;
+const VIDEO_SKIP_LS = 'ssp_video_skip_sec';
+const VIDEO_SKIP_DEFAULT = 5;
+const VIDEO_SKIP_MIN = 1;
+const VIDEO_SKIP_MAX = 30;
 const VIDEO_DOUBLE_MS = 350; /* same-key double ←/→ within this window → prev/next item */
+function clampVideoSkipSec(n) {
+  const v = Math.round(Number(n));
+  if (!Number.isFinite(v)) return VIDEO_SKIP_DEFAULT;
+  return Math.max(VIDEO_SKIP_MIN, Math.min(VIDEO_SKIP_MAX, v));
+}
+function loadVideoSkipSec() {
+  try {
+    const raw = localStorage.getItem(VIDEO_SKIP_LS);
+    if (raw == null || raw === '') return VIDEO_SKIP_DEFAULT;
+    return clampVideoSkipSec(raw);
+  } catch (_) { return VIDEO_SKIP_DEFAULT; }
+}
+let videoSkipSec = loadVideoSkipSec();
+function persistVideoSkipSec(sec) {
+  videoSkipSec = clampVideoSkipSec(sec);
+  try { localStorage.setItem(VIDEO_SKIP_LS, String(videoSkipSec)); } catch (_) {}
+  const inp = g('vskip');
+  if (inp && String(inp.value) !== String(videoSkipSec)) inp.value = String(videoSkipSec);
+  return videoSkipSec;
+}
 let videoNavLast = { dir: 0, t: 0 };
 
 const KB = [
@@ -5064,20 +5096,93 @@ function startKB(i) {
 
 function startProg() {
   clearInterval(ptmr); ps = Date.now(); g('pb').style.width = '0%';
+  setSeekBarMode(false);
   const dur = getEDur();
   ptmr = setInterval(() => {
-    const pct = Math.min(((Date.now()-ps)/dur)*100,100).toFixed(1);
-    g('pb').style.width = pct + '%'; if (parseFloat(pct) >= 100) clearInterval(ptmr);
+    const pct = Math.min(((Date.now()-ps)/dur)*100,100);
+    g('pb').style.width = pct.toFixed(1) + '%';
+    const pbw = g('pbw');
+    if (pbw) pbw.setAttribute('aria-valuenow', String(Math.round(pct)));
+    if (pct >= 100) clearInterval(ptmr);
   }, 50);
 }
 function startVProg(i) {
   clearInterval(ptmr); g('pb').style.width = '0%';
   const v = getSl(i)?.querySelector('video');
+  setSeekBarMode(true);
   ptmr = setInterval(() => {
+    if (pbDragging) return;
     if (!v || !v.duration || !isFinite(v.duration)) return;
-    g('pb').style.width = Math.min((v.currentTime/v.duration)*100,100).toFixed(1) + '%';
+    const pct = Math.min((v.currentTime/v.duration)*100,100);
+    g('pb').style.width = pct.toFixed(1) + '%';
+    const pbw = g('pbw');
+    if (pbw) pbw.setAttribute('aria-valuenow', String(Math.round(pct)));
   }, 100);
 }
+
+let pbDragging = false;
+function setSeekBarMode(isVideo) {
+  const pbw = g('pbw');
+  if (!pbw) return;
+  if (!isVideo) {
+    pbDragging = false;
+    pbw.classList.remove('dragging');
+  }
+  pbw.classList.toggle('video-seek', !!isVideo);
+  pbw.classList.toggle('slide-prog', !isVideo);
+  pbw.title = isVideo ? 'Seek (drag)' : 'Progress';
+  pbw.setAttribute('aria-label', isVideo ? 'Video seek' : 'Slide progress');
+}
+
+function scrubVideoToFrac(frac) {
+  if (!isV(cur)) return;
+  frac = Math.max(0, Math.min(1, frac));
+  const v = getSl(cur)?.querySelector('video');
+  if (!v || !v.duration || !isFinite(v.duration)) return;
+  const next = frac * v.duration;
+  try { v.currentTime = next; } catch (_) {}
+  const pct = frac * 100;
+  g('pb').style.width = pct.toFixed(1) + '%';
+  const pbw = g('pbw');
+  if (pbw) pbw.setAttribute('aria-valuenow', String(Math.round(pct)));
+}
+
+function pbFracFromClientX(clientX) {
+  const r = g('pbw').getBoundingClientRect();
+  if (!r.width) return 0;
+  return (clientX - r.left) / r.width;
+}
+function onPbwPointerDown(e) {
+  if (!isV(cur)) return;
+  if (e.button != null && e.button !== 0) return;
+  pbDragging = true;
+  g('pbw').classList.add('dragging');
+  e.preventDefault();
+  try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch (_) {}
+  scrubVideoToFrac(pbFracFromClientX(e.clientX));
+}
+function onPbwPointerMove(e) {
+  if (!pbDragging) return;
+  scrubVideoToFrac(pbFracFromClientX(e.clientX));
+}
+function onPbwPointerUp(e) {
+  if (!pbDragging) return;
+  pbDragging = false;
+  g('pbw').classList.remove('dragging');
+  try { e.currentTarget.releasePointerCapture?.(e.pointerId); } catch (_) {}
+}
+(function bindSeekBar() {
+  const pbw = g('pbw');
+  if (!pbw) return;
+  pbw.addEventListener('pointerdown', onPbwPointerDown);
+  pbw.addEventListener('pointermove', onPbwPointerMove);
+  pbw.addEventListener('pointerup', onPbwPointerUp);
+  pbw.addEventListener('pointercancel', onPbwPointerUp);
+  pbw.addEventListener('lostpointercapture', () => {
+    pbDragging = false;
+    pbw.classList.remove('dragging');
+  });
+})();
 
 function waitForVideoFrame(video) {
   return new Promise(resolve => {
@@ -5433,6 +5538,19 @@ g('tsel').onchange = function() {
   transitionType = this.value;
   localStorage.setItem('ssp_transition', transitionType);
 };
+(function initVideoSkipControl() {
+  const inp = g('vskip');
+  if (!inp) return;
+  inp.value = String(videoSkipSec);
+  const commit = () => {
+    const next = persistVideoSkipSec(inp.value);
+    if (typeof showToast === 'function') showToast('Video skip: ±' + next + 's', 1500);
+  };
+  inp.addEventListener('change', commit);
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+  });
+})();
 
 g('bfs').onclick = () => {
   if (!document.fullscreenElement) {
@@ -5457,7 +5575,7 @@ function findMappedId(k) {
   }
   return null;
 }
-/* Video seek ±VIDEO_SEEK_SEC via prev/next keys when current media is video.
+/* Video seek ±videoSkipSec (ssp_video_skip_sec, default 5, range 1–30) via prev/next keys when current media is video.
    Double same-key within VIDEO_DOUBLE_MS → immediate prev/next item (first press still seeks).
    At t≈0 + prev → previous slide; at t≈end + next → next slide. Images keep slide nav.
    Key-repeat is swallowed so hold does not false-double or seek-spam. */
@@ -5480,7 +5598,7 @@ function seekCurVideo(dir, opts) {
   const eps = 0.05;
   if (dir < 0 && t <= eps) { goTo(cur - 1); return true; }
   if (dir > 0 && t >= dur - eps) { goTo(cur + 1); return true; }
-  const next = Math.max(0, Math.min(dur, t + dir * VIDEO_SEEK_SEC));
+  const next = Math.max(0, Math.min(dur, t + dir * videoSkipSec));
   try { v.currentTime = next; } catch (_) {}
   g('pb').style.width = Math.min((next / dur) * 100, 100).toFixed(1) + '%';
   return true;
