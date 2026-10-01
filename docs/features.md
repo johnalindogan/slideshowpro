@@ -14,7 +14,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Play and pause slides.
 - Move to the next or previous slide.
 - Reverse playback.
-- Adjust playback speed (toolbar buttons or keyboard: `↑` / `↓` ±5% by default; `,` / `.` remain aliases; remappable via the key editor / `ssp_keymap`). Toast shows the new rate when chrome is hidden.
+- Adjust playback speed (toolbar buttons or keyboard: `↑` / `↓` and `,` / `.` as first-class co-defaults, ±5%; remappable via the key editor / `ssp_keymap` — do not use `[` / `]` which are sharpness). Toast shows the new rate when chrome is hidden.
 - While a **video** is current, `←` / `→` (prev/next bindings) seek by the configured skip (**default ±5s**, range **1–30s**, persisted as `ssp_video_skip_sec`; toolbar **Skip** under More tools). **Double** the same key within **350ms** jumps to the previous/next playlist item immediately (a press after 350ms is a fresh seek). At the start, `←` goes to the previous media; at the end, `→` goes to the next. Images keep single-press slide prev/next.
 - Video **seekbar**: click+drag the progress control to scrub the playhead (playing or paused). Seekbar scrub chrome is shown for **video** items only; stills keep a non-interactive slide-timer bar.
 - Set a default duration for photos.
@@ -39,6 +39,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 
 ## Color Controls
 
+- **Themes** (`T`): cycle **10** named color presets (Sunset Glow, Cool Night, Mono Flash, Vivid Pop, Golden Hour, Soft Pastel, Film Noir, Teal Orange, Arctic Mist, Warm Vintage). Shift+`T` / Shift+Themes = random current; Alt+`T` / Alt+Themes = apply curated set across the playlist. Grades land in `imageUpdates.clr`.
 - Adjust brightness.
 - Adjust contrast.
 - Adjust saturation.
@@ -79,7 +80,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Control pan intensity.
 - Choose motion direction.
 - Choose easing behavior.
-- Set per-slide Ken Burns presets for individual images.
+- **5 named motion presets** (plus Auto / Off) in the Ken Burns modal and playlist per-slide override: Push In · Drift ↖, Pull Back · Drift ↘, Rise · Drift ↗, Descend · Drift ↙, Drift Across · Pan ↔. Images only — no Ken Burns on video.
 
 ## Keyboard Shortcuts
 
@@ -87,7 +88,7 @@ SlideShowX is a single-file slideshow viewer and playlist tool. The current app 
 - Click a key badge and press a new key to assign; remaps persist in `localStorage` (`ssp_keymap`).
 - Conflict detection: two commands cannot silently share a key (prior owner is unbound, with a toast).
 - Per-command reset and **Reset all to defaults**.
-- Defaults include navigation (`←`/`→`; context-sensitive seek on video), play/pause, speed ± (`↑`/`↓`, with `,`/`.` aliases), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges, screenshot, and export graded (`E`).
+- Defaults include navigation (`←`/`→`; context-sensitive seek on video), play/pause, speed ± (`↑`/`↓` and `,`/`.` co-defaults), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges (`[`/`]` = sharpness), screenshot, and export graded (`E`).
 - Fixed (not remappable): Delete / Backspace, Alt+Arrows pan (does not collide with speed arrows), Escape.
 
 ## Persistence

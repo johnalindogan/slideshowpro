@@ -910,11 +910,11 @@ body.ssp-playlist-window #dock-toggle-btn {
       </button>
       <input type="range" id="vsl" min="0" max="1" step="0.05" value="1" title="Volume">
       <div class="sp"></div>
-      <button class="cb" id="bsd" title="Slower (−5%)">
+      <button class="cb" id="bsd" title="Slower (−5%) — ↓ or ,">
         <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <span class="lb" id="slb" title="Playback speed (click to reset)" style="cursor:pointer;min-width:42px;">100%</span>
-      <button class="cb" id="bsu" title="Faster (+5%)">
+      <button class="cb" id="bsu" title="Faster (+5%) — ↑ or .">
         <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
       <div class="sp"></div>
@@ -968,7 +968,7 @@ body.ssp-playlist-window #dock-toggle-btn {
       <button class="cb" id="bexport" title="Export graded image / video (E)">
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
-      <button class="cb" id="btheme" title="Themes">
+      <button class="cb" id="btheme" title="Themes (T) — cycle 10 color presets; Shift=random; Alt=all">
         <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
       </button>
       <button class="cb" id="bhmax" title="Horizontal Max Mode (2 images side by side for portrait media on landscape screen)">
@@ -2254,7 +2254,13 @@ const THEME_PRESETS = [
   {name:'Sunset Glow', clr:{b:112,c:108,s:122,h:10,hl:12,sh:-8,g:102}, rotation:0, zoom:1.05, panX:0, panY:0, kbPreset:2},
   {name:'Cool Night', clr:{b:92,c:118,s:88,h:-18,hl:4,sh:8,g:96}, rotation:0, zoom:1.02, panX:0, panY:0, kbPreset:3},
   {name:'Mono Flash', clr:{b:105,c:130,s:0,h:0,hl:10,sh:0,g:104}, rotation:0, zoom:1, panX:0, panY:0, kbPreset:-1},
-  {name:'Vivid Pop', clr:{b:108,c:112,s:140,h:24,hl:6,sh:-4,g:100}, rotation:0, zoom:1.08, panX:0, panY:0, kbPreset:4}
+  {name:'Vivid Pop', clr:{b:108,c:112,s:140,h:24,hl:6,sh:-4,g:100}, rotation:0, zoom:1.08, panX:0, panY:0, kbPreset:4},
+  {name:'Golden Hour', clr:{b:118,c:105,s:128,h:18,hl:14,sh:-6,g:98}, rotation:0, zoom:1.06, panX:0, panY:0, kbPreset:0},
+  {name:'Soft Pastel', clr:{b:110,c:92,s:78,h:-8,hl:8,sh:6,g:108}, rotation:0, zoom:1.03, panX:0, panY:0, kbPreset:2},
+  {name:'Film Noir', clr:{b:88,c:135,s:12,h:0,hl:-4,sh:14,g:92}, rotation:0, zoom:1.04, panX:0, panY:0, kbPreset:1},
+  {name:'Teal Orange', clr:{b:104,c:118,s:132,h:-28,hl:8,sh:-6,g:100}, rotation:0, zoom:1.07, panX:0, panY:0, kbPreset:4},
+  {name:'Arctic Mist', clr:{b:108,c:102,s:70,h:-22,hl:16,sh:10,g:110}, rotation:0, zoom:1.02, panX:0, panY:0, kbPreset:3},
+  {name:'Warm Vintage', clr:{b:114,c:108,s:95,h:14,hl:6,sh:4,g:96}, rotation:0, zoom:1.05, panX:0, panY:0, kbPreset:0}
 ];
 let themeCursor = 0;
 
@@ -2293,13 +2299,14 @@ const KB = [
   {fs:1.15,ts:1.0,fx:-3,fy:-3,tx:0,ty:0},
   {fs:1.0,ts:1.12,fx:3,fy:3,tx:-2,ty:-2},
   {fs:1.12,ts:1.0,fx:-2,fy:2,tx:2,ty:-2},
-  {fs:1.0,ts:1.1,fx:-4,fy:0,tx:4,ty:0},
-  {fs:1.1,ts:1.0,fx:4,fy:2,tx:-2,ty:-2}
+  {fs:1.0,ts:1.1,fx:-4,fy:0,tx:4,ty:0}
 ];
 const KB_LABELS = [
-  'Zoom In · Drift ↖','Zoom Out · Drift ↘',
-  'Zoom In · Drift ↗','Zoom Out · Drift ↙',
-  'Zoom In · Pan ↔','Zoom Out · Drift ↖',
+  'Push In · Drift ↖',
+  'Pull Back · Drift ↘',
+  'Rise · Drift ↗',
+  'Descend · Drift ↙',
+  'Drift Across · Pan ↔'
 ];
 let kbEnabled = true, kbZoomInt = 4.0, kbPanInt = 4.0, kbDirection = 'mix', kbEasing = 'ease';
 
@@ -2471,11 +2478,13 @@ function getKBPreset(i) {
   } else if (kbDirection === 'random') {
     idx = Math.floor(Math.random() * KB.length);
   } else {
-    const pools = {mix:[0,1,2,3,4,5],in:[0,2,4],out:[1,3,5]};
+    const pools = {mix:[0,1,2,3,4],in:[0,2,4],out:[1,3]};
     const pool = pools[kbDirection] || pools.mix;
     idx = pool[i % pool.length];
   }
-  const b = KB[idx];
+  if (!Number.isFinite(idx) || idx < 0 || idx >= KB.length) idx = idx % KB.length;
+  if (idx < 0) idx += KB.length;
+  const b = KB[idx] || KB[0];
   return {fs:1+(b.fs-1)*kbZoomInt,ts:1+(b.ts-1)*kbZoomInt,fx:b.fx*kbPanInt,fy:b.fy*kbPanInt,tx:b.tx*kbPanInt,ty:b.ty*kbPanInt};
 }
 
@@ -2493,9 +2502,9 @@ const FNS = [
   {id:'prev',      label:'Prev Slide',        def:'ArrowLeft',  group:'Playback'},
   {id:'play',      label:'Play / Pause',      def:' ',          group:'Playback'},
   {id:'reverse',   label:'Reverse Play',      def:'b',          group:'Playback'},
-  /* Speed ± defaults: ArrowDown / ArrowUp (±5%, same as toolbar). , / . remain aliases when defaults are arrows. Alt+Arrows stay pan. */
-  {id:'speedDown', label:'Speed Down',        def:'ArrowDown',  group:'Playback'},
-  {id:'speedUp',   label:'Speed Up',          def:'ArrowUp',    group:'Playback'},
+  /* Speed ± co-defaults: ArrowDown/ArrowUp (±5%, same as toolbar) and , / . (first-class). Do not use [ / ] (sharpness). Alt+Arrows stay pan. */
+  {id:'speedDown', label:'Speed Down',        def:'ArrowDown',  coDefs:[','], group:'Playback'},
+  {id:'speedUp',   label:'Speed Up',          def:'ArrowUp',    coDefs:['.'], group:'Playback'},
   {id:'watch',     label:'Watch Mode',        def:'F5',         group:'Playback'},
   /* View */
   {id:'addMedia',  label:'Add Media',         def:'a',          group:'View'},
@@ -2556,7 +2565,16 @@ loadKeyMap();
 function keyLabel(k) {
   if (k == null || k === '') return 'None';
   if (k === ' ') return 'Space';
+  if (k === ',') return ',';
+  if (k === '.') return '.';
   return {ArrowRight:'→',ArrowLeft:'←',ArrowUp:'↑',ArrowDown:'↓'}[k] || k;
+}
+/** Default badge text including first-class co-defaults (e.g. ↓ + ,). */
+function defaultKeyLabel(fn) {
+  const primary = keyLabel(fn.def);
+  const extras = Array.isArray(fn.coDefs) ? fn.coDefs.map(keyLabel).filter(Boolean) : [];
+  return extras.length ? primary + ' / ' + extras.join(' / ') : primary;
+}
 }
 function keysEqual(bound, pressed) {
   /* Exact match only — letter bindings like r vs R must stay distinct (Rotate CW/CCW). */
@@ -2651,7 +2669,7 @@ function renderKeyEditor() {
   let shown = 0;
   FNS.forEach(fn => {
     const bound = keyMap[fn.id];
-    const hay = (fn.label + ' ' + fn.group + ' ' + keyLabel(bound) + ' ' + fn.def + ' ' + fn.id).toLowerCase();
+    const hay = (fn.label + ' ' + fn.group + ' ' + keyLabel(bound) + ' ' + defaultKeyLabel(fn) + ' ' + (fn.coDefs||[]).join(' ') + ' ' + fn.def + ' ' + fn.id).toLowerCase();
     if (filter && !hay.includes(filter)) return;
     shown++;
     if (fn.group !== lastGroup) {
@@ -2671,7 +2689,7 @@ function renderKeyEditor() {
     const def = document.createElement('span');
     def.className = 'kedef';
     def.title = 'Default';
-    def.textContent = keyLabel(fn.def);
+    def.textContent = defaultKeyLabel(fn);
     const key = document.createElement('button');
     key.type = 'button';
     key.className = 'kekey' + (!bound ? ' unbound' : '') + (conflicts.has(fn.id) ? ' conflict' : '');
@@ -2690,7 +2708,7 @@ function renderKeyEditor() {
     rst.type = 'button';
     rst.className = 'kerst';
     rst.textContent = 'reset';
-    rst.title = 'Restore default (' + keyLabel(fn.def) + ')';
+    rst.title = 'Restore default (' + defaultKeyLabel(fn) + ')';
     rst.onclick = () => {
       if (listeningId === fn.id) cancelKeyListen();
       resetOneKey(fn.id);
@@ -5608,9 +5626,13 @@ function runMappedKey(e) {
   let id = findMappedId(k);
   /* keep '=' as zoom-in alias when default '+' is bound */
   if (!id && k === '=' && keysEqual(keyMap.zoomIn, '+')) id = 'zoomIn';
-  /* keep , / . as speed aliases when defaults are ArrowDown / ArrowUp */
-  if (!id && k === ',' && keysEqual(keyMap.speedDown, 'ArrowDown')) id = 'speedDown';
-  if (!id && k === '.' && keysEqual(keyMap.speedUp, 'ArrowUp')) id = 'speedUp';
+  /* first-class co-defaults (e.g. , / . for speed) fire when the remappable key is still at its FNS default */
+  if (!id) {
+    for (const fn of FNS) {
+      if (!Array.isArray(fn.coDefs) || !fn.coDefs.includes(k)) continue;
+      if (keysEqual(keyMap[fn.id], fn.def)) { id = fn.id; break; }
+    }
+  }
   if (!id) return false;
   switch (id) {
     case 'next':
