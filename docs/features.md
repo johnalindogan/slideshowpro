@@ -1,6 +1,6 @@
-# SlideShowX Features
+# SlideX Features
 
-SlideShowX is a single-file slideshow viewer and playlist tool. The current app includes:
+SlideX is a single-file slideshow viewer and playlist tool. The current app includes:
 
 ## Media Import
 

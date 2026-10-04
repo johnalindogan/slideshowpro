@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SlideShowX</title>
+<title>SlideX</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -23,6 +23,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #landing{display:flex;flex-direction:column;align-items:center;gap:32px;}
 #llogo{font-size:34px;font-weight:700;color:rgba(255,255,255,.9);font-family:var(--font-main);letter-spacing:-.03em;}
 #llogo span{color:rgba(255,255,255,.3);}
+#lver{margin:-18px 0 -6px;font-size:12px;font-weight:500;color:rgba(255,255,255,.38);font-family:var(--font-main);letter-spacing:.06em;}
 #lbtns{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
 #lbtns button{display:flex;flex-direction:column;align-items:center;gap:10px;padding:24px 32px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;color:#fff;font-size:13px;font-family:var(--font-main);cursor:pointer;min-width:148px;transition:background .15s,border-color .15s;line-height:1.4;}
 #lbtns button:hover:not(:disabled){background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.28);}
@@ -792,7 +793,8 @@ body.ssp-playlist-window #dock-toggle-btn {
 <div id="app">
 <div id="dz">
   <div id="landing">
-    <div id="llogo">SlideShow<span>X</span></div>
+    <div id="llogo">Slide<span>X</span></div>
+    <p id="lver" hidden></p>
     <div id="lbtns">
       <button id="lbopen">
         <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
@@ -1608,7 +1610,7 @@ function applyUndockedMainChrome() {
 async function undockPlaylistWindow() {
   if (SSP_IS_PLAYLIST_WINDOW) return;
   if (!sspIsTauri()) {
-    showToast('Undock requires the SlideShowX desktop app.', 3500);
+    showToast('Undock requires the SlideX desktop app.', 3500);
     return;
   }
   try {
@@ -1704,7 +1706,7 @@ async function dockPlaylistWindow() {
 function enterPlaylistWindowShell() {
   if (!SSP_IS_PLAYLIST_WINDOW) return;
   document.body.classList.add('ssp-playlist-window');
-  document.title = 'SlideShowX — Media Manager';
+  document.title = 'SlideX — Media Manager';
   const dock = g('media-dock');
   if (dock) {
     dock.classList.add('expanded');
@@ -5009,7 +5011,7 @@ function savePlaylist() {
     };
   });
   const blob = new Blob([JSON.stringify({sspVersion:1,version:2,items:data},null,2)],{type:'application/json'});
-  const a = document.createElement('a'); a.download = 'SlideShowX_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
+  const a = document.createElement('a'); a.download = 'SlideX_playlist.json'; a.href = URL.createObjectURL(blob); a.click();
 }
 
 function loadPlaylistJSON(file) {
@@ -5398,7 +5400,7 @@ function buildGradeSidecar(item) {
   const clr = {...CLR_DEF, ...(item.clr || {})};
   return {
     sspGradeVersion: 1,
-    app: 'SlideShowX',
+    app: 'SlideX',
     savedAt: new Date().toISOString(),
     source: { name: item.name || null, path: item.path || null, type: item.type || null, id: item.id || null },
     clr,
@@ -5484,7 +5486,7 @@ async function exportGradedCurrent() {
       }
     }
     if (baked) {
-      const fn = `SlideShowX_${base}_${stamp}_graded.webm`;
+      const fn = `SlideX_${base}_${stamp}_graded.webm`;
       const res = await saveExportBlob(fn, baked, [{ name: 'WebM Video', extensions: ['webm'] }]);
       if (res.ok) {
         showToast(`<b style="color:#fff">${fn}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Graded WebM exported (best-effort canvas bake).</span>`, 4500);
@@ -5492,9 +5494,9 @@ async function exportGradedCurrent() {
       }
       if (res.reason === 'cancel') return;
     }
-    const sideName = `SlideShowX_${base}_${stamp}.sspgrade.json`;
+    const sideName = `SlideX_${base}_${stamp}.sspgrade.json`;
     const sideBlob = new Blob([JSON.stringify(buildGradeSidecar(item), null, 2)], { type: 'application/json' });
-    const res = await saveExportBlob(sideName, sideBlob, [{ name: 'SlideShowX Grade', extensions: ['json'] }]);
+    const res = await saveExportBlob(sideName, sideBlob, [{ name: 'SlideX Grade', extensions: ['json'] }]);
     if (res.ok) {
       showToast(`<b style="color:#fff">${sideName}</b><br><span style="color:rgba(255,255,255,.5);font-size:11px">Grade sidecar saved. Grades also stay in playlist imageUpdates.clr.</span>`, 5000);
     } else if (res.reason !== 'cancel') {
@@ -5507,7 +5509,7 @@ async function exportGradedCurrent() {
   try {
     if (med.decode) await med.decode().catch(() => {});
     const can = renderGradedCanvas(med, item);
-    const fn = `SlideShowX_${base}_${stamp}_graded.jpg`;
+    const fn = `SlideX_${base}_${stamp}_graded.jpg`;
     const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', 0.95));
     if (!blob) { showToast('Image export failed.', 3000); return; }
     const res = await saveExportBlob(fn, blob, [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }]);
@@ -5530,7 +5532,7 @@ g('bss').onclick = async function() {
   let can;
   try { can = renderGradedCanvas(med, item); }
   catch (e) { alert('Screenshot failed.'); return; }
-  const fn = `SlideShowX_${sspExportStamp()}.jpg`;
+  const fn = `SlideX_${sspExportStamp()}.jpg`;
   const blob = await new Promise(resolve => can.toBlob(resolve, 'image/jpeg', .95));
   if (!blob) { alert('Screenshot failed.'); return; }
   const saved = await saveScreenshotFile(fn, blob);
@@ -5908,6 +5910,22 @@ window.confirmDeleteFile = async function() {
     }
   }
 
+  async function sspShowAppVersion() {
+    const el = document.getElementById('lver');
+    if (!el || el.dataset.bound === '1') return;
+    const getVersion = window.__TAURI__ && window.__TAURI__.app && window.__TAURI__.app.getVersion;
+    if (typeof getVersion !== 'function') return;
+    try {
+      const version = await getVersion();
+      if (version == null || version === '') return;
+      el.textContent = String(version);
+      el.hidden = false;
+      el.dataset.bound = '1';
+    } catch (e) {
+      console.warn('SSP app version unavailable', e);
+    }
+  }
+
   function start() {
     // Playlist undock window is a view — do not steal Open-with / launch ingest.
     if (typeof SSP_IS_PLAYLIST_WINDOW !== 'undefined' && SSP_IS_PLAYLIST_WINDOW) return;
@@ -5915,6 +5933,7 @@ window.confirmDeleteFile = async function() {
     const maxTries = 40; // ~2s if __TAURI__ injects slightly after DOM
     (function tick() {
       if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        sspShowAppVersion();
         ingestWithRetry();
         try {
           if (window.__TAURI__.event && window.__TAURI__.event.listen) {
@@ -5970,7 +5989,7 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
     });
   }
   async function call(cmd, args){
-    if (typeof invoke !== 'function') throw new Error('Tauri invoke unavailable (open in SlideShowX app)');
+    if (typeof invoke !== 'function') throw new Error('Tauri invoke unavailable (open in SlideX app)');
     return invoke(cmd, args || {});
   }
   document.getElementById('lbcast')?.addEventListener('click', () => {

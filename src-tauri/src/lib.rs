@@ -366,7 +366,7 @@ async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
             "playlist",
             WebviewUrl::App("index.html?sspWindow=playlist#sspWindow=playlist".into()),
         )
-        .title("SlideShowX — Media Manager")
+        .title("SlideX — Media Manager")
         .inner_size(560.0, 820.0)
         .min_inner_size(360.0, 420.0)
         .resizable(true)

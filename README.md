@@ -1,6 +1,6 @@
-# SlideShowX
+# SlideX
 
-**SlideShowX** (SSX) — single-file Ken Burns slideshow viewer (`SlideShowPro.html`), plus an optional **thin Tauri Windows wrapper** for native file associations and "Open with".
+**SlideX** — single-file Ken Burns slideshow viewer (`SlideShowPro.html`), plus an optional **thin Tauri Windows wrapper** for native file associations and "Open with".
 
 ## Web (browser)
 
@@ -28,7 +28,7 @@ npm run build    # sync HTML + NSIS installer under src-tauri/target/release/bun
 
 ### File associations
 
-After installing the sideload NSIS package, these extensions open with SlideShowX:
+After installing the sideload NSIS package, these extensions open with SlideX:
 
 `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp`, `tif`, `tiff`, `ico`
 
