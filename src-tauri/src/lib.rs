@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::Serialize;
@@ -768,6 +769,25 @@ mod slidex_store_tests {
         let conf = include_str!("../tauri.conf.json");
         assert!(conf.contains(HIGH_PERF_BROWSER_ARGS));
     }
+
+    #[test]
+    fn close_waits_for_save_ack_or_two_second_timeout_and_ignores_reentry() {
+        assert!(SAVE_BEFORE_EXIT_TIMEOUT <= Duration::from_secs(2));
+        assert_eq!(SAVE_BEFORE_EXIT_TIMEOUT.as_millis(), 2000);
+
+        let gate = ExitSaveGate::new();
+        assert_eq!(gate.on_close_requested(), ExitCloseAction::BeginSave);
+        assert_eq!(gate.on_close_requested(), ExitCloseAction::AlreadyWaiting);
+        assert!(!gate.should_exit(ExitSignal::Timeout, 1999));
+        assert!(gate.should_exit(ExitSignal::Timeout, 2000));
+        assert!(!gate.should_exit(ExitSignal::Ack, 0));
+        assert!(!gate.should_exit(ExitSignal::Timeout, 5000));
+
+        let acked = ExitSaveGate::new();
+        assert_eq!(acked.on_close_requested(), ExitCloseAction::BeginSave);
+        assert!(acked.should_exit(ExitSignal::Ack, 0));
+        assert!(!acked.should_exit(ExitSignal::Timeout, 2000));
+    }
 }
 
 #[tauri::command]
@@ -908,6 +928,88 @@ fn cast_session(state: State<'_, cast::CastState>) -> Result<Option<cast::CastSe
     Ok(state.session_info().ok())
 }
 
+/// Ask the page to save, then exit. Never wait longer than this.
+const SAVE_BEFORE_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+const SAVE_BEFORE_EXIT_EVENT: &str = "slidex://save-before-exit";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitPhase {
+    Idle,
+    Waiting,
+    Exiting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitSignal {
+    Ack,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitCloseAction {
+    BeginSave,
+    AlreadyWaiting,
+}
+
+struct ExitSaveGate {
+    phase: Mutex<ExitPhase>,
+}
+
+impl ExitSaveGate {
+    fn new() -> Self {
+        Self {
+            phase: Mutex::new(ExitPhase::Idle),
+        }
+    }
+
+    fn on_close_requested(&self) -> ExitCloseAction {
+        let mut phase = self.phase.lock().expect("exit save gate");
+        if *phase == ExitPhase::Idle {
+            *phase = ExitPhase::Waiting;
+            ExitCloseAction::BeginSave
+        } else {
+            ExitCloseAction::AlreadyWaiting
+        }
+    }
+
+    /// Ack always finishes a wait. Timeout finishes only at >= 2s.
+    /// A second signal does not exit again.
+    fn should_exit(&self, signal: ExitSignal, elapsed_ms: u64) -> bool {
+        let mut phase = self.phase.lock().expect("exit save gate");
+        if *phase != ExitPhase::Waiting {
+            return false;
+        }
+        let ready = match signal {
+            ExitSignal::Ack => true,
+            ExitSignal::Timeout => elapsed_ms >= SAVE_BEFORE_EXIT_TIMEOUT.as_millis() as u64,
+        };
+        if ready {
+            *phase = ExitPhase::Exiting;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn finish_exit_save(app: &AppHandle, signal: ExitSignal) {
+    let elapsed = match signal {
+        ExitSignal::Ack => 0,
+        ExitSignal::Timeout => SAVE_BEFORE_EXIT_TIMEOUT.as_millis() as u64,
+    };
+    let Some(gate) = app.try_state::<ExitSaveGate>() else {
+        return;
+    };
+    if gate.should_exit(signal, elapsed) {
+        app.exit(0);
+    }
+}
+
+#[tauri::command]
+fn slidex_save_done(app: AppHandle) {
+    finish_exit_save(&app, ExitSignal::Ack);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -922,6 +1024,7 @@ pub fn run() {
         .manage(LaunchState::default())
         .manage(AllowedMedia::default())
         .manage(cast::CastState::default())
+        .manage(ExitSaveGate::new())
         .invoke_handler(tauri::generate_handler![
             get_launch_paths,
             read_media_file,
@@ -949,7 +1052,8 @@ pub fn run() {
             cast_play,
             cast_next,
             cast_disconnect,
-            cast_session
+            cast_session,
+            slidex_save_done
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
@@ -982,10 +1086,21 @@ pub fn run() {
             if window.label() != "main" {
                 return;
             }
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // The Media Manager may be open or hidden. Closing main must
-                // exit so no windowless copy stays alive.
-                window.app_handle().exit(0);
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Keep the window up until the page saves or the timeout fires.
+                // A second close while waiting must not emit again or exit twice.
+                // The Media Manager may be open or hidden; exiting the process
+                // still ends it once the save finishes.
+                api.prevent_close();
+                let gate = window.state::<ExitSaveGate>();
+                if gate.on_close_requested() == ExitCloseAction::BeginSave {
+                    let _ = window.emit(SAVE_BEFORE_EXIT_EVENT, ());
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(SAVE_BEFORE_EXIT_TIMEOUT);
+                        finish_exit_save(&app, ExitSignal::Timeout);
+                    });
+                }
             }
         })
         .build(tauri::generate_context!())

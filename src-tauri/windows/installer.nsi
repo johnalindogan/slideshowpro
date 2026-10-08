@@ -311,6 +311,56 @@ Function PageReinstallUpdateSelection
  StrCpy $ReinstallPageCheck 2
  ${EndIf}
 FunctionEnd
+; Close a running SlideX before replacing files. Ask it to exit (taskkill
+; without /F posts WM_CLOSE), wait a few seconds, and only then force-close.
+; The message tells the user SlideX will close. It does not offer to kill the app.
+; $R0 is saved: at reinst_uninstall it is the semver compare used to pass /UPDATE.
+!macro CloseSlideXForUpdate executableName closeMessage
+ !define UniqueID ${__LINE__}
+ Push $R0
+ !if "${INSTALLMODE}" == "currentUser"
+  nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
+ !else
+  nsis_tauri_utils::FindProcess "${executableName}"
+ !endif
+ Pop $R0
+ ${If} $R0 = 0
+  IfSilent slidex_close_${UniqueID} 0
+  ${If} $PassiveMode != 1
+   MessageBox MB_OKCANCEL "${closeMessage}" IDOK slidex_close_${UniqueID} IDCANCEL slidex_cancel_${UniqueID}
+  ${EndIf}
+  slidex_close_${UniqueID}:
+  ; Graceful close first.
+  ExecWait '"$SYSDIR\taskkill.exe" /IM "${executableName}"' $R9
+  StrCpy $R8 0
+  slidex_wait_${UniqueID}:
+   Sleep 500
+   IntOp $R8 $R8 + 1
+   !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
+   !else
+    nsis_tauri_utils::FindProcess "${executableName}"
+   !endif
+   Pop $R0
+   ${If} $R0 != 0
+    Goto slidex_done_${UniqueID}
+   ${EndIf}
+   ${If} $R8 < 10
+    Goto slidex_wait_${UniqueID}
+   ${EndIf}
+  ; Still running after a few seconds: force-close.
+  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM "${executableName}"' $R9
+  Sleep 500
+  Goto slidex_done_${UniqueID}
+  slidex_cancel_${UniqueID}:
+  Pop $R0
+  Abort "SlideX is still running. Close it, then run the installer again."
+  slidex_done_${UniqueID}:
+ ${EndIf}
+ Pop $R0
+ !undef UniqueID
+!macroend
+
 Function PageLeaveReinstall
  ${NSD_GetState} $R2 $R1
 
@@ -354,6 +404,8 @@ Function PageLeaveReinstall
 
  ${If} $WixMode = 1
  ReadRegStr $R1 HKLM "$R6" "UninstallString"
+ ; Close SlideX before the old uninstaller so its kill prompt never appears.
+ !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
  ExecWait '$R1' $0
  ${Else}
  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
@@ -366,6 +418,8 @@ Function PageLeaveReinstall
  ${EndIf}
  ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
  StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
+ ; $R0 already decided /UPDATE above. Close now, then run the old uninstaller.
+ !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
  ExecWait '$R1' $0
  ${EndIf}
 
@@ -650,52 +704,6 @@ Section WebView2
  ${EndIf}
 SectionEnd
 
-; Close a running SlideX before replacing files. Ask it to exit (taskkill
-; without /F posts WM_CLOSE), wait a few seconds, and only then force-close.
-; The message tells the user SlideX will close. It does not offer to kill the app.
-!macro CloseSlideXForUpdate executableName
- !define UniqueID ${__LINE__}
- !if "${INSTALLMODE}" == "currentUser"
-  nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
- !else
-  nsis_tauri_utils::FindProcess "${executableName}"
- !endif
- Pop $R0
- ${If} $R0 = 0
-  IfSilent slidex_close_${UniqueID} 0
-  ${If} $PassiveMode != 1
-   MessageBox MB_OKCANCEL "SlideX will close to finish the update." IDOK slidex_close_${UniqueID} IDCANCEL slidex_cancel_${UniqueID}
-  ${EndIf}
-  slidex_close_${UniqueID}:
-  ; Graceful close first.
-  ExecWait '"$SYSDIR\taskkill.exe" /IM "${executableName}"' $R9
-  StrCpy $R8 0
-  slidex_wait_${UniqueID}:
-   Sleep 500
-   IntOp $R8 $R8 + 1
-   !if "${INSTALLMODE}" == "currentUser"
-    nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
-   !else
-    nsis_tauri_utils::FindProcess "${executableName}"
-   !endif
-   Pop $R0
-   ${If} $R0 != 0
-    Goto slidex_done_${UniqueID}
-   ${EndIf}
-   ${If} $R8 < 10
-    Goto slidex_wait_${UniqueID}
-   ${EndIf}
-  ; Still running after a few seconds: force-close.
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM "${executableName}"' $R9
-  Sleep 500
-  Goto slidex_done_${UniqueID}
-  slidex_cancel_${UniqueID}:
-  Abort "SlideX is still running. Close it, then run the installer again."
-  slidex_done_${UniqueID}:
- ${EndIf}
- !undef UniqueID
-!macroend
-
 Section Install
  SetOutPath $INSTDIR
 
@@ -703,7 +711,7 @@ Section Install
  !insertmacro NSIS_HOOK_PREINSTALL
  !endif
 
- !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe"
+ !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
 
  ; Copy main executable
  File "${MAINBINARYSRCPATH}"
@@ -840,7 +848,11 @@ Section Uninstall
  !insertmacro NSIS_HOOK_PREUNINSTALL
  !endif
 
- !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe"
+ ${If} $UpdateMode = 1
+  !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
+ ${Else}
+  !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish uninstalling."
+ ${EndIf}
 
  ; Delete the app directory and its content from disk
  ; Copy main executable

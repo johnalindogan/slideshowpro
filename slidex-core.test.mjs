@@ -418,7 +418,10 @@ test('0.1.8 versions match and the welcome screen reads getVersion()', () => {
   assert.match(lib, /HIGH_PERF_BROWSER_ARGS/);
   assert.match(lib, /additional_browser_args\(HIGH_PERF_BROWSER_ARGS\)/);
   assert.match(lib, /tauri_plugin_single_instance::init/);
-  assert.match(lib, /window\.app_handle\(\)\.exit\(0\)/);
+  assert.match(lib, /api\.prevent_close\(\)/);
+  assert.match(lib, /slidex:\/\/save-before-exit/);
+  assert.match(lib, /fn slidex_save_done/);
+  assert.doesNotMatch(lib, /window\.app_handle\(\)\.exit\(0\)/);
   const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
   assert.match(html, /id="lver"/);
   assert.match(html, /const getVersion = window\.__TAURI__ && window\.__TAURI__\.app && window\.__TAURI__\.app\.getVersion/);
@@ -438,4 +441,181 @@ test('installer asks SlideX to close and never deletes app data on update', () =
   const deleteAt = nsi.indexOf('RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"');
   const guardAt = nsi.lastIndexOf('$UpdateMode <> 1', deleteAt);
   assert.ok(deleteAt !== -1 && guardAt !== -1 && deleteAt - guardAt < 500);
+  assert.match(nsi, /SlideX will close to finish uninstalling\./);
+  assert.ok(nsi.indexOf('!macro CloseSlideXForUpdate') < nsi.indexOf('reinst_uninstall:'));
+  const macroStart = nsi.indexOf('!macro CloseSlideXForUpdate');
+  const macroEnd = nsi.indexOf('!macroend', macroStart);
+  const macro = nsi.slice(macroStart, macroEnd);
+  assert.ok(macro.indexOf('Push $R0') < macro.indexOf('FindProcess'));
+  assert.match(macro, /Pop \$R0/);
+  const start = nsi.indexOf('reinst_uninstall:');
+  const end = nsi.indexOf('reinst_done:', start);
+  const block = nsi.slice(start, end);
+  const closes = block.match(/!insertmacro CloseSlideXForUpdate/g) || [];
+  const execs = block.match(/ExecWait '\$R1'/g) || [];
+  assert.equal(closes.length, 2);
+  assert.equal(execs.length, 2);
+  assert.ok(block.indexOf('!insertmacro CloseSlideXForUpdate') < block.indexOf("ExecWait '$R1'"));
+  const updateAt = block.indexOf('StrCpy $R1 "$R1 /UPDATE"');
+  const secondClose = block.lastIndexOf('!insertmacro CloseSlideXForUpdate');
+  const secondExec = block.lastIndexOf("ExecWait '$R1'");
+  assert.ok(updateAt !== -1 && updateAt < secondClose && secondClose < secondExec);
+});
+
+test('save before exit writes the duration and the session, then acks', () => {
+  const order = [];
+  const storage = {
+    setItem(k, v) { order.push(k + '=' + v); }
+  };
+  C.saveBeforeExitThenAck(storage, 12000, { items: [{ id: 'a' }] }, () => { order.push('ack'); });
+  assert.deepEqual(order, [
+    'ssp_default_dur=12000',
+    'ssp_autosave={"items":[{"id":"a"}]}',
+    'ack'
+  ]);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /function saveSessionBeforeExit/);
+  assert.match(html, /slidex:\/\/save-before-exit/);
+  assert.match(html, /slidex_save_done/);
+  const caps = fs.readFileSync(new URL('./src-tauri/capabilities/default.json', import.meta.url), 'utf8');
+  assert.match(caps, /allow-slidex-save-done/);
+});
+
+test('More tools toggles on plain d, ignores typing and modifier chords, and yields a colliding key', () => {
+  const actions = [
+    { id: 'mirrorH', def: 'h' },
+    { id: 'moreTools', def: 'd' },
+    { id: 'playlist', def: 'l' }
+  ];
+  assert.equal(C.resolveKeyMap(actions, null).moreTools, 'd');
+  assert.equal(C.resolveKeyMap(actions, { mirrorH: 'd' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: '' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: 'd', playlist: 'd' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: 'k' }).moreTools, 'k');
+  assert.equal(C.nextMoreToolsOpen(false), true);
+  assert.equal(C.nextMoreToolsOpen(true), false);
+  const plain = { key: 'd', ctrlKey: false, altKey: false, metaKey: false, target: { tagName: 'DIV' } };
+  assert.equal(C.moreToolsKeyFires(plain, 'd'), true);
+  assert.equal(C.moreToolsKeyFires({ ...plain, key: 'D' }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, ctrlKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, altKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, metaKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: { tagName: 'INPUT' } }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: { tagName: 'TEXTAREA' } }, 'd'), false);
+  assert.equal(C.isTextEditingTarget({ tagName: 'DIV', className: 'ssp-handle', closest: () => null }), false);
+  const cropInput = {
+    tagName: 'INPUT',
+    closest: (sel) => String(sel).includes('#cropbox') || String(sel).includes('input') ? {} : null
+  };
+  const renameInput = { tagName: 'INPUT', className: 'pl-rename', closest: () => null };
+  assert.equal(C.isTextEditingTarget(cropInput), true);
+  assert.equal(C.isTextEditingTarget(renameInput), true);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: cropInput }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: renameInput }, 'd'), false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id:'moreTools'/);
+  assert.match(html, /def:'d'/);
+  assert.match(html, /className = 'pl-rename'/);
+  assert.match(html, /More tools \(/);
+});
+
+function close(a, b, eps = 1e-6) {
+  assert.ok(Math.abs(a - b) < eps, a + ' vs ' + b);
+}
+
+test('pan delta keeps the content under the pointer for every flip and rotation', () => {
+  const content = { x: 80, y: 40 };
+  const dx = 12, dy = -7;
+  const flips = [false, true];
+  const rots = [0, 90, 180, 270];
+  const cases = [];
+  flips.forEach(flipH => flips.forEach(flipV => rots.forEach(rotation => {
+    cases.push({ flipH, flipV, rotation, scale: 1 });
+  })));
+  cases.push({ flipH: true, flipV: true, rotation: 90, scale: 2.5 });
+  cases.forEach(spec => {
+    const base = Object.assign({ panX: 5, panY: -3, w: 200, h: 120 }, spec);
+    const beforeM = C.paneContentMatrix(base);
+    const before = C.applyMatrix(beforeM, content.x, content.y);
+    const d = C.mapPanDelta(beforeM, dx, dy);
+    const afterM = C.paneContentMatrix(Object.assign({}, base, { panX: base.panX + d.x, panY: base.panY + d.y }));
+    const after = C.applyMatrix(afterM, content.x, content.y);
+    close(after.x, before.x + dx);
+    close(after.y, before.y + dy);
+  });
+});
+
+test('zoom focus maps back to the content point on a mirrored rotated pane', () => {
+  const spec = { flipH: true, flipV: false, rotation: 90, scale: 1.4, panX: 15, panY: -8, w: 300, h: 180 };
+  const M = C.paneContentMatrix(spec);
+  const local = { x: 70, y: 40 };
+  const screen = C.applyMatrix(M, local.x, local.y);
+  const back = C.mapFocusPoint(M, screen.x, screen.y);
+  close(back.x, local.x);
+  close(back.y, local.y);
+  const main = C.paneContentMatrix({ flipH: false, flipV: false, rotation: 0, scale: 1, panX: 0, panY: 0, w: 200, h: 100 });
+  const copy = C.paneContentMatrix({ flipH: true, flipV: false, rotation: 0, scale: 1, panX: 0, panY: 0, w: 200, h: 100 });
+  const c = { x: 40, y: 50 };
+  const fMain = C.mapFocusPoint(main, C.applyMatrix(main, c.x, c.y).x, C.applyMatrix(main, c.x, c.y).y);
+  const fCopy = C.mapFocusPoint(copy, C.applyMatrix(copy, c.x, c.y).x, C.applyMatrix(copy, c.x, c.y).y);
+  close(fMain.x, c.x); close(fMain.y, c.y);
+  close(fCopy.x, c.x); close(fCopy.y, c.y);
+  const mirror = C.paneContentMatrix({ flipH: true, w: 200, h: 100, scale: 1, rotation: 0 });
+  const left = C.mapFocusPoint(mirror, 10, 50);
+  close(left.x, 190);
+  close(left.y, 50);
+  const focus = C.zoomFocusInView(mirror, 10, 50, 200, 100, 800, 400);
+  close(focus.x, 190 / 200 * 800);
+  close(focus.y, 50 / 100 * 400);
+});
+
+test('arrow keys use the pane under the pointer and clamp after the inverse map', () => {
+  const panes = [
+    { id: 'main', x: 0, y: 0, w: 100, h: 100 },
+    { id: 'maxcomp', x: 100, y: 0, w: 100, h: 100 },
+    { id: 'maxcomp2', x: 200, y: 0, w: 100, h: 100 }
+  ];
+  const mats = {
+    main: C.matIdent(),
+    maxcomp: C.matScale(-1, 1),
+    maxcomp2: C.matRotate(90)
+  };
+  assert.equal(C.paneForArrow({ x: 150, y: 10, insideWindow: true }, panes, 'main'), 'maxcomp');
+  assert.equal(C.paneForArrow({ x: 250, y: 10, insideWindow: true }, panes, 'main'), 'maxcomp2');
+  assert.equal(C.paneForArrow({ x: 10, y: 10, insideWindow: true }, panes, 'main'), 'main');
+  assert.equal(C.paneForArrow({ x: 150, y: 400, insideWindow: true }, panes, 'main'), 'main');
+  assert.equal(C.paneForArrow({ x: 150, y: 10, insideWindow: false }, panes, 'main'), 'main');
+  const over = C.arrowGestureMatrix({ x: 150, y: 10, insideWindow: true }, panes, mats, 'main');
+  const left = C.arrowGestureMatrix({ x: 150, y: 10, insideWindow: false }, panes, mats, 'main');
+  const away = C.arrowGestureMatrix({ x: 10, y: 400, insideWindow: true }, panes, mats, 'main');
+  assert.equal(over.a, -1);
+  assert.equal(left.a, 1);
+  assert.equal(away.a, 1);
+  const view = { zoom: 2, panX: 0, panY: 0 };
+  const vp = [1000, 800, 2000, 1600];
+  const identNudge = C.arrowNudgeThenClamp(view, mats.main, 1, 0, ...vp);
+  close(identNudge.panX, 4);
+  const flipNudge = C.arrowNudgeThenClamp(view, mats.maxcomp, 1, 0, ...vp);
+  close(flipNudge.panX, -4);
+  const fallen = C.arrowNudgeThenClamp(view, left, 1, 0, ...vp);
+  close(fallen.panX, identNudge.panX);
+  const hit = C.clampedPanAfterDelta(view, C.matIdent(), 5000, 0, ...vp);
+  const hitMirror = C.clampedPanAfterDelta(view, C.matScale(-1, 1), -5000, 0, ...vp);
+  const hitRot = C.clampedPanAfterDelta(view, C.matRotate(90), 0, 5000, ...vp);
+  close(hit.panX, hitMirror.panX);
+  close(hit.panY, hitMirror.panY);
+  close(hit.panX, hitRot.panX);
+  close(hit.panY, hitRot.panY);
+  assert.ok(hit.panX < 5000);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /new DOMMatrix\(/);
+  assert.match(html, /getComputedStyle\(node\)\.transform/);
+  assert.match(html, /mapPanDelta|clampedPanAfterDelta|arrowNudgeThenClamp/);
+  assert.match(html, /paneForArrow/);
+  assert.match(html, /insideWindow/);
+  assert.doesNotMatch(html, /isMirror && !isVmax/);
+  const panAt = html.indexOf('function doPan');
+  const panBody = html.slice(panAt, html.indexOf('function resetPan', panAt));
+  assert.ok(panBody.indexOf('arrowNudgeThenClamp') !== -1 || panBody.indexOf('mapPanDelta') !== -1);
+  assert.ok(panBody.indexOf('clampManualView') > panBody.indexOf('mapPanDelta') || panBody.includes('arrowNudgeThenClamp'));
 });

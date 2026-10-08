@@ -132,3 +132,8 @@ commands.allow = ["cast_disconnect"]
 identifier = "allow-cast-session"
 description = "Allow reading active cast session info"
 commands.allow = ["cast_session"]
+
+[[permission]]
+identifier = "allow-slidex-save-done"
+description = "Allow the page to ack a save before the window exits"
+commands.allow = ["slidex_save_done"]

@@ -829,6 +829,211 @@
     return destBytes;
   }
 
+  function matIdent() {
+    return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  }
+
+  function matMul(A, B) {
+    return {
+      a: A.a * B.a + A.c * B.b,
+      b: A.b * B.a + A.d * B.b,
+      c: A.a * B.c + A.c * B.d,
+      d: A.b * B.c + A.d * B.d,
+      e: A.a * B.e + A.c * B.f + A.e,
+      f: A.b * B.e + A.d * B.f + A.f
+    };
+  }
+
+  function matTranslate(x, y) {
+    return { a: 1, b: 0, c: 0, d: 1, e: x, f: y };
+  }
+
+  function matScale(sx, sy) {
+    return { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
+  }
+
+  function matRotate(deg) {
+    var r = (Number(deg) || 0) * Math.PI / 180;
+    var c = Math.cos(r), s = Math.sin(r);
+    return { a: c, b: s, c: -s, d: c, e: 0, f: 0 };
+  }
+
+  function applyMatrix(m, x, y) {
+    return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
+  }
+
+  function matrixDet(m) {
+    return m.a * m.d - m.c * m.b;
+  }
+
+  /* Screen delta → shared-pan delta. Inverse of the linear part only. */
+  function mapPanDelta(matrix, dx, dy) {
+    var m = matrix || matIdent();
+    var det = matrixDet(m);
+    if (!det || !Number.isFinite(det)) return { x: dx, y: dy };
+    return {
+      x: (m.d * dx - m.c * dy) / det,
+      y: (-m.b * dx + m.a * dy) / det
+    };
+  }
+
+  /* Screen point → pane-local point, including translation. */
+  function mapFocusPoint(matrix, x, y) {
+    var m = matrix || matIdent();
+    var det = matrixDet(m);
+    if (!det || !Number.isFinite(det)) return { x: x, y: y };
+    var px = x - (m.e || 0), py = y - (m.f || 0);
+    return {
+      x: (m.d * px - m.c * py) / det,
+      y: (-m.b * px + m.a * py) / det
+    };
+  }
+
+  /*
+   * Pane transform with pan inside orientation and zoom, origin at the box center.
+   * CSS equivalent: translate(origin) rotate scale(flip) scale(zoom) translate(pan) translate(-origin).
+   */
+  function paneContentMatrix(opts) {
+    var o = opts || {};
+    var w = o.w > 0 ? o.w : 0;
+    var h = o.h > 0 ? o.h : 0;
+    var ox = w / 2, oy = h / 2;
+    var mh = o.flipH ? -1 : 1;
+    var mv = o.flipV ? -1 : 1;
+    var z = Number.isFinite(o.scale) ? o.scale : 1;
+    var panX = Number.isFinite(o.panX) ? o.panX : 0;
+    var panY = Number.isFinite(o.panY) ? o.panY : 0;
+    var M = matTranslate(ox, oy);
+    M = matMul(M, matRotate(o.rotation || 0));
+    M = matMul(M, matScale(mh, mv));
+    M = matMul(M, matScale(z, z));
+    M = matMul(M, matTranslate(panX, panY));
+    M = matMul(M, matTranslate(-ox, -oy));
+    return M;
+  }
+
+  function clampedPanAfterDelta(view, matrix, dx, dy, vpW, vpH, contentW, contentH) {
+    var d = mapPanDelta(matrix, dx, dy);
+    var panX = Number(view && view.panX);
+    var panY = Number(view && view.panY);
+    if (!Number.isFinite(panX)) panX = 0;
+    if (!Number.isFinite(panY)) panY = 0;
+    return clampView({
+      zoom: view && view.zoom,
+      panX: panX + d.x,
+      panY: panY + d.y
+    }, vpW, vpH, contentW, contentH);
+  }
+
+  /* Arrow nudge: map the screen step, then the same 8/zoom step, then clamp. */
+  function arrowNudgeThenClamp(view, matrix, dirX, dirY, vpW, vpH, contentW, contentH) {
+    var d = mapPanDelta(matrix, dirX, dirY);
+    var z = Number(view && view.zoom);
+    if (!Number.isFinite(z) || z < 1) z = 1;
+    var s = 8 / z;
+    return clampedPanAfterDelta(
+      view, matIdent(), d.x * s, d.y * s, vpW, vpH, contentW, contentH
+    );
+  }
+
+  /*
+   * Arrow keys follow the pane under the pointer right now.
+   * No pane, or the pointer has left the window: the main image.
+   * There is no remembered pane.
+   */
+  function paneForArrow(pointer, panes, mainId) {
+    var fallback = mainId || 'main';
+    if (!pointer || pointer.insideWindow === false || pointer.inside === false) return fallback;
+    var x = Number(pointer.x), y = Number(pointer.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return fallback;
+    var hit = null;
+    var list = panes || [];
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!p) continue;
+      var px = Number(p.x), py = Number(p.y), pw = Number(p.w), ph = Number(p.h);
+      if (![px, py, pw, ph].every(Number.isFinite)) continue;
+      if (x >= px && x < px + pw && y >= py && y < py + ph) hit = p.id;
+    }
+    return hit || fallback;
+  }
+
+  function arrowGestureMatrix(pointer, panes, matrices, mainId) {
+    var id = paneForArrow(pointer, panes, mainId || 'main');
+    var table = matrices || {};
+    if (table[id]) return table[id];
+    var fb = mainId || 'main';
+    if (table[fb]) return table[fb];
+    return matIdent();
+  }
+
+  /* Map a pointer in a pane box into the shared view box (main-image zoom space). */
+  function zoomFocusInView(matrix, pointerX, pointerY, paneW, paneH, viewW, viewH) {
+    var local = mapFocusPoint(matrix, pointerX, pointerY);
+    var pw = paneW > 0 ? paneW : 1;
+    var ph = paneH > 0 ? paneH : 1;
+    var vw = Number.isFinite(viewW) ? viewW : pw;
+    var vh = Number.isFinite(viewH) ? viewH : ph;
+    return { x: local.x / pw * vw, y: local.y / ph * vh };
+  }
+
+  function isTextEditingTarget(target) {
+    if (!target) return false;
+    var tag = target.tagName ? String(target.tagName).toUpperCase() : '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (target.isContentEditable) return true;
+    var ce = target.contentEditable;
+    if (ce && ce !== 'false' && ce !== 'inherit') return true;
+    var cls = target.className && typeof target.className === 'string' ? target.className : '';
+    if (cls.split(/\s+/).indexOf('pl-rename') !== -1) return true;
+    if (typeof target.closest === 'function') {
+      try {
+        if (target.closest('input, textarea, select, [contenteditable="true"]')) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  /* Plain bound key only. Ctrl, Alt, and Meta stay with the browser. */
+  function moreToolsKeyFires(e, boundKey) {
+    if (!e || boundKey == null || boundKey === '') return false;
+    if (e.ctrlKey || e.altKey || e.metaKey) return false;
+    if (e.key !== boundKey) return false;
+    if (isTextEditingTarget(e.target)) return false;
+    return true;
+  }
+
+  function nextMoreToolsOpen(open) { return !open; }
+
+  /*
+   * Overlay saved keys on defaults. If More tools would share its key with
+   * another action, leave More tools unbound. An explicit saved '' stays unbound.
+   */
+  function resolveKeyMap(actions, saved) {
+    var map = {};
+    var list = actions || [];
+    list.forEach(function (a) { map[a.id] = a.def; });
+    if (saved && typeof saved === 'object') {
+      list.forEach(function (a) {
+        if (typeof saved[a.id] === 'string') map[a.id] = saved[a.id];
+      });
+    }
+    var key = map.moreTools;
+    if (key) {
+      var clash = list.some(function (a) {
+        return a.id !== 'moreTools' && map[a.id] === key;
+      });
+      if (clash) map.moreTools = '';
+    }
+    return map;
+  }
+
+  function saveBeforeExitThenAck(storage, durationMs, session, ack) {
+    storage.setItem('ssp_default_dur', String(durationMs));
+    storage.setItem('ssp_autosave', JSON.stringify(session));
+    if (typeof ack === 'function') ack();
+  }
+
   function joinPath(dir, name) {
     var d = String(dir || '');
     var sep = d.indexOf('\\') !== -1 ? '\\' : '/';
@@ -864,6 +1069,23 @@
     placedRect: placedRect,
     zoomToward: zoomToward,
     wholeImageEndpoints: wholeImageEndpoints,
+    matIdent: matIdent,
+    matScale: matScale,
+    matRotate: matRotate,
+    applyMatrix: applyMatrix,
+    mapPanDelta: mapPanDelta,
+    mapFocusPoint: mapFocusPoint,
+    paneContentMatrix: paneContentMatrix,
+    clampedPanAfterDelta: clampedPanAfterDelta,
+    arrowNudgeThenClamp: arrowNudgeThenClamp,
+    paneForArrow: paneForArrow,
+    arrowGestureMatrix: arrowGestureMatrix,
+    zoomFocusInView: zoomFocusInView,
+    isTextEditingTarget: isTextEditingTarget,
+    moreToolsKeyFires: moreToolsKeyFires,
+    nextMoreToolsOpen: nextMoreToolsOpen,
+    resolveKeyMap: resolveKeyMap,
+    saveBeforeExitThenAck: saveBeforeExitThenAck,
     rewritePathPrefix: rewritePathPrefix,
     ancestorPrefixes: ancestorPrefixes,
     nextLocateProbes: nextLocateProbes,

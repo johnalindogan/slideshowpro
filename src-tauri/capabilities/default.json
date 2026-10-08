@@ -40,6 +40,7 @@
     "allow-cast-play",
     "allow-cast-next",
     "allow-cast-disconnect",
-    "allow-cast-session"
+    "allow-cast-session",
+    "allow-slidex-save-done"
   ]
 }

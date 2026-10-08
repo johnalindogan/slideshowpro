@@ -483,6 +483,7 @@ html,body{background:#000;height:100%;overflow:hidden;}
 <!-- Floating restore button -->
 <button id="showctrl">Show Controls</button>
 
+<script src="../slidex-core.js"></script>
 <script>
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
@@ -949,8 +950,63 @@ function changeZoom(d) {
   if (item) { item.zoom = zoom; saveItemLS(item); }
   staticT();
 }
+let pointerOver = { x: 0, y: 0, insideWindow: false };
+function rememberPointer(e) {
+  if (!e) return;
+  pointerOver = { x: e.clientX, y: e.clientY, insideWindow: true };
+}
+document.addEventListener('mousemove', rememberPointer);
+document.addEventListener('mouseleave', () => { pointerOver.insideWindow = false; });
+function demoPanMatrix(el) {
+  if (el && typeof DOMMatrix !== 'undefined') {
+    let m = new DOMMatrix();
+    let node = el;
+    while (node && node !== document.body) {
+      const t = getComputedStyle(node).transform;
+      if (t && t !== 'none') m = new DOMMatrix(t).multiply(m);
+      node = node.parentElement;
+    }
+    return { a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f };
+  }
+  if (window.SlideXCore && SlideXCore.paneContentMatrix) {
+    return SlideXCore.paneContentMatrix({
+      flipH: !!mirrorX, flipV: !!mirrorY, rotation: rotation || 0, scale: zoom || 1, panX: panX, panY: panY
+    });
+  }
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+}
+function demoPaneEntries() {
+  const panes = [];
+  const main = sls[cur];
+  if (main) {
+    const r = main.getBoundingClientRect();
+    panes.push({ id: 'main', x: r.left, y: r.top, w: r.width, h: r.height, el: main });
+  }
+  ['maxcomp', 'maxcomp2'].forEach(id => {
+    const el = g(id);
+    if (!el || getComputedStyle(el).display === 'none') return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    panes.push({ id: id, x: r.left, y: r.top, w: r.width, h: r.height, el: el });
+  });
+  return panes;
+}
+function demoMatrixForPointer(p) {
+  const panes = demoPaneEntries();
+  const id = (window.SlideXCore && SlideXCore.paneForArrow)
+    ? SlideXCore.paneForArrow(p || pointerOver, panes, 'main')
+    : 'main';
+  const pane = panes.find(x => x.id === id) || panes[0];
+  const el = pane && pane.el && pane.el.querySelector ? (pane.el.querySelector('img,video') || pane.el) : null;
+  return demoPanMatrix(el);
+}
 function doPan(dx, dy) {
-  const s = 8 / zoom; panX += dx * s; panY += dy * s;
+  const m = demoMatrixForPointer(pointerOver);
+  const step = 8;
+  const d = (window.SlideXCore && SlideXCore.mapPanDelta)
+    ? SlideXCore.mapPanDelta(m, dx * step, dy * step)
+    : { x: dx * step / Math.max(zoom, 1), y: dy * step / Math.max(zoom, 1) };
+  panX += d.x; panY += d.y;
   const item = getMediaItems()[cur];
   if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
   staticT();
@@ -967,45 +1023,67 @@ g('bzi').onclick = () => changeZoom(0.15);
 g('zlb').onclick = () => resetPan();
 
 /* ── Mouse: scroll = zoom, left drag = pan, middle drag = pan, right = context menu ── */
+let demoGestureMatrix = null;
 stage.addEventListener('wheel', e => {
   e.preventDefault();
+  rememberPointer(e);
   const d = e.deltaY < 0 ? 0.15 : -0.15;
-  if (isInCompanion(e.clientX, e.clientY)) {
-    compZoom = Math.max(0.1, Math.min(10, compZoom + d)); updCompT();
+  const panes = demoPaneEntries();
+  const id = (window.SlideXCore && SlideXCore.paneForArrow)
+    ? SlideXCore.paneForArrow({ x: e.clientX, y: e.clientY, insideWindow: true }, panes, 'main')
+    : 'main';
+  const pane = panes.find(p => p.id === id);
+  if (id !== 'main' && pane) {
+    const el = pane.el.querySelector('img,video');
+    const m = demoPanMatrix(el);
+    const r = pane.el.getBoundingClientRect();
+    const main = sls[cur];
+    const mr = main ? main.getBoundingClientRect() : r;
+    if (window.SlideXCore && SlideXCore.zoomToward && mr.width && mr.height) {
+      const mapped = SlideXCore.zoomFocusInView(m, e.clientX - r.left, e.clientY - r.top, r.width, r.height, mr.width, mr.height);
+      const factor = Math.exp(-e.deltaY * 0.0016);
+      const v = SlideXCore.zoomToward({ zoom: zoom, panX: panX, panY: panY }, factor, mapped.x, mapped.y, mr.width, mr.height, mr.width, mr.height);
+      zoom = v.zoom; panX = v.panX; panY = v.panY; updZoom(); staticT(); updCompT();
+    } else {
+      compZoom = Math.max(0.1, Math.min(10, compZoom + d)); updCompT();
+    }
   } else { changeZoom(d); }
 }, {passive: false});
 
 stage.addEventListener('mousedown', e => {
   if (e.button === 0) {
     if (e.target.closest('button,a,select,input')) return;
-    lDragOnComp = isInCompanion(e.clientX, e.clientY);
+    rememberPointer(e);
+    demoGestureMatrix = demoMatrixForPointer(pointerOver);
+    lDragOnComp = false;
     lDrag = true; lDragMoved = false;
     lDragStartX = e.clientX; lDragStartY = e.clientY;
-    lDragPX = lDragOnComp ? compPanX : panX;
-    lDragPY = lDragOnComp ? compPanY : panY;
+    lDragPX = panX;
+    lDragPY = panY;
   } else if (e.button === 1) {
     e.preventDefault();
+    rememberPointer(e);
+    demoGestureMatrix = demoMatrixForPointer(pointerOver);
     midDrag = true;
     midStartX = e.clientX; midStartY = e.clientY;
     midStartPX = panX; midStartPY = panY;
   }
 });
 document.addEventListener('mousemove', e => {
+  rememberPointer(e);
   if (lDrag) {
     const dx = e.clientX - lDragStartX, dy = e.clientY - lDragStartY;
     if (!lDragMoved && Math.hypot(dx,dy) < 4) return;
     lDragMoved = true; stage.classList.add('ldrag');
-    if (lDragOnComp) {
-      const isVmax = stage.classList.contains('vmax');
-      const isMirror = maxPreset === 1 || maxPreset === 4;
-      const mdx = (isMirror && !isVmax) ? -dx : dx;
-      const mdy = (isMirror && isVmax) ? -dy : dy;
-      compPanX = lDragPX + mdx / compZoom; compPanY = lDragPY + mdy / compZoom; updCompT();
-    } else { panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom; staticT(); }
+    const dlt = (window.SlideXCore && SlideXCore.mapPanDelta)
+      ? SlideXCore.mapPanDelta(demoGestureMatrix, dx, dy) : { x: dx, y: dy };
+    panX = lDragPX + dlt.x; panY = lDragPY + dlt.y; staticT(); updCompT();
   } else if (midDrag) {
-    panX = midStartPX + (e.clientX - midStartX) / zoom;
-    panY = midStartPY + (e.clientY - midStartY) / zoom;
-    staticT();
+    const dlt = (window.SlideXCore && SlideXCore.mapPanDelta)
+      ? SlideXCore.mapPanDelta(demoGestureMatrix, e.clientX - midStartX, e.clientY - midStartY)
+      : { x: e.clientX - midStartX, y: e.clientY - midStartY };
+    panX = midStartPX + dlt.x; panY = midStartPY + dlt.y;
+    staticT(); updCompT();
   }
 });
 document.addEventListener('mouseup', e => {

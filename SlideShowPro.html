@@ -41,6 +41,7 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .sl{position:absolute;inset:0;opacity:0;}
 .sl img,.sl video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;}
 .sl.on{opacity:1;}
+.ssp-orient{position:absolute;inset:0;transform-origin:center center;}
 .ssp-view{position:absolute;inset:0;transform-origin:center center;will-change:transform;}
 .ssp-crop{position:absolute;inset:0;overflow:hidden;}
 .ssp-crop img,.ssp-crop video{position:absolute;max-width:none;}
@@ -2573,6 +2574,7 @@ const FNS = [
   {id:'mirrorV',   label:'Mirror V',          def:'v',          group:'View'},
   {id:'hidectl',   label:'Hide Controls',     def:'c',          group:'View'},
   {id:'playlist',  label:'Playlist',          def:'l',          group:'View'},
+  {id:'moreTools', label:'More tools',         def:'d',          group:'View'},
   {id:'rotCW',     label:'Rotate CW',         def:'r',          group:'View'},
   {id:'rotCCW',    label:'Rotate CCW',        def:'R',          group:'View'},
   {id:'fname',     label:'Toggle Filename',   def:'n',          group:'View'},
@@ -2597,21 +2599,38 @@ const FNS = [
 ];
 const KEYMAP_LS = 'ssp_keymap';
 let keyMap = {};
+function refreshMoreToolsTooltip() {
+  const btn = g('bmore');
+  if (!btn) return;
+  const k = keyMap.moreTools;
+  btn.title = k ? ('More tools (' + keyLabel(k) + ')') : 'More tools';
+}
 function loadKeyMap() {
-  keyMap = {};
-  FNS.forEach(f => { keyMap[f.id] = f.def; });
+  let saved = null;
   try {
     const raw = localStorage.getItem(KEYMAP_LS);
-    if (!raw) return;
-    const saved = JSON.parse(raw);
-    if (!saved || typeof saved !== 'object') return;
-    FNS.forEach(f => {
-      if (typeof saved[f.id] === 'string') keyMap[f.id] = saved[f.id];
-    });
+    if (raw) saved = JSON.parse(raw);
   } catch (_) {}
+  if (!saved || typeof saved !== 'object') saved = null;
+  if (window.SlideXCore && SlideXCore.resolveKeyMap) {
+    const next = SlideXCore.resolveKeyMap(FNS, saved);
+    const explicit = saved && typeof saved.moreTools === 'string' ? saved.moreTools : null;
+    keyMap = next;
+    if (next.moreTools === '' && explicit !== '') saveKeyMap();
+  } else {
+    keyMap = {};
+    FNS.forEach(f => { keyMap[f.id] = f.def; });
+    if (saved) {
+      FNS.forEach(f => {
+        if (typeof saved[f.id] === 'string') keyMap[f.id] = saved[f.id];
+      });
+    }
+  }
+  refreshMoreToolsTooltip();
 }
 function saveKeyMap() {
   try { localStorage.setItem(KEYMAP_LS, JSON.stringify(keyMap)); } catch (_) {}
+  if (typeof refreshMoreToolsTooltip === 'function') refreshMoreToolsTooltip();
 }
 loadKeyMap();
 
@@ -3114,14 +3133,133 @@ function changeZoom(d, pointer) {
   const item = getMediaItems()[cur];
   if (item) { item.zoom = zoom; item.panX = panX; item.panY = panY; saveItemLS(item); }
   staticT();
+  if (typeof updCompT === 'function') updCompT();
+}
+let pointerOver = { x: 0, y: 0, insideWindow: false };
+let gestureMatrix = null;
+function identityPanMatrix() {
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+}
+function rememberPointer(e) {
+  if (!e) return;
+  pointerOver = { x: e.clientX, y: e.clientY, insideWindow: true };
+}
+document.addEventListener('mousemove', rememberPointer);
+document.addEventListener('mouseleave', () => { pointerOver.insideWindow = false; });
+function readOrientationMatrix(startEl) {
+  if (!startEl || typeof DOMMatrix === 'undefined') return identityPanMatrix();
+  let m = new DOMMatrix();
+  let node = startEl;
+  const stop = stage.parentElement;
+  while (node && node !== stop) {
+    if (!(node.dataset && node.dataset.panLayer === '1')) {
+      const t = getComputedStyle(node).transform;
+      if (t && t !== 'none') m = new DOMMatrix(t).multiply(m);
+    }
+    node = node.parentElement;
+  }
+  return { a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f };
+}
+function paneEntries() {
+  const panes = [];
+  const main = getSl(cur);
+  if (main) {
+    const r = main.getBoundingClientRect();
+    panes.push({ id: 'main', x: r.left, y: r.top, w: r.width, h: r.height, el: main });
+  }
+  ['maxcomp', 'maxcomp2'].forEach(id => {
+    const el = g(id);
+    if (!el) return;
+    const shown = getComputedStyle(el).display !== 'none';
+    if (!shown) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    panes.push({ id: id, x: r.left, y: r.top, w: r.width, h: r.height, el: el });
+  });
+  return panes;
+}
+function matrixForPane(pane) {
+  if (!pane || !pane.el) return identityPanMatrix();
+  const start = pane.el.querySelector ? (pane.el.querySelector('img,video') || pane.el) : pane.el;
+  return readOrientationMatrix(start);
+}
+function paneUnderPointer(p) {
+  const panes = paneEntries();
+  const id = (window.SlideXCore && SlideXCore.paneForArrow)
+    ? SlideXCore.paneForArrow(p || pointerOver, panes, 'main')
+    : 'main';
+  return panes.find(pane => pane.id === id) || panes.find(pane => pane.id === 'main') || null;
+}
+function layoutPointInPane(pane, clientX, clientY) {
+  const el = (pane && pane.id !== 'main') ? pane.el : (getSl(cur) || (pane && pane.el) || stage);
+  const r = el.getBoundingClientRect();
+  return { x: clientX - r.left, y: clientY - r.top, w: r.width || 1, h: r.height || 1 };
+}
+function focusForZoom(clientX, clientY) {
+  const pane = paneUnderPointer({ x: clientX, y: clientY, insideWindow: true });
+  const m = matrixForPane(pane);
+  const pt = layoutPointInPane(pane, clientX, clientY);
+  const sl = getSl(cur) || stage;
+  const vr = sl.getBoundingClientRect();
+  if (window.SlideXCore && SlideXCore.zoomFocusInView) {
+    return SlideXCore.zoomFocusInView(m, pt.x, pt.y, pt.w, pt.h, vr.width || 1, vr.height || 1);
+  }
+  return { x: clientX - vr.left, y: clientY - vr.top };
+}
+function stopCompanionMotion() {
+  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
+}
+function gestureMetrics() {
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!item || !sl || !window.SlideXCore) return null;
+  const med = sl.querySelector('img,video');
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || (med && (med.naturalWidth || med.videoWidth)) || vpW;
+  const natH = item.h || (med && (med.naturalHeight || med.videoHeight)) || vpH;
+  const crop = (!cropEditing && SlideXCore.isActiveCrop(item.crop)) ? SlideXCore.normalizeCrop(item.crop) : null;
+  return {
+    vpW: vpW, vpH: vpH,
+    cw: Math.max(1, crop ? natW * crop.w : natW),
+    ch: Math.max(1, crop ? natH * crop.h : natH)
+  };
+}
+function applySharedPan(baseX, baseY, matrix, dx, dy) {
+  const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
+  if (f && window.SlideXCore && SlideXCore.clampedPanAfterDelta) {
+    const v = SlideXCore.clampedPanAfterDelta(
+      { zoom: zoom, panX: baseX, panY: baseY }, matrix, dx, dy, f.vpW, f.vpH, f.cw, f.ch
+    );
+    zoom = v.zoom; panX = v.panX; panY = v.panY;
+    return;
+  }
+  const d = (window.SlideXCore && SlideXCore.mapPanDelta) ? SlideXCore.mapPanDelta(matrix, dx, dy) : { x: dx, y: dy };
+  panX = baseX + d.x;
+  panY = baseY + d.y;
+  if (typeof clampManualView === 'function') clampManualView();
 }
 function doPan(dx, dy) {
   if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
-  const s = 8 / Math.max(zoom, 1); panX += dx * s; panY += dy * s;
-  if (typeof clampManualView === 'function') clampManualView();
+  stopCompanionMotion();
+  staticT();
+  const m = matrixForPane(paneUnderPointer(pointerOver));
+  const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
+  if (f && window.SlideXCore && SlideXCore.arrowNudgeThenClamp) {
+    const v = SlideXCore.arrowNudgeThenClamp(
+      { zoom: zoom, panX: panX, panY: panY }, m, dx, dy, f.vpW, f.vpH, f.cw, f.ch
+    );
+    zoom = v.zoom; panX = v.panX; panY = v.panY;
+  } else {
+    const d = (window.SlideXCore && SlideXCore.mapPanDelta) ? SlideXCore.mapPanDelta(m, dx, dy) : { x: dx, y: dy };
+    const s = 8 / Math.max(zoom, 1);
+    panX += d.x * s; panY += d.y * s;
+    if (typeof clampManualView === 'function') clampManualView();
+  }
   const item = getMediaItems()[cur];
   if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
   staticT();
+  updCompT();
 }
 function resetPan() {
   if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
@@ -3138,16 +3276,13 @@ g('zlb').onclick = () => resetPan();
 /* ── Mouse: scroll = zoom, left drag = pan, middle drag = pan, right = context menu ── */
 stage.addEventListener('wheel', e => {
   e.preventDefault();
-  if (isInCompanion(e.clientX, e.clientY)) {
-    const d = e.deltaY < 0 ? 0.15 : -0.15;
-    compZoom = Math.max(0.1, Math.min(10, compZoom + d)); updCompT();
-    return;
-  }
-  const sl = getSl(cur) || stage;
-  const rect = sl.getBoundingClientRect();
+  rememberPointer(e);
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  stopCompanionMotion();
+  const focus = focusForZoom(e.clientX, e.clientY);
   changeZoom(0, {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
+    x: focus.x,
+    y: focus.y,
     factor: Math.exp(-e.deltaY * 0.0016)
   });
 }, {passive: false});
@@ -3155,54 +3290,55 @@ stage.addEventListener('wheel', e => {
 stage.addEventListener('mousedown', e => {
   if (e.button === 0) {
     if (e.target.closest('button,a,select,input,#cropbar,#cropbox')) return;
-    if (typeof pauseKenBurnsForManual === 'function' && !isInCompanion(e.clientX, e.clientY)) pauseKenBurnsForManual();
-    lDragOnComp = isInCompanion(e.clientX, e.clientY);
+    rememberPointer(e);
+    if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+    stopCompanionMotion();
+    staticT();
+    gestureMatrix = matrixForPane(paneUnderPointer(pointerOver));
+    lDragOnComp = false;
     lDrag = true; lDragMoved = false;
     lDragStartX = e.clientX; lDragStartY = e.clientY;
-    lDragPX = lDragOnComp ? compPanX : panX;
-    lDragPY = lDragOnComp ? compPanY : panY;
+    lDragPX = panX;
+    lDragPY = panY;
   } else if (e.button === 1) {
     e.preventDefault();
+    rememberPointer(e);
+    if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+    stopCompanionMotion();
+    staticT();
+    gestureMatrix = matrixForPane(paneUnderPointer(pointerOver));
     midDrag = true;
     midStartX = e.clientX; midStartY = e.clientY;
     midStartPX = panX; midStartPY = panY;
   }
 });
 document.addEventListener('mousemove', e => {
+  rememberPointer(e);
   if (lDrag) {
     const dx = e.clientX - lDragStartX, dy = e.clientY - lDragStartY;
     if (!lDragMoved && Math.hypot(dx,dy) < 4) return;
     lDragMoved = true; stage.classList.add('ldrag');
-    if (lDragOnComp) {
-      const isVmax = stage.classList.contains('vmax');
-      const isMirror = maxPreset === 1 || maxPreset === 4;
-      const mdx = (isMirror && !isVmax) ? -dx : dx;
-      const mdy = (isMirror && isVmax) ? -dy : dy;
-      compPanX = lDragPX + mdx / compZoom; compPanY = lDragPY + mdy / compZoom; updCompT();
-    } else {
-      panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom;
-      if (typeof clampManualView === 'function') clampManualView();
-      staticT();
-    }
-  } else if (midDrag) {
-    panX = midStartPX + (e.clientX - midStartX) / zoom;
-    panY = midStartPY + (e.clientY - midStartY) / zoom;
-    if (typeof clampManualView === 'function') clampManualView();
+    applySharedPan(lDragPX, lDragPY, gestureMatrix || identityPanMatrix(), dx, dy);
     staticT();
+    updCompT();
+  } else if (midDrag) {
+    applySharedPan(midStartPX, midStartPY, gestureMatrix || identityPanMatrix(), e.clientX - midStartX, e.clientY - midStartY);
+    staticT();
+    updCompT();
   }
 });
 document.addEventListener('mouseup', e => {
   if (e.button === 0 && lDrag) {
     lDrag = false; stage.classList.remove('ldrag');
-    if (lDragMoved && !lDragOnComp) {
+    if (lDragMoved) {
       const item = getMediaItems()[cur];
-      if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+      if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
     }
     lDragMoved = false;
   } else if (e.button === 1 && midDrag) {
     midDrag = false;
     const item = getMediaItems()[cur];
-    if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+    if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
   }
 });
 
@@ -3214,6 +3350,10 @@ function mediaPrefix() {
   if (mx !== 1 || my !== 1) parts.push(`scale(${mx},${my})`);
   return parts.length ? parts.join(' ') + ' ' : '';
 }
+function applyOrient(sl) {
+  const orient = sl && sl.querySelector('.ssp-orient');
+  if (orient) orient.style.transform = mediaPrefix().trim();
+}
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const item = getMediaItems()[cur];
@@ -3221,7 +3361,13 @@ function staticT() {
   const m = sl?.querySelector('img,video'); if (!m || !item) return;
   if (getActiveMaxMode(cur)) {
     resetMaxFrame(sl);
-    m.style.transform = `${mediaPrefix()}scale(${Math.max(1, zoom).toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
+    applyOrient(sl);
+    const view = sl.querySelector('.ssp-view');
+    if (view) {
+      view.dataset.panLayer = '1';
+      view.style.transform = 'translate(' + panX.toFixed(2) + 'px,' + panY.toFixed(2) + 'px) scale(' + Math.max(1, zoom).toFixed(4) + ')';
+    }
+    m.style.transform = '';
     return;
   }
   applyFrameTransform(sl, item, zoom, panX, panY);
@@ -3354,17 +3500,25 @@ function getActiveMaxMode(i) {
   return null;
 }
 
+function layoutMirrorCSS() {
+  if (maxPreset !== 1 && maxPreset !== 4) return '';
+  const vertical = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
+  return vertical ? 'scaleY(-1)' : 'scaleX(-1)';
+}
 function updCompT() {
   if (compKbId) return; // KB Right is managing its own transform
-  const m = g('maxcomp').querySelector('img,video'); if (!m) return;
-  const isVmax = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
-  const isMirror = maxPreset === 1 || maxPreset === 4;
-  const mirror = isMirror ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
-  const t = `${mirror}scale(${compZoom.toFixed(4)}) translate(${compPanX.toFixed(1)}px,${compPanY.toFixed(1)}px)`;
-  m.style.transform = t;
-  if (maxPreset === 4) {
-    const m2 = g('maxcomp2')?.querySelector('img,video'); if (m2) m2.style.transform = t;
-  }
+  const mirror = layoutMirrorCSS();
+  const panT = 'translate(' + panX.toFixed(2) + 'px,' + panY.toFixed(2) + 'px) scale(' + Math.max(zoom, 0.1).toFixed(4) + ')';
+  ['maxcomp', 'maxcomp2'].forEach(id => {
+    const pane = g(id);
+    if (!pane) return;
+    pane.style.transformOrigin = 'center center';
+    pane.style.transform = mirror;
+    const med = pane.querySelector('img,video');
+    if (!med) return;
+    med.dataset.panLayer = '1';
+    med.style.transform = panT;
+  });
 }
 function isInCompanion(cx, cy) {
   const cl = stage.classList;
@@ -3382,16 +3536,15 @@ function startCompKB(i) {
   const p = getKBPreset(i);
   if (!p) { updCompT(); return; }
   const dur = getEDur(i); let st = null;
-  const isVmax = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
-  const mirrorPfx = (maxPreset === 1 || maxPreset === 4) ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
   function step(ts) {
     if (!st) st = ts;
     const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
-    const sc = (p.fs + (p.ts - p.fs) * ev) * compZoom;
+    const sc = (p.fs + (p.ts - p.fs) * ev) * Math.max(zoom, 0.1);
     const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
-    const tf = `${mirrorPfx}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${compPanX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${compPanY.toFixed(1)}px))`;
+    const tf = `scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+    med.dataset.panLayer = '1';
     med.style.transform = tf;
-    if (med2) med2.style.transform = tf;
+    if (med2) { med2.dataset.panLayer = '1'; med2.style.transform = tf; }
     if (t < 1) compKbId = requestAnimationFrame(step);
   }
   compKbId = requestAnimationFrame(step);
@@ -3407,28 +3560,28 @@ function makeCompMed(item) {
   }
   const fit = item.type === 'video' ? 'contain' : 'cover';
   med.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' + fit + ';transform-origin:center center;';
+  med.dataset.panLayer = '1';
   return med;
 }
 function showMaxCompanion(curIdx) {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
-  const mc = g('maxcomp'); mc.innerHTML = '';
-  const mc2 = g('maxcomp2'); if (mc2) mc2.innerHTML = '';
+  const mc = g('maxcomp'); mc.innerHTML = ''; mc.style.transform = '';
+  const mc2 = g('maxcomp2'); if (mc2) { mc2.innerHTML = ''; mc2.style.transform = ''; }
   const mode = getActiveMaxMode(curIdx);
   if (!mode) return;
   const mi = getMediaItems(), item = mi[curIdx]; if (!item) return;
   compZoom = 1; compPanX = 0; compPanY = 0;
-  const isMirrorMode = mode === 'vmax' || mode === 'vmax3';
-  const mirrorTransform = isMirrorMode ? 'scaleY(-1)' : 'scaleX(-1)';
   const med = makeCompMed(item);
-  if (maxPreset === 1 || maxPreset === 4) med.style.transform = mirrorTransform;
   mc.appendChild(med);
-  if (maxPreset === 4 && mc2) {
-    const med2 = makeCompMed(item);
-    med2.style.transform = mirrorTransform;
-    mc2.appendChild(med2);
-  }
+  if (maxPreset === 4 && mc2) mc2.appendChild(makeCompMed(item));
   stage.classList.add(mode);
+  const mirror = (maxPreset === 1 || maxPreset === 4)
+    ? ((mode === 'vmax' || mode === 'vmax3') ? 'scaleY(-1)' : 'scaleX(-1)')
+    : '';
+  mc.style.transformOrigin = 'center center';
+  mc.style.transform = mirror;
+  if (mc2) { mc2.style.transformOrigin = 'center center'; mc2.style.transform = mirror; }
   // Run KB on companion(s) for SameSide2, KBRight, SameSide3
   if ((maxPreset === 1 || maxPreset === 3 || maxPreset === 4) && item.type !== 'video') startCompKB(curIdx);
 }
@@ -3613,17 +3766,28 @@ function getPlaylistSnapshot() {
 }
 let autoSaveTimer = null;
 function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
-function autoSave() {
+function saveSessionBeforeExit(ack) {
   clearTimeout(autoSaveTimer);
-  try { localStorage.setItem('ssp_autosave', JSON.stringify(getPlaylistSnapshot())); } catch(e) {}
+  const sel = g('dsel');
+  const parsed = sel ? parseInt(sel.value, 10) : NaN;
+  const ms = Number.isFinite(parsed) ? parsed : (window.SlideXCore ? SlideXCore.DEFAULT_IMAGE_DURATION_MS : 10000);
+  const session = getPlaylistSnapshot();
+  if (window.SlideXCore && SlideXCore.saveBeforeExitThenAck) {
+    SlideXCore.saveBeforeExitThenAck(localStorage, ms, session, null);
+  } else {
+    try { localStorage.setItem('ssp_default_dur', String(ms)); } catch (_) {}
+    try { localStorage.setItem('ssp_autosave', JSON.stringify(session)); } catch (_) {}
+  }
   try { notifyPlaylistSync(); } catch (_) {}
   getMediaItems().forEach(it => {
     if (!it.fileHandle) return;
     saveHandleIDB(it.id || it.name, it.fileHandle).catch(() => {});
     if (it.name && it.name !== it.id) saveHandleIDB(it.name, it.fileHandle).catch(() => {});
   });
+  if (typeof ack === 'function') ack();
 }
-window.addEventListener('beforeunload', autoSave);
+function autoSave() { saveSessionBeforeExit(null); }
+window.addEventListener('beforeunload', () => saveSessionBeforeExit(null));
 
 /* ── Landing screen info ── */
 function formatRelTime(ts) {
@@ -4304,11 +4468,15 @@ function createSlideEl(item, i) {
   const med = item.type === 'video' ? makeVid(item) : makeImg(item);
   const view = document.createElement('div');
   view.className = 'ssp-view';
+  view.dataset.panLayer = '1';
+  const orient = document.createElement('div');
+  orient.className = 'ssp-orient';
   const cropWin = document.createElement('div');
   cropWin.className = 'ssp-crop';
   cropWin.appendChild(med);
   view.appendChild(cropWin);
-  sl.appendChild(view);
+  orient.appendChild(view);
+  sl.appendChild(orient);
   if (item.type === 'video') {
     const b = document.createElement('div'); b.className = 'vb'; b.textContent = '▶ video'; sl.appendChild(b);
     med.onended = () => {
@@ -4763,6 +4931,7 @@ function createPlFolderRow(row) {
     e.stopPropagation();
     const inp = document.createElement('input');
     inp.value = item.name;
+    inp.className = 'pl-rename';
     inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
     name.replaceWith(inp); inp.focus(); inp.select();
     const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); autoSave(); };
@@ -5227,19 +5396,29 @@ function startKB(i) {
   const p = getKBPreset(i);
   if (getActiveMaxMode(i)) {
     resetMaxFrame(sl);
+    applyOrient(sl);
+    const view = sl.querySelector('.ssp-view');
+    const writeMax = (sc, px, py) => {
+      if (!view) return;
+      view.dataset.panLayer = '1';
+      view.style.transform = 'scale(' + sc + ') translate(' + px + 'px,' + py + 'px)';
+    };
+    img.style.transform = '';
     if (maxPreset === 3) {
       const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
-      img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+      const baseW = sl.clientWidth || 1, baseH = sl.clientHeight || 1;
+      writeMax(Math.max(1, zoom).toFixed(4), ((kx / 100) * baseW + panX).toFixed(1), ((ky / 100) * baseH + panY).toFixed(1));
       return;
     }
-    if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
+    if (!p) { writeMax(Math.max(1, zoom).toFixed(4), panX.toFixed(1), panY.toFixed(1)); return; }
     const dur = getEDur(i); let st = null;
     function stepMax(ts) {
       if (!st) st = ts;
       const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
-      const sc = (p.fs + (p.ts - p.fs) * ev) * zoom;
+      const sc = ((p.fs + (p.ts - p.fs) * ev) * zoom).toFixed(4);
       const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
-      img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+      const baseW = sl.clientWidth || 1, baseH = sl.clientHeight || 1;
+      writeMax(sc, ((kx / 100) * baseW + panX).toFixed(1), ((ky / 100) * baseH + panY).toFixed(1));
       if (t < 1) kbId = requestAnimationFrame(stepMax);
     }
     kbId = requestAnimationFrame(stepMax);
@@ -5844,6 +6023,12 @@ function runMappedKey(e) {
     case 'mirrorV': toggleMirrorV(); break;
     case 'hidectl': toggleControls(); break;
     case 'playlist': e.preventDefault(); togglePL(); break;
+    case 'moreTools':
+      if (window.SlideXCore && !SlideXCore.moreToolsKeyFires(e, keyMap.moreTools)) return false;
+      if (e.ctrlKey || e.altKey || e.metaKey) return false;
+      e.preventDefault();
+      setOverflowOpen(window.SlideXCore ? SlideXCore.nextMoreToolsOpen(g('ctrls-overflow').classList.contains('open')) : !g('ctrls-overflow').classList.contains('open'));
+      break;
     case 'rotCW': rotateClockwise(); break;
     case 'rotCCW': rotateCounter(); break;
     case 'fname': toggleFilename(); break;
@@ -5898,8 +6083,17 @@ document.addEventListener('keydown', e => {
   /* Prevent browser refresh when watch is bound to F5 even with empty playlist */
   if (keysEqual(keyMap.watch, e.key)) e.preventDefault();
 
+  const editing = (window.SlideXCore && SlideXCore.isTextEditingTarget(e.target))
+    || (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'));
+  if (editing) return;
+
   if (!getMediaItems().length) {
     if (keysEqual(keyMap.watch, e.key)) return;
+    if (window.SlideXCore && SlideXCore.moreToolsKeyFires(e, keyMap.moreTools)) {
+      e.preventDefault();
+      setOverflowOpen(SlideXCore.nextMoreToolsOpen(!!g('ctrls-overflow')?.classList.contains('open')));
+      return;
+    }
     // Undocked Media Manager: still allow Add / playlist focus with empty list.
     if (SSP_IS_PLAYLIST_WINDOW || playlistUndocked) {
       const idEmpty = findMappedId(e.key);
@@ -5908,8 +6102,6 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
-  const t = e.target.tagName;
-  if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
 
   /* Alt+Backspace resets the view. It is handled before Backspace removal. */
   if (window.SlideXCore && SlideXCore.isAltBackspaceReset(e)) {
@@ -6120,6 +6312,17 @@ window.confirmDeleteFile = async function() {
           console.warn('SSP ssp-launch-paths listen failed', e);
         }
         bindNativeDragDrop();
+        try {
+          if (window.__TAURI__.event && window.__TAURI__.event.listen) {
+            window.__TAURI__.event.listen('slidex://save-before-exit', function () {
+              const ack = function () { tauriInvoke('slidex_save_done').catch(function () {}); };
+              if (typeof saveSessionBeforeExit === 'function') saveSessionBeforeExit(ack);
+              else ack();
+            });
+          }
+        } catch (e) {
+          console.warn('SSP save-before-exit listen failed', e);
+        }
         return;
       }
       if (++tries < maxTries) setTimeout(tick, 50);
@@ -6218,7 +6421,9 @@ function applyFrameTransform(sl, item, z, px, py) {
   if (!box) return null;
   let v = { zoom: z, panX: px, panY: py };
   if (!box.maxOn) v = SlideXCore.clampView(v, box.vpW, box.vpH, box.contentW, box.contentH);
-  box.view.style.transform = 'translate(' + v.panX.toFixed(2) + 'px,' + v.panY.toFixed(2) + 'px) scale(' + v.zoom.toFixed(4) + ') ' + mediaPrefix();
+  applyOrient(sl);
+  box.view.dataset.panLayer = '1';
+  box.view.style.transform = 'translate(' + v.panX.toFixed(2) + 'px,' + v.panY.toFixed(2) + 'px) scale(' + v.zoom.toFixed(4) + ')';
   return v;
 }
 
