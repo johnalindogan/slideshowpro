@@ -351,6 +351,16 @@ fn fnv1a64(text: &str) -> u64 {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    atomic_write_with(path, bytes, |from, to| std::fs::rename(from, to))
+}
+
+/// Write `bytes` to a temp file in the same directory, `sync_all`, then rename over `path`.
+/// `rename` replaces an existing target (on Windows, MoveFileExW with MOVEFILE_REPLACE_EXISTING).
+/// The previous file is never deleted first, so a crash or a failed rename leaves it intact.
+fn atomic_write_with<R>(path: &Path, bytes: &[u8], rename_fn: R) -> Result<(), String>
+where
+    R: Fn(&Path, &Path) -> std::io::Result<()>,
+{
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let file_name = path
@@ -363,10 +373,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
     }
-    if path.exists() {
-        std::fs::remove_file(path).map_err(|e| e.to_string())?;
-    }
-    if let Err(err) = std::fs::rename(&tmp, path) {
+    if let Err(err) = rename_fn(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(err.to_string());
     }
@@ -495,10 +502,11 @@ fn delete_crop_sidecar(app: AppHandle, path: String, name: Option<String>) -> Re
 }
 
 fn playlist_slug(name: &str) -> String {
+    let key = name.trim().to_lowercase();
     let mut slug = String::new();
-    for c in name.chars() {
+    for c in key.chars() {
         if c.is_ascii_alphanumeric() {
-            slug.push(c.to_ascii_lowercase());
+            slug.push(c);
         } else if c == ' ' || c == '-' || c == '_' {
             if !slug.ends_with('-') {
                 slug.push('-');
@@ -507,7 +515,7 @@ fn playlist_slug(name: &str) -> String {
     }
     let slug = slug.trim_matches('-');
     let base = if slug.is_empty() { "playlist" } else { slug };
-    format!("{base}-{:016x}", fnv1a64(name))
+    format!("{base}-{:016x}", fnv1a64(&key))
 }
 
 fn playlists_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -671,6 +679,45 @@ mod slidex_store_tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
         assert!(leftovers.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_over_a_playlist_keeps_complete_old_content_when_rename_fails() {
+        let dir = std::env::temp_dir().join(format!("slidex-atomic-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("playlists").join("Beach.json");
+        let old = br#"{"name":"Beach","items":[{"id":"a","type":"image","name":"a.jpg"}]}"#;
+        let new = br#"{"name":"Beach","items":[{"id":"b","type":"image","name":"b.jpg"}]}"#;
+        atomic_write(&path, old).unwrap();
+        let err = atomic_write_with(&path, new, |_from, _to| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated rename failure",
+            ))
+        });
+        assert!(err.is_err());
+        assert!(path.is_file());
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk, old, "failed rename must leave the complete old playlist");
+        assert_ne!(on_disk, new);
+        assert!(on_disk.starts_with(b"{") && on_disk.ends_with(b"}"));
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "a failed rename must not leave a partial temp file");
+        atomic_write(&path, new).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn playlist_slug_ignores_case_and_keeps_distinct_names_apart() {
+        assert_eq!(playlist_slug("Beach"), playlist_slug("beach"));
+        assert_eq!(playlist_slug("Beach"), playlist_slug("BEACH"));
+        assert_eq!(playlist_slug(" Beach "), playlist_slug("beach"));
+        assert_ne!(playlist_slug("Beach"), playlist_slug("Shore"));
     }
 }
 

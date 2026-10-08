@@ -331,31 +331,92 @@
     return prefixes;
   }
 
+  function playlistNameKey(name) {
+    return String(name || '').trim().toLowerCase();
+  }
+
+  function playlistNamesMatch(a, b) {
+    var ka = playlistNameKey(a);
+    return ka.length > 0 && ka === playlistNameKey(b);
+  }
+
+  /* One ancestor level for paths that have not matched yet. Depth 0 is the nearest parent. */
+  function nextLocateProbes(paths, newRoot, foundPaths, depth, opts) {
+    var found = Object.create(null);
+    (foundPaths || []).forEach(function (p) { found[p] = true; });
+    var probes = [];
+    var more = false;
+    (paths || []).forEach(function (p) {
+      if (!p || found[p]) return;
+      var prefs = ancestorPrefixes(p);
+      if (depth + 1 < prefs.length) more = true;
+      if (depth < 0 || depth >= prefs.length) return;
+      var rewritten = rewritePathPrefix(p, prefs[depth], newRoot, opts);
+      if (!rewritten) return;
+      probes.push({ path: p, prefix: prefs[depth], rewritten: rewritten });
+    });
+    return { probes: probes, more: more, depth: depth };
+  }
+
+  function samePrefix(a, b, opts) {
+    if (a == null || b == null) return false;
+    if (opts && opts.caseInsensitive) return String(a).toLowerCase() === String(b).toLowerCase();
+    return String(a) === String(b);
+  }
+
   function planLocate(missingPaths, newRoot, existsFn, opts) {
     var paths = (missingPaths || []).filter(Boolean);
-    var candidates = [];
-    var seen = Object.create(null);
-    paths.forEach(function (p) {
-      ancestorPrefixes(p).forEach(function (pre) {
-        var key = (opts && opts.caseInsensitive) ? pre.toLowerCase() : pre;
-        if (!seen[key]) { seen[key] = true; candidates.push(pre); }
-      });
-    });
-    var best = null;
-    candidates.forEach(function (pre) {
-      var rows = paths.map(function (p) {
-        var rewritten = rewritePathPrefix(p, pre, newRoot, opts);
-        if (!rewritten) return { path: p, rewritten: null, exists: false, outside: true };
-        var exists = !!(existsFn && existsFn(rewritten));
-        return { path: p, rewritten: rewritten, exists: exists, outside: false };
-      });
-      var found = rows.filter(function (r) { return r.exists; }).length;
-      var eligible = rows.filter(function (r) { return !r.outside; }).length;
-      if (!best || found > best.found || (found === best.found && pre.length > best.prefix.length)) {
-        best = { prefix: pre, found: found, eligible: eligible, rows: rows };
+    var found = [];
+    var hits = Object.create(null);
+    var depth = 0;
+    while (depth < 64) {
+      var step = nextLocateProbes(paths, newRoot, found, depth, opts);
+      if (!step.probes.length) {
+        if (!step.more) break;
+        depth++;
+        continue;
       }
+      step.probes.forEach(function (probe) {
+        if (existsFn && existsFn(probe.rewritten)) {
+          hits[probe.path] = probe;
+          found.push(probe.path);
+        }
+      });
+      if (!step.more) break;
+      depth++;
+    }
+    var groups = Object.create(null);
+    var order = [];
+    found.forEach(function (p) {
+      var hit = hits[p];
+      if (!hit) return;
+      var key = (opts && opts.caseInsensitive) ? hit.prefix.toLowerCase() : hit.prefix;
+      if (!groups[key]) {
+        groups[key] = { prefix: hit.prefix, count: 0 };
+        order.push(key);
+      }
+      groups[key].count++;
     });
-    return best;
+    var bestKey = null;
+    order.forEach(function (key) {
+      var g = groups[key];
+      if (!bestKey) { bestKey = key; return; }
+      var cur = groups[bestKey];
+      if (g.count > cur.count || (g.count === cur.count && g.prefix.length > cur.prefix.length)) bestKey = key;
+    });
+    var chosen = bestKey ? groups[bestKey].prefix : null;
+    var rows = paths.map(function (p) {
+      if (!chosen) return { path: p, rewritten: null, exists: false, outside: true };
+      var rewritten = rewritePathPrefix(p, chosen, newRoot, opts);
+      if (!rewritten) return { path: p, rewritten: null, exists: false, outside: true };
+      var hit = hits[p];
+      var exists = !!(hit && samePrefix(hit.prefix, chosen, opts));
+      return { path: p, rewritten: rewritten, exists: exists, outside: false };
+    });
+    var foundCount = rows.filter(function (r) { return r.exists; }).length;
+    var eligible = rows.filter(function (r) { return !r.outside; }).length;
+    if (!chosen && !paths.length) return null;
+    return { prefix: chosen, found: foundCount, eligible: eligible, rows: rows };
   }
 
   function imageUpdatesFromItem(it) {
@@ -771,7 +832,10 @@
     wholeImageEndpoints: wholeImageEndpoints,
     rewritePathPrefix: rewritePathPrefix,
     ancestorPrefixes: ancestorPrefixes,
+    nextLocateProbes: nextLocateProbes,
     planLocate: planLocate,
+    playlistNameKey: playlistNameKey,
+    playlistNamesMatch: playlistNamesMatch,
     buildPlaylistDocument: buildPlaylistDocument,
     normalizePlaylist: normalizePlaylist,
     restoreItemFields: restoreItemFields,

@@ -202,6 +202,32 @@ test('prefix rewrite: drive to UNC, UNC to UNC, case, and segment boundaries', (
   assert.equal(C.rewritePathPrefix('D:\\Other\\b.jpg', 'G:\\', '\\\\AX03\\Archive01', ci), null);
 });
 
+test('playlist name keys ignore case while the saved display name stays as typed', () => {
+  assert.equal(C.playlistNameKey('Beach'), C.playlistNameKey('beach'));
+  assert.equal(C.playlistNameKey(' Beach '), C.playlistNameKey('BEACH'));
+  assert.equal(C.playlistNamesMatch('Beach', 'beach'), true);
+  assert.equal(C.playlistNamesMatch('Beach', 'Shore'), false);
+  const doc = C.buildPlaylistDocument({ name: 'Beach', items: [{ id: '1', type: 'image', name: 'a.jpg', path: 'G:\\a.jpg' }] });
+  assert.equal(doc.name, 'Beach');
+});
+
+test('locate probing stops at the first matching parent', () => {
+  const n = 40;
+  const files = [];
+  for (let i = 0; i < n; i++) files.push('\\\\AX03\\Archive01\\Show\\Reel\\Take\\Clip' + i + '.mp4');
+  const ancestors = C.ancestorPrefixes(files[0]).length;
+  assert.ok(ancestors > 1);
+  let probes = 0;
+  const exists = (p) => {
+    probes++;
+    return /\\zb23\\media\\clip\d+\.mp4$/i.test(String(p));
+  };
+  const plan = C.planLocate(files, '\\\\ZB23\\Media', exists, { caseInsensitive: true });
+  assert.equal(plan.found, n);
+  assert.equal(probes, n);
+  assert.ok(n * ancestors > probes);
+});
+
 test('locate plan only rewrites paths that exist and leaves outsiders', () => {
   const missing = [
     'G:\\Photos\\a.jpg',

@@ -6434,14 +6434,16 @@ async function exportCroppedCurrent() {
   const mime = usePng ? 'image/png' : 'image/jpeg';
   let blob = await new Promise(resolve => can.toBlob(resolve, mime, usePng ? undefined : 0.95));
   if (!blob) { showToast('Cropped export failed.', 3000); return; }
-  try {
-    const src = await readItemBytes(item);
-    if (src) {
-      const dest = new Uint8Array(await blob.arrayBuffer());
-      const copied = core.copyDateTaken(src, dest);
-      blob = new Blob([copied], { type: mime });
-    }
-  } catch (e) { console.warn('date-taken copy skipped', e); }
+  if (item.type !== 'video' && med.tagName !== 'VIDEO') {
+    try {
+      const src = await readItemBytes(item);
+      if (src) {
+        const dest = new Uint8Array(await blob.arrayBuffer());
+        const copied = core.copyDateTaken(src, dest);
+        blob = new Blob([copied], { type: mime });
+      }
+    } catch (e) { console.warn('date-taken copy skipped', e); }
+  }
   const desired = core.cropDownloadName(item.name, usePng ? 'png' : 'jpg');
   let unique = desired;
   let defaultPath = desired;
@@ -6558,7 +6560,7 @@ async function saveNamedPlaylistFlow() {
   let replace = false;
   try {
     const list = await tauriInvoke('list_named_playlists');
-    if ((list || []).some(p => String(p.name).toLowerCase() === trimmed.toLowerCase())) {
+    if ((list || []).some(p => core.playlistNamesMatch(p.name, trimmed))) {
       if (!confirm('Replace playlist "' + trimmed + '"?')) return;
       replace = true;
     }
@@ -6651,23 +6653,29 @@ async function locateMissingFolder() {
   const dir = picked.path || picked.root;
   if (!dir) { showToast('Locate folder needs a folder path.', 3500); return; }
   const paths = missing.map(it => it.path);
-  const prefixes = [];
-  const seen = new Set();
-  paths.forEach(p => core.ancestorPrefixes(p).forEach(pre => {
-    const key = pre.toLowerCase();
-    if (!seen.has(key)) { seen.add(key); prefixes.push(pre); }
-  }));
-  const checks = [];
-  prefixes.forEach(pre => paths.forEach(p => {
-    const rw = core.rewritePathPrefix(p, pre, dir, { caseInsensitive: true });
-    if (rw) checks.push(rw);
-  }));
-  const unique = Array.from(new Set(checks));
-  let flags = [];
-  try { flags = await tauriInvoke('paths_exist', { paths: unique }); } catch (_) { flags = []; }
+  const opts = { caseInsensitive: true };
+  const found = [];
   const have = new Set();
-  unique.forEach((p, i) => { if (flags[i]) have.add(String(p).toLowerCase()); });
-  const plan = core.planLocate(paths, dir, function (p) { return have.has(String(p).toLowerCase()); }, { caseInsensitive: true });
+  let depth = 0;
+  while (depth < 64) {
+    const step = core.nextLocateProbes(paths, dir, found, depth, opts);
+    if (!step.probes.length) {
+      if (!step.more) break;
+      depth++;
+      continue;
+    }
+    let flags = [];
+    try { flags = await tauriInvoke('paths_exist', { paths: step.probes.map(p => p.rewritten) }); }
+    catch (_) { flags = []; }
+    step.probes.forEach((probe, i) => {
+      if (!flags[i]) return;
+      have.add(String(probe.rewritten).toLowerCase());
+      found.push(probe.path);
+    });
+    if (!step.more) break;
+    depth++;
+  }
+  const plan = core.planLocate(paths, dir, function (p) { return have.has(String(p).toLowerCase()); }, opts);
   if (!plan || !plan.found) { showToast('No files found under that folder.', 4000); return; }
   if (!confirm(plan.found + ' of ' + plan.eligible + ' found. Update these paths?')) return;
   const rewrite = new Map();
