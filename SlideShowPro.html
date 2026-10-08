@@ -110,8 +110,10 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 #ctrls-overflow.open{display:flex;}
 .ctrls-cluster{display:flex;align-items:center;gap:4px;flex-shrink:0;}
 .cb{background:transparent;border:.5px solid rgba(255,255,255,.18);cursor:pointer;color:#fff;padding:6px 7px;border-radius:6px;display:flex;align-items:center;font-size:18px;transition:background .15s,border-color .15s;flex-shrink:0;line-height:1;}
-.cb:hover{background:rgba(255,255,255,.1);}
-.cb:active{background:rgba(255,255,255,.22);}
+.cb:hover:not(:disabled){background:rgba(255,255,255,.1);}
+.cb:active:not(:disabled){background:rgba(255,255,255,.22);}
+.cb:disabled{opacity:.35;cursor:default;}
+#bcast{gap:4px;padding:6px 8px;font-size:12px;font-family:var(--font-main);}
 .cb.on{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.55);}
 .cb svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
 #bmore{margin-left:auto;}
@@ -776,6 +778,7 @@ body.ssp-playlist-window #dock-toggle-btn {
 #castPanel select{flex:1;min-width:140px;background:#0f1622;color:#e8eef7;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 8px;}
 #castStatus{margin-top:8px;font-size:11px;color:#9aa8bc;min-height:2.6em;white-space:pre-wrap;}
 #lbcast{border-color:rgba(90,180,255,.45)!important;color:#9fd0ff!important;}
+#lbcast:disabled{border-color:rgba(255,255,255,.1)!important;color:inherit!important;}
 </style>
 </head>
 <body>
@@ -813,7 +816,7 @@ body.ssp-playlist-window #dock-toggle-btn {
         <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Open Playlist
       </button>
-      <button id="lbcast" type="button" title="Chromecast / Google TV content cast spike">
+      <button id="lbcast" type="button" disabled title="Cast is coming in a later SlideX release">
         <svg viewBox="0 0 24 24"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
         Cast…
       </button>
@@ -893,6 +896,10 @@ body.ssp-playlist-window #dock-toggle-btn {
         </button>
         <button class="cb" id="bked" title="Keyboard shortcuts">
           <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/></svg>
+        </button>
+        <button class="cb" id="bcast" type="button" disabled title="Cast is coming in a later SlideX release">
+          <svg viewBox="0 0 24 24"><path d="M2 16.1A5 5 0 015.9 20M2 12.05A9 9 0 019.95 20M2 8V6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+          Cast…
         </button>
       </div>
       <button class="cb" id="bmore" title="More tools" aria-expanded="false" aria-controls="ctrls-overflow">
@@ -5959,7 +5966,7 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
 
 <script>
 
-(/* Cast spike UI */)();
+/* Cast spike UI. #lbcast and #bcast stay disabled until the stacked Cast PR removes disabled. */
 (function initCastSpike(){
   const panel = document.getElementById('castPanel');
   const statusEl = document.getElementById('castStatus');
@@ -5992,10 +5999,13 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
     if (typeof invoke !== 'function') throw new Error('Tauri invoke unavailable (open in SlideX app)');
     return invoke(cmd, args || {});
   }
-  document.getElementById('lbcast')?.addEventListener('click', () => {
+  function openCastPanel(ev) {
+    if (ev && ev.currentTarget && ev.currentTarget.disabled) return;
     panel.classList.add('open');
     setStatus('Ready. Discover on same Wi‑Fi (≤10s). Content cast only — not desktop mirror.');
-  });
+  }
+  document.getElementById('lbcast')?.addEventListener('click', openCastPanel);
+  document.getElementById('bcast')?.addEventListener('click', openCastPanel);
   document.getElementById('castClose')?.addEventListener('click', () => panel.classList.remove('open'));
   document.getElementById('castDiscover')?.addEventListener('click', async () => {
     setStatus('Discovering… (mDNS _googlecast._tcp, ≤10s)');
