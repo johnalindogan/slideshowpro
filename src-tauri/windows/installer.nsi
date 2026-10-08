@@ -114,6 +114,12 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
  RequestExecutionLevel user
 !endif
 
+; Cast media server listens on TCP 47200-47215. Keep in sync with CAST_PORT_LO/HI in src/cast.rs.
+!define CAST_FW_TCP "47200-47215"
+!define CAST_FW_UDP "5353"
+!define CAST_FW_MEDIA_NAME "SlideX Cast media (Private)"
+!define CAST_FW_MDNS_NAME "SlideX Cast mDNS (Private)"
+
 !if "${INSTALLMODE}" == "both"
  !define MULTIUSER_MUI
  !define MULTIUSER_INSTALLMODE_INSTDIR "${PRODUCTNAME}"
@@ -706,6 +712,107 @@ Section WebView2
  ${EndIf}
 SectionEnd
 
+Function CastFirewallInstall
+ ; One UAC prompt. The elevated cmd writes an absolute path under $INSTDIR,
+ ; not the elevated process's %TEMP%, which is a different folder.
+ StrCpy $0 "$INSTDIR\cast-firewall-add.cmd"
+ StrCpy $1 "$INSTDIR\cast-firewall.txt"
+ Delete "$1"
+ Delete "$INSTDIR\cast-firewall.ok"
+ FileOpen $2 $0 w
+ FileWrite $2 "@echo off$\r$\n"
+ FileWrite $2 "set ERR=0$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\" >nul 2>&1$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\" >nul 2>&1$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall add rule name=$\"${CAST_FW_MEDIA_NAME}$\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes$\r$\n"
+ FileWrite $2 "if errorlevel 1 set ERR=1$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall add rule name=$\"${CAST_FW_MDNS_NAME}$\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes$\r$\n"
+ FileWrite $2 "if errorlevel 1 set ERR=1$\r$\n"
+ FileWrite $2 "echo SlideX Cast firewall> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo program=$INSTDIR\${MAINBINARYNAME}.exe>> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo profile=private>> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo tcp=${CAST_FW_TCP}>> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo udp=${CAST_FW_UDP}>> $\"$1$\"$\r$\n"
+ FileWrite $2 "if %ERR%==0 (echo status=added>> $\"$1$\") else (echo status=failed>> $\"$1$\")$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall show rule name=$\"${CAST_FW_MEDIA_NAME}$\">> $\"$1$\"$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall show rule name=$\"${CAST_FW_MDNS_NAME}$\">> $\"$1$\"$\r$\n"
+ FileWrite $2 "if %ERR%==0 echo ok> $\"$INSTDIR\cast-firewall.ok$\"$\r$\n"
+ FileClose $2
+ DetailPrint "Cast firewall: requesting Private rules for ${MAINBINARYNAME}.exe (TCP ${CAST_FW_TCP}, UDP ${CAST_FW_UDP}). Accept the Windows prompt."
+ ExecShell "runas" "$0" "" SW_HIDE
+ StrCpy $3 0
+${Do}
+ Sleep 500
+ IfFileExists "$1" cast_fw_install_done
+ IntOp $3 $3 + 1
+${LoopUntil} $3 > 90
+ FileOpen $2 "$1" w
+ FileWrite $2 "status=declined$\r$\n"
+ FileWrite $2 "The Windows prompt was declined or timed out.$\r$\n"
+ FileWrite $2 "Cast needs Private inbound rules for $INSTDIR\${MAINBINARYNAME}.exe, TCP ${CAST_FW_TCP} and UDP ${CAST_FW_UDP}.$\r$\n"
+ FileClose $2
+ DetailPrint "Cast firewall: not added. See $1"
+ ${IfNot} ${Silent}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "SlideX could not add the Private-network firewall rules.$\r$\n$\r$\nCast needs them so the TV can load photos and video. Re-run the installer and accept the Windows prompt.$\r$\n$\r$\nA per-user install cannot add a port-scoped Private rule without that prompt."
+ ${EndIf}
+ Goto cast_fw_install_end
+cast_fw_install_done:
+ DetailPrint "Cast firewall result file: $1"
+ ClearErrors
+ FileOpen $2 "$1" r
+ ${Do}
+  FileRead $2 $4
+  IfErrors cast_fw_install_read_done
+  DetailPrint "$4"
+ ${Loop}
+cast_fw_install_read_done:
+ FileClose $2
+ IfFileExists "$INSTDIR\cast-firewall.ok" cast_fw_install_end
+ DetailPrint "Cast firewall: netsh did not add both Private rules. See $1"
+ ${IfNot} ${Silent}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "SlideX could not add both Private firewall rules.$\r$\n$\r$\nSee $1$\r$\nRe-run the installer and accept the Windows prompt."
+ ${EndIf}
+cast_fw_install_end:
+ Delete "$0"
+FunctionEnd
+
+Function un.CastFirewallUninstall
+ ${If} $UpdateMode = 1
+  DetailPrint "Cast firewall rules kept for this upgrade. The new install refreshes them."
+  Goto cast_fw_un_end
+ ${EndIf}
+ StrCpy $0 "$TEMP\slidex-cast-firewall-remove.cmd"
+ StrCpy $1 "$TEMP\slidex-cast-firewall-removed.txt"
+ Delete "$1"
+ FileOpen $2 $0 w
+ FileWrite $2 "@echo off$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\"$\r$\n"
+ FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\"$\r$\n"
+ FileWrite $2 "echo status=removed> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo removed ${CAST_FW_MEDIA_NAME}>> $\"$1$\"$\r$\n"
+ FileWrite $2 "echo removed ${CAST_FW_MDNS_NAME}>> $\"$1$\"$\r$\n"
+ FileClose $2
+ DetailPrint "Cast firewall: removing Private rules. Accept the Windows prompt."
+ ExecShell "runas" "$0" "" SW_HIDE
+ StrCpy $3 0
+${Do}
+ Sleep 500
+ IfFileExists "$1" cast_fw_un_done
+ IntOp $3 $3 + 1
+${LoopUntil} $3 > 90
+ DetailPrint "Cast firewall: rules were not removed (prompt declined or timed out). Remove $\"${CAST_FW_MEDIA_NAME}$\" and $\"${CAST_FW_MDNS_NAME}$\" in Windows Firewall if they remain."
+ ${IfNot} ${Silent}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "SlideX could not remove the Cast firewall rules.$\r$\n$\r$\nIf they remain, delete $\"${CAST_FW_MEDIA_NAME}$\" and $\"${CAST_FW_MDNS_NAME}$\" in Windows Defender Firewall."
+ ${EndIf}
+ Goto cast_fw_un_end
+cast_fw_un_done:
+ DetailPrint "Cast firewall rules removed. See $1"
+cast_fw_un_end:
+ Delete "$INSTDIR\cast-firewall.txt"
+ Delete "$INSTDIR\cast-firewall.ok"
+ Delete "$INSTDIR\cast-firewall-add.cmd"
+FunctionEnd
+
 Section Install
  SetOutPath $INSTDIR
 
@@ -805,6 +912,10 @@ Section Install
  !insertmacro NSIS_HOOK_POSTINSTALL
  !endif
 
+ ; Private-only Cast firewall rules. A per-user install is not elevated, so this
+ ; asks once via UAC (runas). The result is written to $INSTDIR\cast-firewall.txt.
+ Call CastFirewallInstall
+
  ; Auto close this page for passive mode
  ${If} $PassiveMode = 1
  SetAutoClose true
@@ -855,6 +966,10 @@ Section Uninstall
  ${Else}
   !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish uninstalling."
  ${EndIf}
+
+ ; Drop the Cast rules unless this uninstall is the upgrade handoff.
+ ; The next install adds them again, so an upgrade does not prompt twice.
+ Call un.CastFirewallUninstall
 
  ; Delete the app directory and its content from disk
  ; Copy main executable

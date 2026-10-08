@@ -872,35 +872,35 @@ fn cast_discover(timeout_ms: Option<u64>) -> Result<cast::CastDiscoverResult, St
 }
 
 #[tauri::command]
-fn cast_load_still(
-    state: State<'_, cast::CastState>,
-    host: String,
-    port: u16,
-    name: Option<String>,
-) -> Result<cast::CastSessionInfo, String> {
-    let device = cast::CastDeviceInfo {
-        name: name.unwrap_or_else(|| "Chromecast".into()),
-        host,
-        port,
-        model: None,
-    };
-    state.load_still(&device)
+fn cast_network_fingerprint() -> Result<String, String> {
+    Ok(cast::network_fingerprint())
 }
 
 #[tauri::command]
-fn cast_load_video(
+fn cast_connect(
     state: State<'_, cast::CastState>,
     host: String,
-    port: u16,
+    port: Option<u16>,
     name: Option<String>,
-) -> Result<cast::CastSessionInfo, String> {
-    let device = cast::CastDeviceInfo {
-        name: name.unwrap_or_else(|| "Chromecast".into()),
-        host,
-        port,
-        model: None,
-    };
-    state.load_video(&device)
+) -> Result<cast::CastConnectInfo, String> {
+    state.connect(&host, port, name)
+}
+
+#[tauri::command]
+fn cast_set_playlist(
+    state: State<'_, cast::CastState>,
+    paths: Vec<String>,
+) -> Result<cast::PlaylistUpdate, String> {
+    state.set_playlist(paths)
+}
+
+#[tauri::command]
+fn cast_load(
+    state: State<'_, cast::CastState>,
+    path: String,
+    autoplay: Option<bool>,
+) -> Result<(), String> {
+    state.load(path, autoplay.unwrap_or(true))
 }
 
 #[tauri::command]
@@ -914,18 +914,18 @@ fn cast_play(state: State<'_, cast::CastState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn cast_next(state: State<'_, cast::CastState>) -> Result<cast::CastSessionInfo, String> {
-    state.next()
-}
-
-#[tauri::command]
 fn cast_disconnect(state: State<'_, cast::CastState>) -> Result<(), String> {
     state.disconnect()
 }
 
 #[tauri::command]
-fn cast_session(state: State<'_, cast::CastState>) -> Result<Option<cast::CastSessionInfo>, String> {
-    Ok(state.session_info().ok())
+fn cast_status(state: State<'_, cast::CastState>) -> Result<cast::CastLiveStatus, String> {
+    Ok(state.status())
+}
+
+#[tauri::command]
+fn cast_firewall_status() -> Result<cast::CastFirewallStatus, String> {
+    Ok(cast::firewall_status())
 }
 
 /// Ask the page to save, then exit. Never wait longer than this.
@@ -1046,13 +1046,15 @@ pub fn run() {
             delete_named_playlist,
             paths_exist,
             cast_discover,
-            cast_load_still,
-            cast_load_video,
+            cast_network_fingerprint,
+            cast_connect,
+            cast_set_playlist,
+            cast_load,
             cast_pause,
             cast_play,
-            cast_next,
             cast_disconnect,
-            cast_session,
+            cast_status,
+            cast_firewall_status,
             slidex_save_done
         ])
         .setup(|app| {
@@ -1106,6 +1108,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            if let tauri::RunEvent::Exit = &event {
+                if let Some(state) = app.try_state::<cast::CastState>() {
+                    state.shutdown();
+                }
+            }
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = &event {
                 let files: Vec<PathBuf> = urls

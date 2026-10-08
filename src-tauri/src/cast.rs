@@ -1,12 +1,13 @@
-//! Chromecast / Google TV content-cast spike.
-//! Stack: mdns-sd discovery + rust_cast (Cast V2) + tiny_http LAN media server
-//! → Default Media Receiver. Not chrome.cast / not desktop mirror.
+//! Chromecast / Google TV content cast.
+//! Stack: mdns-sd discovery + rust_cast (Cast V2) + a LAN-only HTTP server
+//! → Default Media Receiver. Not chrome.cast, not desktop mirror, no cloud relay.
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -14,16 +15,36 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
-use rust_cast::channels::media::{Media, StreamType};
-use rust_cast::channels::receiver::CastDeviceApp;
-use rust_cast::{CastDevice, ChannelMessage};
+use rust_cast::channels::connection::ConnectionChannel;
+use rust_cast::channels::heartbeat::{HeartbeatChannel, HeartbeatResponse};
+use rust_cast::channels::media::{LoadOptions, Media, MediaChannel, MediaResponse, PlayerState, StreamType};
+use rust_cast::channels::receiver::{CastDeviceApp, ReceiverChannel};
+use rust_cast::message_manager::{CastMessage, MessageManager};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{
+    ClientConfig, ClientConnection, DigitallySignedStruct, StreamOwned,
+    crypto::{aws_lc_rs::default_provider, verify_tls12_signature, verify_tls13_signature},
+};
 use serde::Serialize;
-use tiny_http::{Header, Response, Server, StatusCode};
 use uuid::Uuid;
 
 const CAST_SERVICE: &str = "_googlecast._tcp.local.";
 const DISCOVER_DEFAULT_MS: u64 = 8000;
 const DISCOVER_MAX_MS: u64 = 10_000;
+/// Inbound TCP range the installer opens on Private networks. Keep in sync with
+/// `CAST_FW_TCP` in `src-tauri/windows/installer.nsi`.
+pub const CAST_PORT_LO: u16 = 47200;
+pub const CAST_PORT_HI: u16 = 47215;
+const CAST_APP_ID_PORT: u16 = 8009;
+const READ_IDLE: Duration = Duration::from_millis(350);
+const READ_RPC: Duration = Duration::from_millis(900);
+const LINK_DEAD_AFTER: Duration = Duration::from_secs(4);
+
+pub const NO_TV_ERROR: &str = "No TV found on this network. Check that the PC and TV are on the same Wi-Fi, the firewall, or the router's client isolation.";
+
+const UNSUPPORTED_MEDIA: &str =
+    "Unsupported media. Cast plays JPEG, PNG, and MP4 (H.264 + AAC). Skipped.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CastDeviceInfo {
@@ -33,47 +54,1349 @@ pub struct CastDeviceInfo {
     pub model: Option<String>,
 }
 
-/// Result of `cast_discover` — devices plus a short diagnostic for empty/error smoke.
 #[derive(Debug, Clone, Serialize)]
 pub struct CastDiscoverResult {
     pub devices: Vec<CastDeviceInfo>,
-    /// Effective browse timeout (ms), after clamp.
     pub timeout_ms: u64,
-    /// IPv4 interfaces used (or intended) for mDNS browse (name + ip).
-    /// Prefer RFC1918 LAN; Tailscale / link-local are excluded when possible.
     pub interfaces: Vec<String>,
-    /// mdns-sd / daemon error string if browse failed (no UUIDs/tokens/creds).
     pub error: Option<String>,
-    /// One-line (or short) human summary for Cast UI status.
     pub diagnostic: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CastSessionInfo {
+pub struct CastConnectInfo {
     pub device_name: String,
     pub device_host: String,
     pub device_port: u16,
-    pub media_kind: String,
-    pub media_url_host: String,
+    pub bind_ip: String,
     pub http_port: u16,
 }
 
-#[derive(Default)]
-pub struct CastState {
-    inner: Mutex<Option<LiveSession>>,
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistUpdate {
+    pub registered: usize,
+    pub skipped: Vec<String>,
 }
 
-struct LiveSession {
-    cmd_tx: Sender<CastCmd>,
-    info: Arc<Mutex<Option<CastSessionInfo>>>,
-    _worker: Option<JoinHandle<()>>,
+#[derive(Debug, Clone, Serialize)]
+pub struct CastLiveStatus {
+    pub connected: bool,
+    pub player_state: String,
+    pub remote_event: Option<String>,
+    pub error: Option<String>,
+    pub media_kind: String,
+    pub http_port: u16,
+    pub bind_ip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CastFirewallStatus {
+    pub state: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct IfaceCand {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub prefix: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfaceRole {
+    Preferred,
+    Skip,
+}
+
+/// Home-LAN addresses we will bind and browse. Public, Tailscale, and link-local are skipped.
+pub fn iface_role(name: &str, ip: Ipv4Addr) -> IfaceRole {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
+        return IfaceRole::Skip;
+    }
+    if is_link_local_v4(ip) || is_cgnat_v4(ip) || is_tailscale_named(name) {
+        return IfaceRole::Skip;
+    }
+    if is_rfc1918_v4(ip) {
+        IfaceRole::Preferred
+    } else {
+        IfaceRole::Skip
+    }
+}
+
+pub fn is_rfc1918_v4(ip: Ipv4Addr) -> bool {
+    ip.is_private()
+}
+
+pub fn is_link_local_v4(ip: Ipv4Addr) -> bool {
+    ip.is_link_local()
+}
+
+/// 100.64.0.0/10 — Tailscale's usual range.
+pub fn is_cgnat_v4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (o[1] & 0xc0) == 64
+}
+
+pub fn is_tailscale_named(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("tailscale") || n.contains("zerotier")
+}
+
+pub fn is_safe_bind_ip(ip: Ipv4Addr) -> bool {
+    iface_role("", ip) == IfaceRole::Preferred
+}
+
+fn prefix_rank(ip: Ipv4Addr) -> u8 {
+    let o = ip.octets();
+    if o[0] == 192 && o[1] == 168 {
+        0
+    } else if o[0] == 10 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Pick the home-LAN address to bind. Prefers the default-route address when it is RFC1918,
+/// otherwise a 192.168 address over 10/8 and 172.16/12. Never returns public, Tailscale, or 0.0.0.0.
+pub fn choose_bind_ip<'a>(
+    ifaces: &'a [IfaceCand],
+    default_route: Option<Ipv4Addr>,
+) -> Option<&'a IfaceCand> {
+    let mut preferred: Vec<&IfaceCand> = ifaces
+        .iter()
+        .filter(|i| iface_role(&i.name, i.ip) == IfaceRole::Preferred)
+        .collect();
+    if preferred.is_empty() {
+        return None;
+    }
+    if let Some(ip) = default_route {
+        if let Some(hit) = preferred.iter().copied().find(|i| i.ip == ip) {
+            return Some(hit);
+        }
+    }
+    preferred.sort_by(|a, b| {
+        prefix_rank(a.ip)
+            .cmp(&prefix_rank(b.ip))
+            .then(a.name.cmp(&b.name))
+            .then(a.ip.cmp(&b.ip))
+    });
+    preferred.first().copied()
+}
+
+fn prefix_of(mask: Ipv4Addr) -> u8 {
+    let bits = u32::from(mask).count_ones() as u8;
+    if bits == 0 || bits > 30 {
+        24
+    } else {
+        bits
+    }
+}
+
+pub fn ipv4_in_subnet(ip: Ipv4Addr, network: Ipv4Addr, prefix: u8) -> bool {
+    let prefix = prefix.clamp(1, 32);
+    if prefix >= 32 {
+        return ip == network;
+    }
+    let shift = 32 - prefix;
+    (u32::from(ip) >> shift) == (u32::from(network) >> shift)
+}
+
+/// flume's idle `RecvTimeoutError::Timeout` displays as "timed out waiting on a channel".
+/// That string does **not** contain "timeout", so a substring check for "timeout" treats every
+/// quiet poll as a hard mDNS failure. Idle waits are not failures; a closed channel is.
+pub fn is_mdns_idle_timeout(msg: &str) -> bool {
+    let s = msg.to_ascii_lowercase();
+    s.contains("timed out") || s.contains("timeout")
+}
+
+fn iface_label(name: &str, ip: Ipv4Addr) -> String {
+    format!("{name} ({ip})")
+}
+
+struct LanSnapshot {
+    bind: Option<IfaceCand>,
+    preferred: Vec<IfaceCand>,
+    browse: Vec<String>,
+    skipped: Vec<String>,
+    skipped_ips: Vec<Ipv4Addr>,
+}
+
+/// Stable description of the home-LAN adapters. The UI compares this and starts a
+/// fresh mDNS browse when it changes. Discovery itself keeps no device cache.
+pub fn network_fingerprint() -> String {
+    let snap = snapshot_ifaces();
+    fingerprint_of(&snap.preferred, snap.bind.as_ref().map(|b| b.ip))
+}
+
+fn fingerprint_of(preferred: &[IfaceCand], bind: Option<Ipv4Addr>) -> String {
+    let mut parts: Vec<String> = preferred
+        .iter()
+        .map(|i| format!("{} {}/{}", i.name, i.ip, i.prefix))
+        .collect();
+    parts.sort();
+    let bind_s = bind.map(|ip| ip.to_string()).unwrap_or_else(|| "-".into());
+    format!("bind={bind_s}|{}", parts.join(","))
+}
+
+/// A resolved receiver is on the home LAN when it sits in any preferred adapter's
+/// subnet. 2.4 GHz and 5 GHz on one router share that subnet; the band is not a filter.
+fn device_on_home_lan(ip: Ipv4Addr, preferred: &[IfaceCand]) -> bool {
+    if !is_safe_bind_ip(ip) {
+        return false;
+    }
+    preferred
+        .iter()
+        .any(|c| ipv4_in_subnet(ip, c.ip, c.prefix))
+}
+
+fn snapshot_ifaces() -> LanSnapshot {
+    let addrs = if_addrs::get_if_addrs().unwrap_or_default();
+    let mut ifaces = Vec::new();
+    for i in addrs {
+        let if_addrs::IfAddr::V4(v4) = i.addr else {
+            continue;
+        };
+        ifaces.push(IfaceCand {
+            name: i.name,
+            ip: v4.ip,
+            prefix: prefix_of(v4.netmask),
+        });
+    }
+    let route = default_route_v4().ok();
+    let bind = choose_bind_ip(&ifaces, route).cloned();
+    let preferred: Vec<IfaceCand> = ifaces
+        .iter()
+        .filter(|i| iface_role(&i.name, i.ip) == IfaceRole::Preferred)
+        .cloned()
+        .collect();
+    let mut browse = Vec::new();
+    let mut skipped = Vec::new();
+    let mut skipped_ips = Vec::new();
+    for i in &ifaces {
+        let label = iface_label(&i.name, i.ip);
+        match iface_role(&i.name, i.ip) {
+            IfaceRole::Preferred => browse.push(label),
+            IfaceRole::Skip => {
+                if !i.ip.is_loopback() && !i.ip.is_unspecified() {
+                    skipped_ips.push(i.ip);
+                    skipped.push(label);
+                }
+            }
+        }
+    }
+    browse.sort();
+    skipped.sort();
+    LanSnapshot {
+        bind,
+        preferred,
+        browse,
+        skipped,
+        skipped_ips,
+    }
+}
+
+fn default_route_v4() -> Result<Ipv4Addr, String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    sock.connect("8.8.8.8:80").map_err(|e| e.to_string())?;
+    match sock.local_addr().map_err(|e| e.to_string())?.ip() {
+        IpAddr::V4(v4) => Ok(v4),
+        other => Err(other.to_string()),
+    }
+}
+
+fn no_tv_diagnostic(snap: &LanSnapshot, timeout_ms: u64, extra: Option<&str>) -> String {
+    let browse = if snap.browse.is_empty() {
+        "none".to_string()
+    } else {
+        snap.browse.join(", ")
+    };
+    let skipped = if snap.skipped.is_empty() {
+        String::new()
+    } else {
+        format!(" Skipped interfaces: {}.", snap.skipped.join(", "))
+    };
+    let extra = extra
+        .map(|e| format!(" Detail: {e}."))
+        .unwrap_or_default();
+    let lan = if snap.bind.is_none() {
+        " This PC has no home-network address (VPN or Tailscale may be the only route)."
+    } else {
+        ""
+    };
+    format!("{NO_TV_ERROR}{lan} Looked for {timeout_ms} ms on [{browse}].{skipped}{extra}")
+}
+
+/// Discover Cast receivers. Returns within the timeout (hard cap 10s, always under 15s).
+/// An empty network is a normal result with [`NO_TV_ERROR`], not an mDNS channel failure.
+pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, String> {
+    let ms = timeout_ms
+        .unwrap_or(DISCOVER_DEFAULT_MS)
+        .min(DISCOVER_MAX_MS)
+        .max(500);
+    let snap = snapshot_ifaces();
+    let interfaces = snap.browse.clone();
+
+    if snap.bind.is_none() && snap.browse.is_empty() {
+        let diagnostic = no_tv_diagnostic(&snap, ms, None);
+        eprintln!("[cast] discover: no home-network adapter");
+        return Ok(CastDiscoverResult {
+            devices: vec![],
+            timeout_ms: ms,
+            interfaces,
+            error: Some(NO_TV_ERROR.to_string()),
+            diagnostic,
+        });
+    }
+
+    let daemon = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            let diagnostic = no_tv_diagnostic(&snap, ms, Some(&format!("mDNS could not start ({e})")));
+            eprintln!("[cast] discover: mDNS daemon failed to start");
+            return Ok(CastDiscoverResult {
+                devices: vec![],
+                timeout_ms: ms,
+                interfaces,
+                error: Some(NO_TV_ERROR.to_string()),
+                diagnostic,
+            });
+        }
+    };
+
+    let mut setup_notes: Vec<String> = Vec::new();
+    // Do not disable IfKind::All. That drops every socket; if the following enable
+    // does not land, browse listens nowhere and the UI used to blame a channel timeout.
+    if let Err(e) = daemon.disable_interface(IfKind::IPv6) {
+        let msg = e.to_string();
+        if !is_mdns_idle_timeout(&msg) {
+            setup_notes.push(format!("ipv6 filter: {msg}"));
+        }
+    }
+    for ip in &snap.skipped_ips {
+        if let Err(e) = daemon.disable_interface(IfKind::Addr(IpAddr::V4(*ip))) {
+            let msg = e.to_string();
+            if !is_mdns_idle_timeout(&msg) {
+                setup_notes.push("skipped-interface filter failed".into());
+                break;
+            }
+        }
+    }
+    for cand in &snap.preferred {
+        if let Err(e) = daemon.enable_interface(IfKind::Addr(IpAddr::V4(cand.ip))) {
+            let msg = e.to_string();
+            if !is_mdns_idle_timeout(&msg) {
+                setup_notes.push("could not pin browse to a home-network adapter".into());
+                break;
+            }
+        }
+    }
+
+    let receiver = match daemon.browse(CAST_SERVICE) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = daemon.shutdown();
+            let diagnostic = no_tv_diagnostic(&snap, ms, Some(&format!("mDNS browse failed ({e})")));
+            eprintln!("[cast] discover: browse failed to start");
+            return Ok(CastDiscoverResult {
+                devices: vec![],
+                timeout_ms: ms,
+                interfaces,
+                error: Some(NO_TV_ERROR.to_string()),
+                diagnostic,
+            });
+        }
+    };
+
+    // Give the multicast join a moment before the deadline math, inside the same cap.
+    thread::sleep(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    let mut found: HashMap<String, CastDeviceInfo> = HashMap::new();
+    let mut real_error: Option<String> = None;
+
+    while Instant::now() < deadline {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            break;
+        }
+        let wait = remain.min(Duration::from_millis(250));
+        match receiver.recv_timeout(wait) {
+            Ok(ServiceEvent::ServiceResolved(info)) => {
+                // Do not read the device `id` TXT property (that is the Cast UUID).
+                let port = info.get_port();
+                let name = info
+                    .get_property_val_str("fn")
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "Chromecast".to_string());
+                let model = info
+                    .get_property_val_str("md")
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty());
+                for addr in info.get_addresses_v4() {
+                    let ip = *addr;
+                    if !device_on_home_lan(ip, &snap.preferred) {
+                        continue;
+                    }
+                    let host = ip.to_string();
+                    found.insert(
+                        format!("{host}:{port}"),
+                        CastDeviceInfo {
+                            name: name.clone(),
+                            host,
+                            port,
+                            model: model.clone(),
+                        },
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if is_mdns_idle_timeout(&msg) {
+                    continue;
+                }
+                real_error = Some("mDNS browse stopped".into());
+                break;
+            }
+        }
+    }
+
+    if let Ok(done) = daemon.shutdown() {
+        let _ = done.recv_timeout(Duration::from_millis(400));
+    }
+
+    let mut list: Vec<_> = found.into_values().collect();
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let extra = real_error.as_deref().or(setup_notes.first().map(String::as_str));
+    let (error, diagnostic) = if list.is_empty() {
+        (
+            Some(NO_TV_ERROR.to_string()),
+            no_tv_diagnostic(&snap, ms, extra),
+        )
+    } else {
+        (
+            None,
+            format!(
+                "Found {} on the home network ({} ms).",
+                list.len(),
+                ms
+            ),
+        )
+    };
+    eprintln!(
+        "[cast] discover finished in ≤{ms} ms, {} device(s)",
+        list.len()
+    );
+    Ok(CastDiscoverResult {
+        devices: list,
+        timeout_ms: ms,
+        interfaces,
+        error,
+        diagnostic,
+    })
+}
+
+pub fn parse_cast_host(host: &str, port: Option<u16>) -> Result<(Ipv4Addr, u16), String> {
+    let ip: Ipv4Addr = host
+        .trim()
+        .parse()
+        .map_err(|_| "Enter the TV's IPv4 address, for example 192.168.1.50.".to_string())?;
+    if !is_safe_bind_ip(ip) {
+        return Err(
+            "That address is not on a home network. Cast stays on the LAN (no public IP, Tailscale, or link-local)."
+                .into(),
+        );
+    }
+    let port = port.unwrap_or(CAST_APP_ID_PORT);
+    if port == 0 {
+        return Err("Cast port must be between 1 and 65535.".into());
+    }
+    Ok((ip, port))
+}
+
+fn file_stem_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string()
+}
+
+fn ext_of(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// JPEG, PNG, or MP4 (H.264 + AAC). Anything else is refused before it is tokenized.
+pub fn classify_playlist_file(path: &Path) -> Result<(&'static str, String), String> {
+    let canon = path
+        .canonicalize()
+        .map_err(|_| format!("{} is not available", file_stem_label(path)))?;
+    if !canon.is_file() {
+        return Err(format!("{} is not a file", file_stem_label(path)));
+    }
+    let ext = ext_of(&canon);
+    let label = file_stem_label(&canon);
+    match ext.as_str() {
+        "jpg" | "jpeg" => {
+            sniff_still(&canon, true)?;
+            Ok(("image/jpeg", "still".into()))
+        }
+        "png" => {
+            sniff_still(&canon, false)?;
+            Ok(("image/png", "still".into()))
+        }
+        "mp4" | "m4v" => {
+            if ext == "m4v" {
+                return Err(format!("{label}: {UNSUPPORTED_MEDIA}"));
+            }
+            if !mp4_is_h264_aac(&canon).unwrap_or(false) {
+                return Err(format!("{label}: {UNSUPPORTED_MEDIA}"));
+            }
+            Ok(("video/mp4", "video".into()))
+        }
+        _ => Err(format!("{label}: {UNSUPPORTED_MEDIA}")),
+    }
+}
+
+fn sniff_still(path: &Path, jpeg: bool) -> Result<(), String> {
+    let mut f = File::open(path).map_err(|_| format!("{} is not readable", file_stem_label(path)))?;
+    let mut buf = [0u8; 8];
+    let n = f.read(&mut buf).unwrap_or(0);
+    let ok = if jpeg {
+        n >= 3 && buf[0] == 0xff && buf[1] == 0xd8 && buf[2] == 0xff
+    } else {
+        n >= 8 && buf[..8] == *b"\x89PNG\r\n\x1a\n"
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{}: {UNSUPPORTED_MEDIA}", file_stem_label(path)))
+    }
+}
+
+fn read_u32(f: &mut File) -> std::io::Result<u32> {
+    let mut b = [0u8; 4];
+    f.read_exact(&mut b)?;
+    Ok(u32::from_be_bytes(b))
+}
+
+fn read_u64(f: &mut File) -> std::io::Result<u64> {
+    let mut b = [0u8; 8];
+    f.read_exact(&mut b)?;
+    Ok(u64::from_be_bytes(b))
+}
+
+/// Walk MP4 boxes without reading `mdat`. True only when an `avc1`/`avc3` sample and an `mp4a` sample both exist.
+pub fn mp4_is_h264_aac(path: &Path) -> std::io::Result<bool> {
+    let mut f = File::open(path)?;
+    let len = f.metadata()?.len();
+    let mut saw_avc = false;
+    let mut saw_aac = false;
+    walk_boxes(&mut f, 0, len, 0, &mut saw_avc, &mut saw_aac)?;
+    Ok(saw_avc && saw_aac)
+}
+
+fn walk_boxes(
+    f: &mut File,
+    start: u64,
+    end: u64,
+    depth: u8,
+    saw_avc: &mut bool,
+    saw_aac: &mut bool,
+) -> std::io::Result<()> {
+    if depth > 8 || *saw_avc && *saw_aac {
+        return Ok(());
+    }
+    f.seek(SeekFrom::Start(start))?;
+    while f.stream_position()? + 8 <= end {
+        let pos = f.stream_position()?;
+        let size32 = read_u32(f)? as u64;
+        let mut typ = [0u8; 4];
+        f.read_exact(&mut typ)?;
+        let (size, header) = if size32 == 1 {
+            let large = read_u64(f)?;
+            (large, 16u64)
+        } else if size32 == 0 {
+            (end.saturating_sub(pos), 8u64)
+        } else {
+            (size32, 8u64)
+        };
+        if size < header {
+            return Ok(());
+        }
+        let box_end = pos.saturating_add(size);
+        if box_end > end || box_end <= pos {
+            return Ok(());
+        }
+        if &typ == b"stsd" {
+            parse_stsd(f, box_end, saw_avc, saw_aac)?;
+        } else if matches!(&typ, b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl") {
+            let child = f.stream_position()?;
+            walk_boxes(f, child, box_end, depth + 1, saw_avc, saw_aac)?;
+        }
+        f.seek(SeekFrom::Start(box_end))?;
+        if *saw_avc && *saw_aac {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn parse_stsd(f: &mut File, box_end: u64, saw_avc: &mut bool, saw_aac: &mut bool) -> std::io::Result<()> {
+    if f.stream_position()? + 8 > box_end {
+        return Ok(());
+    }
+    let _ver_flags = read_u32(f)?;
+    let count = read_u32(f)?.min(32);
+    for _ in 0..count {
+        if f.stream_position()? + 8 > box_end {
+            break;
+        }
+        let entry_pos = f.stream_position()?;
+        let entry_size = read_u32(f)? as u64;
+        let mut four = [0u8; 4];
+        f.read_exact(&mut four)?;
+        match &four {
+            b"avc1" | b"avc3" => *saw_avc = true,
+            b"mp4a" => *saw_aac = true,
+            _ => {}
+        }
+        let entry_end = if entry_size >= 8 {
+            entry_pos.saturating_add(entry_size)
+        } else {
+            break;
+        };
+        if entry_end > box_end {
+            break;
+        }
+        f.seek(SeekFrom::Start(entry_end))?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct AllowEntry {
+    path: PathBuf,
+    content_type: String,
+    kind: String,
+}
+
+struct AllowBook {
+    token: String,
+    files: HashMap<String, AllowEntry>,
+    by_path: HashMap<PathBuf, String>,
+}
+
+impl AllowBook {
+    fn new() -> Self {
+        Self {
+            token: new_token(),
+            files: HashMap::new(),
+            by_path: HashMap::new(),
+        }
+    }
+
+    fn revoke(&mut self) {
+        self.files.clear();
+        self.by_path.clear();
+        self.token = new_token();
+    }
+}
+
+fn new_token() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Deny {
+    NotFound,
+}
+
+/// Map `/m/<token>/<key>` to a playlist file. Rejects traversal, listing, and unknown tokens.
+fn resolve_media_url<'a>(url: &str, book: &'a AllowBook) -> Result<&'a AllowEntry, Deny> {
+    let bare = url.split(['?', '#']).next().unwrap_or(url);
+    if bare.contains('\\') || bare.contains('%') || bare.contains("..") || bare.contains("//") {
+        return Err(Deny::NotFound);
+    }
+    let mut parts = bare.split('/').filter(|s| !s.is_empty());
+    let root = parts.next();
+    let token = parts.next();
+    let key = parts.next();
+    let extra = parts.next();
+    if root != Some("m") || extra.is_some() {
+        return Err(Deny::NotFound);
+    }
+    let (Some(token), Some(key)) = (token, key) else {
+        return Err(Deny::NotFound);
+    };
+    if token.len() != book.token.len() || !ct_eq(token.as_bytes(), book.token.as_bytes()) {
+        return Err(Deny::NotFound);
+    }
+    if key.len() > 80 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Deny::NotFound);
+    }
+    book.files.get(key).ok_or(Deny::NotFound)
+}
+
+fn replace_playlist(book: &mut AllowBook, paths: &[PathBuf]) -> PlaylistUpdate {
+    book.files.clear();
+    book.by_path.clear();
+    let mut skipped = Vec::new();
+    for path in paths {
+        match classify_playlist_file(path) {
+            Ok((ctype, kind)) => {
+                let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+                if book.by_path.contains_key(&canon) {
+                    continue;
+                }
+                let key = new_token();
+                book.by_path.insert(canon.clone(), key.clone());
+                book.files.insert(
+                    key,
+                    AllowEntry {
+                        path: canon,
+                        content_type: ctype.to_string(),
+                        kind,
+                    },
+                );
+            }
+            Err(reason) => skipped.push(reason),
+        }
+    }
+    PlaylistUpdate {
+        registered: book.files.len(),
+        skipped,
+    }
+}
+
+fn lookup_playlist<'a>(book: &'a AllowBook, path: &Path) -> Result<&'a AllowEntry, String> {
+    let canon = path
+        .canonicalize()
+        .map_err(|_| "That slide is not in the current playlist.".to_string())?;
+    let key = book
+        .by_path
+        .get(&canon)
+        .ok_or_else(|| "That slide is not in the current playlist.".to_string())?;
+    book.files
+        .get(key)
+        .ok_or_else(|| "That slide is not in the current playlist.".to_string())
+}
+
+struct MediaHttp {
+    port: u16,
+    bind_ip: Ipv4Addr,
+    book: Arc<Mutex<AllowBook>>,
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl MediaHttp {
+    fn start_lan(ip: Ipv4Addr) -> Result<Self, String> {
+        if !is_safe_bind_ip(ip) {
+            return Err(
+                "Refusing to listen: Cast only binds a home-network address, never 0.0.0.0, a public IP, or Tailscale."
+                    .into(),
+            );
+        }
+        Self::bind_on(ip, CAST_PORT_LO..=CAST_PORT_HI)
+    }
+
+    fn bind_on(ip: Ipv4Addr, ports: impl IntoIterator<Item = u16>) -> Result<Self, String> {
+        if ip.is_unspecified() {
+            return Err("Refusing to listen on 0.0.0.0.".into());
+        }
+        let mut last = "no port in the Cast range was free".to_string();
+        for port in ports {
+            match TcpListener::bind(SocketAddr::from((ip, port))) {
+                Ok(listener) => return Self::from_listener(listener, ip),
+                Err(e) => last = e.to_string(),
+            }
+        }
+        Err(format!(
+            "Could not bind the Cast media server on {ip} ports {CAST_PORT_LO}-{CAST_PORT_HI} ({last})."
+        ))
+    }
+
+    fn from_listener(listener: TcpListener, ip: Ipv4Addr) -> Result<Self, String> {
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("http local_addr: {e}"))?
+            .port();
+        let bound = listener
+            .local_addr()
+            .map_err(|e| e.to_string())?
+            .ip();
+        if bound.is_unspecified() {
+            return Err("Refusing to listen on 0.0.0.0.".into());
+        }
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("http listen: {e}"))?;
+        let book = Arc::new(Mutex::new(AllowBook::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let book_t = Arc::clone(&book);
+        let stop_t = Arc::clone(&stop);
+        let join = thread::spawn(move || http_loop(listener, book_t, stop_t));
+        eprintln!("[cast] media server listening on one LAN address, port {port}");
+        Ok(Self {
+            port,
+            bind_ip: ip,
+            book,
+            stop,
+            join: Some(join),
+        })
+    }
+
+    fn set_playlist(&self, paths: &[PathBuf]) -> Result<PlaylistUpdate, String> {
+        let mut book = self.book.lock().map_err(|_| "playlist lock".to_string())?;
+        Ok(replace_playlist(&mut book, paths))
+    }
+
+    fn media_url(&self, path: &Path) -> Result<(String, String), String> {
+        let book = self.book.lock().map_err(|_| "playlist lock".to_string())?;
+        let entry = lookup_playlist(&book, path)?;
+        let key = book
+            .by_path
+            .get(&entry.path)
+            .ok_or_else(|| "That slide is not in the current playlist.".to_string())?;
+        let url = format!("http://{}:{}/m/{}/{}", self.bind_ip, self.port, book.token, key);
+        Ok((url, entry.content_type.clone()))
+    }
+
+    fn kind_of(&self, path: &Path) -> Result<String, String> {
+        let book = self.book.lock().map_err(|_| "playlist lock".to_string())?;
+        Ok(lookup_playlist(&book, path)?.kind.clone())
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Ok(mut book) = self.book.lock() {
+            book.revoke();
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        eprintln!("[cast] media server stopped and tokens revoked");
+    }
+}
+
+impl Drop for MediaHttp {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn http_loop(listener: TcpListener, book: Arc<Mutex<AllowBook>>, stop: Arc<AtomicBool>) {
+    while !stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((mut sock, _)) => {
+                let _ = sock.set_read_timeout(Some(Duration::from_secs(3)));
+                let _ = sock.set_write_timeout(Some(Duration::from_secs(8)));
+                let _ = serve_client(&mut sock, &book);
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    // Dropping the listener here closes the port before `shutdown` returns.
+    drop(listener);
+}
+
+fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>) -> std::io::Result<()> {
+    let raw = read_headers(sock)?;
+    let text = String::from_utf8_lossy(&raw);
+    let mut lines = text.split("\r\n");
+    let request = lines.next().unwrap_or("");
+    let mut parts = request.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let url = parts.next().unwrap_or("/").to_string();
+    if method != "GET" && method != "HEAD" {
+        return write_empty(sock, 405);
+    }
+    let mut range = None;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("range") {
+                range = Some(value.trim().to_string());
+            }
+        }
+    }
+    let entry = {
+        let guard = match book.lock() {
+            Ok(g) => g,
+            Err(_) => return write_empty(sock, 404),
+        };
+        match resolve_media_url(&url, &guard) {
+            Ok(e) => e.clone(),
+            Err(_) => return write_empty(sock, 404),
+        }
+    };
+    let prepared = match transform_media(&entry) {
+        Ok(body) => body,
+        Err(_) => return write_empty(sock, 404),
+    };
+    let len = prepared.len;
+    let ctype = prepared.content_type;
+    let file = prepared.file;
+    if let Some(spec) = range {
+        match parse_range(&spec, len) {
+            Some((start, end)) => write_file(sock, file, &ctype, start, end, len, method == "HEAD"),
+            None => write_empty(sock, 416),
+        }
+    } else if len == 0 {
+        write_file(sock, file, &ctype, 0, 0, 0, method == "HEAD")
+    } else {
+        write_file(sock, file, &ctype, 0, len - 1, len, method == "HEAD")
+    }
+}
+
+/// Bytes to send after the playlist token check.
+///
+/// This is the identity transform: the allowlisted file itself. A later slideshow
+/// crop sidecar can replace a still here (new bytes and content type) without
+/// changing the token check, the path check, or the socket loop.
+struct PreparedMedia {
+    file: File,
+    len: u64,
+    content_type: String,
+}
+
+fn transform_media(entry: &AllowEntry) -> std::io::Result<PreparedMedia> {
+    let file = File::open(&entry.path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a file",
+        ));
+    }
+    Ok(PreparedMedia {
+        len: meta.len(),
+        content_type: entry.content_type.clone(),
+        file,
+    })
+}
+
+fn read_headers(sock: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(512);
+    let mut tmp = [0u8; 512];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 8192 {
+        match sock.read(&mut tmp) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(buf)
+}
+
+fn write_empty(sock: &mut TcpStream, code: u16) -> std::io::Result<()> {
+    let reason = match code {
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        416 => "Range Not Satisfiable",
+        _ => "OK",
+    };
+    let msg = format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    sock.write_all(msg.as_bytes())
+}
+
+fn write_file(
+    sock: &mut TcpStream,
+    mut file: File,
+    ctype: &str,
+    start: u64,
+    end_inclusive: u64,
+    total: u64,
+    head: bool,
+) -> std::io::Result<()> {
+    if total == 0 {
+        let msg = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        );
+        return sock.write_all(msg.as_bytes());
+    }
+    if start > end_inclusive || end_inclusive >= total {
+        return write_empty(sock, 416);
+    }
+    let take = end_inclusive - start + 1;
+    let partial = start != 0 || take != total;
+    let status = if partial { 206 } else { 200 };
+    let reason = if partial { "Partial Content" } else { "OK" };
+    let mut msg = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {take}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n"
+    );
+    if partial {
+        msg.push_str(&format!("Content-Range: bytes {start}-{end_inclusive}/{total}\r\n"));
+    }
+    msg.push_str("\r\n");
+    sock.write_all(msg.as_bytes())?;
+    if head {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut left = take;
+    let mut buf = [0u8; 64 * 1024];
+    while left > 0 {
+        let chunk = left.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..chunk])?;
+        if n == 0 {
+            break;
+        }
+        sock.write_all(&buf[..n])?;
+        left -= n as u64;
+    }
+    Ok(())
+}
+
+/// `bytes=start-end`, `bytes=start-`, or `bytes=-suffix`. End is inclusive.
+pub fn parse_range(spec: &str, size: u64) -> Option<(u64, u64)> {
+    if size == 0 {
+        return None;
+    }
+    let spec = spec.trim();
+    let rest = spec
+        .strip_prefix("bytes=")
+        .or_else(|| spec.strip_prefix("bytes: "))?;
+    let range = rest.split(',').next()?.trim();
+    let (start_s, end_s) = range.split_once('-')?;
+    if start_s.is_empty() {
+        let suffix: u64 = end_s.parse().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        let start = size.saturating_sub(suffix);
+        return Some((start, size - 1));
+    }
+    let start: u64 = start_s.parse().ok()?;
+    if start >= size {
+        return None;
+    }
+    let end = if end_s.is_empty() {
+        size - 1
+    } else {
+        let end: u64 = end_s.parse().ok()?;
+        end.min(size - 1)
+    };
+    if end < start {
+        return None;
+    }
+    Some((start, end))
+}
+
+#[derive(Debug)]
+struct NoCertificateVerification;
+
+impl ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+type CastStream = StreamOwned<ClientConnection, TcpStream>;
+
+struct CastLink {
+    tcp: TcpStream,
+    mm: Rc<MessageManager<CastStream>>,
+    heartbeat: HeartbeatChannel<'static, CastStream>,
+    connection: ConnectionChannel<'static, CastStream>,
+    receiver: ReceiverChannel<'static, CastStream>,
+    media: MediaChannel<'static, CastStream>,
+    transport_id: String,
+    session_id: String,
+}
+
+impl CastLink {
+    fn connect(host: Ipv4Addr, port: u16) -> Result<Self, String> {
+        let addr = SocketAddr::from((host, port));
+        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map_err(|_| {
+            format!(
+                "TV unreachable at {host}. It may be off, or this PC and the TV are not on the same Wi-Fi."
+            )
+        })?;
+        tcp.set_nodelay(true).ok();
+        tcp.set_read_timeout(Some(Duration::from_secs(4))).ok();
+        tcp.set_write_timeout(Some(Duration::from_secs(4))).ok();
+        let tcp_ctl = tcp.try_clone().map_err(|e| format!("cast socket: {e}"))?;
+
+        let config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+            .with_no_client_auth();
+        let name = ServerName::try_from(host.to_string().as_str())
+            .map_err(|_| "TV address is not a valid cast host.".to_string())?
+            .to_owned();
+        let conn = ClientConnection::new(Arc::new(config), name)
+            .map_err(|e| format!("cast tls: {e}"))?;
+        let stream = StreamOwned::new(conn, tcp);
+        let mm = Rc::new(MessageManager::new(stream));
+        let heartbeat = HeartbeatChannel::new("sender-0", "receiver-0", Rc::clone(&mm));
+        let connection = ConnectionChannel::new("sender-0", Rc::clone(&mm));
+        let receiver = ReceiverChannel::new("sender-0", "receiver-0", Rc::clone(&mm));
+        let media = MediaChannel::new("sender-0", Rc::clone(&mm));
+        Ok(Self {
+            tcp: tcp_ctl,
+            mm,
+            heartbeat,
+            connection,
+            receiver,
+            media,
+            transport_id: String::new(),
+            session_id: String::new(),
+        })
+    }
+
+    fn set_read_timeout(&self, dur: Duration) {
+        self.tcp.set_read_timeout(Some(dur)).ok();
+    }
+
+    fn launch_receiver(&mut self) -> Result<(), String> {
+        self.set_read_timeout(Duration::from_secs(4));
+        let launched = self
+            .receiver
+            .launch_app(&CastDeviceApp::DefaultMediaReceiver)
+            .map_err(|e| format!("Could not open the TV player ({e})."))?;
+        self.connection
+            .connect(launched.transport_id.as_str())
+            .map_err(|e| format!("Could not connect to the TV player ({e})."))?;
+        self.transport_id = launched.transport_id;
+        self.session_id = launched.session_id;
+        Ok(())
+    }
+
+    fn load_url(&self, url: &str, content_type: &str, autoplay: bool) -> Result<i32, String> {
+        self.set_read_timeout(READ_RPC);
+        let media = Media {
+            content_id: url.to_string(),
+            stream_type: StreamType::Buffered,
+            content_type: content_type.to_string(),
+            metadata: None,
+            duration: None,
+        };
+        let status = self
+            .media
+            .load_with_opts(
+                self.transport_id.as_str(),
+                self.session_id.as_str(),
+                &media,
+                LoadOptions {
+                    current_time: 0.0,
+                    autoplay,
+                },
+            )
+            .map_err(|e| map_load_error(&e.to_string()))?;
+        let sid = status
+            .entries
+            .first()
+            .map(|e| e.media_session_id)
+            .ok_or_else(|| "The TV did not start playback.".to_string())?;
+        let _ = content_type;
+        Ok(sid)
+    }
+
+    fn pause(&self, sid: i32) -> Result<PlayerState, String> {
+        self.set_read_timeout(READ_RPC);
+        let entry = self
+            .media
+            .pause(self.transport_id.as_str(), sid)
+            .map_err(|e| format!("Pause did not reach the TV ({e})."))?;
+        Ok(entry.player_state)
+    }
+
+    fn play(&self, sid: i32) -> Result<PlayerState, String> {
+        self.set_read_timeout(READ_RPC);
+        let entry = self
+            .media
+            .play(self.transport_id.as_str(), sid)
+            .map_err(|e| format!("Play did not reach the TV ({e})."))?;
+        Ok(entry.player_state)
+    }
+
+    fn stop_app(&self, sid: Option<i32>) {
+        self.set_read_timeout(Duration::from_millis(800));
+        if let Some(sid) = sid {
+            let _ = self.media.stop(self.transport_id.as_str(), sid);
+        }
+        if !self.session_id.is_empty() {
+            let _ = self.receiver.stop_app(self.session_id.as_str());
+        }
+    }
+
+    fn pump(&self) -> Result<Option<PlayerState>, String> {
+        self.set_read_timeout(READ_IDLE);
+        match self.mm.receive() {
+            Ok(msg) => Ok(self.apply_message(&msg)),
+            Err(e) if cast_err_is_timeout(&e) => Ok(None),
+            Err(_) => Err(link_down_message()),
+        }
+    }
+
+    fn apply_message(&self, msg: &CastMessage) -> Option<PlayerState> {
+        if self.heartbeat.can_handle(msg) {
+            if let Ok(HeartbeatResponse::Ping) = self.heartbeat.parse(msg) {
+                let _ = self.heartbeat.pong();
+            }
+            return None;
+        }
+        if self.media.can_handle(msg) {
+            if let Ok(MediaResponse::Status(status)) = self.media.parse(msg) {
+                return status.entries.first().map(|e| e.player_state);
+            }
+            if let Ok(MediaResponse::LoadFailed(_)) = self.media.parse(msg) {
+                return Some(PlayerState::Idle);
+            }
+        }
+        None
+    }
+
+    fn ping(&self) -> Result<(), String> {
+        self.heartbeat.ping().map_err(|_| link_down_message())
+    }
+}
+
+fn map_load_error(err: &str) -> String {
+    let l = err.to_ascii_lowercase();
+    if l.contains("fail") || l.contains("invalid") || l.contains("not supported") {
+        UNSUPPORTED_MEDIA.to_string()
+    } else if is_cast_timeout(err) {
+        link_down_message()
+    } else {
+        format!("The TV did not take this slide ({err}).")
+    }
+}
+
+fn cast_err_is_timeout(err: &rust_cast::errors::Error) -> bool {
+    use std::io::ErrorKind;
+    match err {
+        rust_cast::errors::Error::Io(io) => {
+            matches!(io.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+        }
+        rust_cast::errors::Error::Timeout(_) => true,
+        _ => {
+            let l = err.to_string().to_ascii_lowercase();
+            l.contains("timed out") || l.contains("would block") || l.contains("timeout")
+        }
+    }
+}
+
+fn is_cast_timeout(err: &str) -> bool {
+    let l = err.to_ascii_lowercase();
+    l.contains("timed out") || l.contains("would block") || l.contains("timeout")
+}
+
+fn link_down_message() -> String {
+    "TV unreachable. It may be off or the Wi-Fi dropped. Cast again when it is back — you do not need to restart SlideX.".into()
+}
+
+fn player_name(state: PlayerState) -> &'static str {
+    match state {
+        PlayerState::Playing => "playing",
+        PlayerState::Paused => "paused",
+        PlayerState::Buffering => "buffering",
+        PlayerState::Idle => "idle",
+    }
+}
+
+struct SessionFlags {
+    connected: bool,
+    player_state: String,
+    remote_event: Arc<Mutex<Option<String>>>,
+    error: Option<String>,
+    media_kind: String,
+    local_cmd: Option<&'static str>,
+    local_cmd_at: Instant,
+    last_rx: Instant,
+    media_session: Option<i32>,
+}
+
+impl SessionFlags {
+    fn note_state(&mut self, state: PlayerState, from_local: bool) {
+        let name = player_name(state);
+        let prev = self.player_state.clone();
+        self.player_state = name.to_string();
+        if from_local || name == prev {
+            return;
+        }
+        if name != "paused" && name != "playing" {
+            return;
+        }
+        let matches_local = self.local_cmd == Some(if name == "paused" { "pause" } else { "play" })
+            && self.local_cmd_at.elapsed() < Duration::from_secs(2);
+        if !matches_local {
+            if let Ok(mut ev) = self.remote_event.lock() {
+                *ev = Some(name.to_string());
+            }
+        }
+    }
 }
 
 enum CastCmd {
+    SetPlaylist {
+        paths: Vec<PathBuf>,
+        reply: Sender<Result<PlaylistUpdate, String>>,
+    },
     Load {
-        kind: MediaKind,
         path: PathBuf,
-        content_type: String,
+        autoplay: bool,
         reply: Sender<Result<(), String>>,
     },
     Pause {
@@ -87,853 +1410,880 @@ enum CastCmd {
     },
 }
 
-#[derive(Clone, Copy)]
-enum MediaKind {
-    Still,
-    Video,
+struct LiveSession {
+    cmd_tx: Sender<CastCmd>,
+    status: Arc<Mutex<CastLiveStatus>>,
+    remote_event: Arc<Mutex<Option<String>>>,
+    worker: Option<JoinHandle<()>>,
 }
 
-impl MediaKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            MediaKind::Still => "still",
-            MediaKind::Video => "video",
+pub struct CastState {
+    inner: Mutex<Option<LiveSession>>,
+}
+
+impl Default for CastState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(None),
         }
     }
-}
-
-/// Resolve demo/cast-spike assets (dev tree or Tauri resource bundle).
-pub fn resolve_spike_asset(file_name: &str) -> Result<PathBuf, String> {
-    let candidates = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/cast-spike").join(file_name),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/cast-spike").join(file_name),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("resources/cast-spike").join(file_name)))
-            .unwrap_or_default(),
-    ];
-    for c in candidates {
-        if c.is_file() {
-            return c.canonicalize().map_err(|e| format!("canonicalize {}: {e}", c.display()));
-        }
-    }
-    Err(format!(
-        "spike asset not found: {file_name} (expected under demo/cast-spike/)"
-    ))
-}
-
-fn is_under_spike_root(path: &Path) -> bool {
-    let Ok(canon) = path.canonicalize() else {
-        return false;
-    };
-    let roots = [
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../demo/cast-spike"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/cast-spike"),
-    ];
-    for r in roots {
-        if let Ok(rr) = r.canonicalize() {
-            if canon.starts_with(&rr) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn assert_allowlisted_media(path: &Path) -> Result<PathBuf, String> {
-    let canon = path
-        .canonicalize()
-        .map_err(|e| format!("media path not found: {e}"))?;
-    if !is_under_spike_root(&canon) {
-        return Err(
-            "cast spike refuses path outside demo/cast-spike (no arbitrary FS / no BDO paths)"
-                .into(),
-        );
-    }
-    let ext = canon
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "mp4" | "webm" | "m4v" => Ok(canon),
-        _ => Err(format!("unsupported media extension: .{ext}")),
-    }
-}
-
-fn guess_lan_ipv4() -> Result<Ipv4Addr, String> {
-    // UDP connect does not send packets; reveals the interface used toward the LAN/default route.
-    let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("udp bind: {e}"))?;
-    sock.connect("8.8.8.8:80")
-        .map_err(|e| format!("udp connect (for LAN IP): {e}"))?;
-    match sock.local_addr().map_err(|e| e.to_string())?.ip() {
-        IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Ok(v4),
-        other => Err(format!("could not determine LAN IPv4 (got {other})")),
-    }
-}
-
-fn content_type_for(path: &Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "mp4" | "m4v" => "video/mp4",
-        "webm" => "video/webm",
-        _ => "application/octet-stream",
-    }
-}
-
-/// Label for Discover diagnostics: `Name (a.b.c.d)`.
-fn iface_label(name: &str, v4: Ipv4Addr) -> String {
-    format!("{name} ({v4})")
-}
-
-/// RFC1918 private LAN (10/8, 172.16–31/12, 192.168/16) — typical home Wi‑Fi.
-fn is_rfc1918_v4(v4: Ipv4Addr) -> bool {
-    v4.is_private()
-}
-
-/// 169.254/16 link-local (APIPA); Tailscale on Windows often shows here too.
-fn is_link_local_v4(v4: Ipv4Addr) -> bool {
-    v4.is_link_local()
-}
-
-/// 100.64.0.0/10 CGNAT — Tailscale's usual userspace range when not APIPA.
-fn is_cgnat_tailscale_v4(v4: Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (o[1] & 0xc0) == 64
-}
-
-fn is_tailscale_named(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("tailscale")
-}
-
-/// Skip Tailscale / link-local / CGNAT so Discover is not noisy when VPN is up.
-fn should_skip_browse_iface(name: &str, v4: Ipv4Addr) -> bool {
-    is_link_local_v4(v4) || is_cgnat_tailscale_v4(v4) || is_tailscale_named(name)
-}
-
-/// Prefer private LAN Wi‑Fi (RFC1918), excluding Tailscale / link-local.
-fn is_preferred_browse_iface(name: &str, v4: Ipv4Addr) -> bool {
-    is_rfc1918_v4(v4) && !should_skip_browse_iface(name, v4)
-}
-
-struct BrowseIfaces {
-    /// Labels for ifaces we intend to browse on (preferred LAN, or fallback).
-    browse: Vec<String>,
-    browse_addrs: Vec<Ipv4Addr>,
-    /// Labels briefly noted as skipped in the diagnostic.
-    skipped: Vec<String>,
-    skipped_addrs: Vec<Ipv4Addr>,
-    /// True when browse list is RFC1918-preferred (not "everything left after skip").
-    preferred_mode: bool,
-}
-
-/// Classify non-loopback IPv4 ifaces for mDNS browse preference.
-fn classify_browse_ifaces() -> BrowseIfaces {
-    let addrs = match if_addrs::get_if_addrs() {
-        Ok(a) => a,
-        Err(e) => {
-            return BrowseIfaces {
-                browse: vec![format!("(iface enum failed: {e})")],
-                browse_addrs: vec![],
-                skipped: vec![],
-                skipped_addrs: vec![],
-                preferred_mode: false,
-            };
-        }
-    };
-
-    let mut preferred: Vec<(String, Ipv4Addr)> = Vec::new();
-    let mut skipped: Vec<(String, Ipv4Addr)> = Vec::new();
-    let mut other: Vec<(String, Ipv4Addr)> = Vec::new();
-
-    for i in addrs {
-        if i.is_loopback() {
-            continue;
-        }
-        let IpAddr::V4(v4) = i.ip() else {
-            continue;
-        };
-        let label = iface_label(&i.name, v4);
-        if should_skip_browse_iface(&i.name, v4) {
-            skipped.push((label, v4));
-        } else if is_preferred_browse_iface(&i.name, v4) {
-            preferred.push((label, v4));
-        } else {
-            other.push((label, v4));
-        }
-    }
-
-    preferred.sort_by(|a, b| a.0.cmp(&b.0));
-    skipped.sort_by(|a, b| a.0.cmp(&b.0));
-    other.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let skipped_labels: Vec<String> = skipped.iter().map(|(l, _)| l.clone()).collect();
-    let skipped_addrs: Vec<Ipv4Addr> = skipped.iter().map(|(_, a)| *a).collect();
-
-    if !preferred.is_empty() {
-        BrowseIfaces {
-            browse: preferred.iter().map(|(l, _)| l.clone()).collect(),
-            browse_addrs: preferred.iter().map(|(_, a)| *a).collect(),
-            skipped: skipped_labels,
-            skipped_addrs,
-            preferred_mode: true,
-        }
-    } else {
-        // No RFC1918 Wi‑Fi — still exclude Tailscale/link-local; browse whatever remains.
-        BrowseIfaces {
-            browse: other.iter().map(|(l, _)| l.clone()).collect(),
-            browse_addrs: other.iter().map(|(_, a)| *a).collect(),
-            skipped: skipped_labels,
-            skipped_addrs,
-            preferred_mode: false,
-        }
-    }
-}
-
-fn iface_summary(interfaces: &[String]) -> String {
-    if interfaces.is_empty() {
-        "none".into()
-    } else {
-        interfaces.join(", ")
-    }
-}
-
-fn discover_iface_diagnostic(pick: &BrowseIfaces) -> String {
-    let browse = iface_summary(&pick.browse);
-    if pick.skipped.is_empty() {
-        format!("browse ifaces: [{browse}]")
-    } else {
-        let skipped = iface_summary(&pick.skipped);
-        format!("browse ifaces: [{browse}]; skipped: [{skipped}]")
-    }
-}
-
-/// Prefer RFC1918 LAN ifaces for mDNS; disable Tailscale / link-local / CGNAT.
-fn apply_browse_iface_preference(daemon: &ServiceDaemon, pick: &BrowseIfaces) {
-    if pick.preferred_mode && !pick.browse_addrs.is_empty() {
-        // Bind browse to preferred LAN only (drop Tailscale / link-local / other).
-        let _ = daemon.disable_interface(IfKind::All);
-        let kinds: Vec<IfKind> = pick
-            .browse_addrs
-            .iter()
-            .map(|a| IfKind::Addr(IpAddr::V4(*a)))
-            .collect();
-        let _ = daemon.enable_interface(kinds);
-        return;
-    }
-    // Fallback: no RFC1918 — just disable noisy Tailscale / link-local / CGNAT.
-    if !pick.skipped_addrs.is_empty() {
-        let kinds: Vec<IfKind> = pick
-            .skipped_addrs
-            .iter()
-            .map(|a| IfKind::Addr(IpAddr::V4(*a)))
-            .collect();
-        let _ = daemon.disable_interface(kinds);
-    }
-}
-
-/// Discover Cast devices via mDNS. Caps at 10s.
-/// Prefers RFC1918 LAN ifaces (e.g. 192.168.x Wi‑Fi); skips Tailscale / link-local / CGNAT.
-/// Always returns a [`CastDiscoverResult`] (devices may be empty) so the UI can show
-/// browse/skipped ifaces, the timeout used, and any mdns-sd error string.
-pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, String> {
-    let ms = timeout_ms
-        .unwrap_or(DISCOVER_DEFAULT_MS)
-        .min(DISCOVER_MAX_MS)
-        .max(500);
-    let pick = classify_browse_ifaces();
-    let interfaces = pick.browse.clone();
-    let iface_diag = discover_iface_diagnostic(&pick);
-
-    let daemon = match ServiceDaemon::new() {
-        Ok(d) => d,
-        Err(e) => {
-            let err = format!("mdns daemon: {e}");
-            let diagnostic = format!(
-                "Discover FAIL: {err}. timeout {ms}ms; {iface_diag}"
-            );
-            eprintln!("[cast-spike] {diagnostic}");
-            return Ok(CastDiscoverResult {
-                devices: vec![],
-                timeout_ms: ms,
-                interfaces,
-                error: Some(err),
-                diagnostic,
-            });
-        }
-    };
-    apply_browse_iface_preference(&daemon, &pick);
-    let receiver = match daemon.browse(CAST_SERVICE) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = daemon.shutdown();
-            let err = format!("mdns browse: {e}");
-            let diagnostic = format!(
-                "Discover FAIL: {err}. timeout {ms}ms; {iface_diag}"
-            );
-            eprintln!("[cast-spike] {diagnostic}");
-            return Ok(CastDiscoverResult {
-                devices: vec![],
-                timeout_ms: ms,
-                interfaces,
-                error: Some(err),
-                diagnostic,
-            });
-        }
-    };
-
-    let deadline = Instant::now() + Duration::from_millis(ms);
-    let mut found: HashMap<String, CastDeviceInfo> = HashMap::new();
-    let mut last_recv_err: Option<String> = None;
-
-    while Instant::now() < deadline {
-        let remain = deadline.saturating_duration_since(Instant::now());
-        let wait = remain.min(Duration::from_millis(250));
-        match receiver.recv_timeout(wait) {
-            Ok(ServiceEvent::ServiceResolved(info)) => {
-                let addrs = info.get_addresses_v4();
-                let host = addrs
-                    .into_iter()
-                    .next()
-                    .map(|a| a.to_string())
-                    .or_else(|| {
-                        Some(info.get_hostname().trim_end_matches('.').to_string())
-                            .filter(|s| !s.is_empty())
-                    })
-                    .unwrap_or_else(|| "0.0.0.0".to_string());
-                let port = info.get_port();
-                let name = info
-                    .get_property_val_str("fn")
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| {
-                        info.get_fullname()
-                            .trim_end_matches('.')
-                            .split('.')
-                            .next()
-                            .unwrap_or("Chromecast")
-                            .to_string()
-                    });
-                let model = info.get_property_val_str("md").map(|s| s.to_string());
-                let key = format!("{host}:{port}");
-                found.insert(
-                    key,
-                    CastDeviceInfo {
-                        name,
-                        host,
-                        port,
-                        model,
-                    },
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                // Timeout is normal between events; Disconnected is noteworthy.
-                let s = e.to_string();
-                if !s.to_lowercase().contains("timeout") {
-                    last_recv_err = Some(s);
-                }
-            }
-        }
-    }
-
-    let _ = daemon.shutdown();
-    let mut list: Vec<_> = found.into_values().collect();
-    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-    let (error, diagnostic) = if list.is_empty() {
-        let err = last_recv_err;
-        let err_bit = err
-            .as_ref()
-            .map(|e| format!("; mdns: {e}"))
-            .unwrap_or_default();
-        let diagnostic = format!(
-            "No Cast devices. mDNS {CAST_SERVICE} timeout {ms}ms; {iface_diag}{err_bit}"
-        );
-        (err, diagnostic)
-    } else {
-        (
-            None,
-            format!("{iface_diag}; timeout {ms}ms"),
-        )
-    };
-
-    eprintln!(
-        "[cast-spike] discover done in ≤{ms}ms → {} device(s); {}",
-        list.len(),
-        diagnostic
-    );
-    Ok(CastDiscoverResult {
-        devices: list,
-        timeout_ms: ms,
-        interfaces,
-        error,
-        diagnostic,
-    })
-}
-
-struct MediaHttp {
-    port: u16,
-    allow: Arc<Mutex<HashMap<String, PathBuf>>>,
-    stop: Arc<AtomicBool>,
-    _join: JoinHandle<()>,
-}
-
-impl MediaHttp {
-    fn start() -> Result<Self, String> {
-        // Bind 0.0.0.0 so Chromecast on LAN can reach us (not loopback-only).
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
-            .map_err(|e| format!("http bind: {e}"))?;
-        listener
-            .set_nonblocking(false)
-            .map_err(|e| format!("http set blocking: {e}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("http local_addr: {e}"))?
-            .port();
-        // tiny_http wants ownership of the listener via from_listener.
-        let server = Server::from_listener(listener, None).map_err(|e| format!("http server: {e}"))?;
-        let allow: Arc<Mutex<HashMap<String, PathBuf>>> = Arc::new(Mutex::new(HashMap::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let allow_t = Arc::clone(&allow);
-        let stop_t = Arc::clone(&stop);
-        let join = thread::spawn(move || {
-            while !stop_t.load(Ordering::SeqCst) {
-                match server.recv_timeout(Duration::from_millis(200)) {
-                    Ok(Some(req)) => {
-                        let url = req.url().to_string();
-                        let token = url
-                            .strip_prefix("/m/")
-                            .map(|s| s.split('?').next().unwrap_or(s).to_string());
-                        let path_opt = token.and_then(|t| {
-                            allow_t
-                                .lock()
-                                .ok()
-                                .and_then(|g| g.get(&t).cloned())
-                        });
-                        match path_opt {
-                            Some(path) => match File::open(&path) {
-                                Ok(mut f) => {
-                                    let mut buf = Vec::new();
-                                    if f.read_to_end(&mut buf).is_ok() {
-                                        let ctype = content_type_for(&path);
-                                        let mut resp = Response::from_data(buf);
-                                        if let Ok(h) =
-                                            Header::from_bytes("Content-Type", ctype)
-                                        {
-                                            resp.add_header(h);
-                                        }
-                                        let _ = req.respond(resp);
-                                    } else {
-                                        let _ = req.respond(Response::empty(StatusCode(500)));
-                                    }
-                                }
-                                Err(_) => {
-                                    let _ = req.respond(Response::empty(StatusCode(404)));
-                                }
-                            },
-                            None => {
-                                let _ = req.respond(Response::empty(StatusCode(404)));
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(_) => {}
-                }
-            }
-        });
-        eprintln!("[cast-spike] LAN HTTP listening 0.0.0.0:{port} (allowlisted tokens only)");
-        Ok(Self {
-            port,
-            allow,
-            stop,
-            _join: join,
-        })
-    }
-
-    fn register(&self, path: PathBuf) -> Result<String, String> {
-        let token = Uuid::new_v4().to_string().replace('-', "");
-        self.allow
-            .lock()
-            .map_err(|_| "allowlist lock".to_string())?
-            .insert(token.clone(), path);
-        Ok(token)
-    }
-
-    fn clear(&self) {
-        if let Ok(mut g) = self.allow.lock() {
-            g.clear();
-        }
-    }
-
-    fn shutdown(self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.clear();
-        // Join happens when MediaHttp drops after stop; give thread a moment.
-        let _ = self._join.join();
-        eprintln!("[cast-spike] LAN HTTP torn down");
-    }
-}
-
-fn run_cast_worker(
-    host: String,
-    port: u16,
-    device_name: String,
-    cmd_rx: Receiver<CastCmd>,
-    info_slot: Arc<Mutex<Option<CastSessionInfo>>>,
-) {
-    let http = match MediaHttp::start() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("[cast-spike] http start failed: {e}");
-            // Drain pending replies as errors.
-            while let Ok(cmd) = cmd_rx.recv() {
-                match cmd {
-                    CastCmd::Load { reply, .. }
-                    | CastCmd::Pause { reply }
-                    | CastCmd::Play { reply }
-                    | CastCmd::Disconnect { reply } => {
-                        let _ = reply.send(Err(e.clone()));
-                    }
-                }
-            }
-            return;
-        }
-    };
-    let lan_ip = match guess_lan_ipv4() {
-        Ok(ip) => ip,
-        Err(e) => {
-            eprintln!("[cast-spike] LAN IP failed: {e}");
-            http.shutdown();
-            return;
-        }
-    };
-
-    let device = match CastDevice::connect_without_host_verification(host.as_str(), port) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("[cast-spike] connect failed: {e}");
-            http.shutdown();
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                let reply = match cmd {
-                    CastCmd::Load { reply, .. }
-                    | CastCmd::Pause { reply }
-                    | CastCmd::Play { reply }
-                    | CastCmd::Disconnect { reply } => reply,
-                };
-                let _ = reply.send(Err(format!("cast connect: {e}")));
-            }
-            return;
-        }
-    };
-
-    let app = CastDeviceApp::DefaultMediaReceiver;
-
-    let launched = match device.receiver.launch_app(&app) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("[cast-spike] launch DMR failed: {e}");
-            http.shutdown();
-            return;
-        }
-    };
-
-    if let Err(e) = device.connection.connect(launched.transport_id.as_str()) {
-        eprintln!("[cast-spike] transport connect: {e}");
-        http.shutdown();
-        return;
-    }
-
-    let transport_id = launched.transport_id.clone();
-    let session_id = launched.session_id.clone();
-    let mut media_session_id: Option<i32> = None;
-    let mut running = true;
-
-    while running {
-        // Non-blocking-ish: try command with short timeout; also pump heartbeats.
-        let cmd = cmd_rx.recv_timeout(Duration::from_millis(400));
-        // Heartbeat / drain device messages
-        loop {
-            // rust_cast receive blocks; use a short attempt via try pattern unavailable —
-            // send heartbeat pong opportunistically when we get messages during loads.
-            break;
-        }
-        match cmd {
-            Ok(CastCmd::Load {
-                kind,
-                path,
-                content_type,
-                reply,
-            }) => {
-                let result = (|| {
-                    let path = assert_allowlisted_media(&path)?;
-                    http.clear();
-                    let token = http.register(path.clone())?;
-                    let url = format!("http://{lan_ip}:{}/m/{token}", http.port);
-                    let media = Media {
-                        content_id: url.clone(),
-                        stream_type: StreamType::Buffered,
-                        content_type,
-                        metadata: None,
-                        duration: None,
-                    };
-                    let status = device
-                        .media
-                        .load(transport_id.as_str(), session_id.as_str(), &media)
-                        .map_err(|e| format!("media load: {e}"))?;
-                    if let Some(entry) = status.entries.first() {
-                        media_session_id = Some(entry.media_session_id);
-                    }
-                    // Pump a few messages for heartbeat / status
-                    for _ in 0..5 {
-                        match device.receive() {
-                            Ok(ChannelMessage::Heartbeat(_)) => {
-                                let _ = device.heartbeat.pong();
-                            }
-                            Ok(_) => {}
-                            Err(_) => break,
-                        }
-                    }
-                    if let Ok(mut g) = info_slot.lock() {
-                        *g = Some(CastSessionInfo {
-                            device_name: device_name.clone(),
-                            device_host: host.clone(),
-                            device_port: port,
-                            media_kind: kind.as_str().to_string(),
-                            media_url_host: lan_ip.to_string(),
-                            http_port: http.port,
-                        });
-                    }
-                    eprintln!(
-                        "[cast-spike] loaded {} → {}:{} (http :{})",
-                        kind.as_str(),
-                        host,
-                        port,
-                        http.port
-                    );
-                    Ok(())
-                })();
-                let _ = reply.send(result);
-            }
-            Ok(CastCmd::Pause { reply }) => {
-                let result = (|| {
-                    let sid = media_session_id.ok_or_else(|| "no media session".to_string())?;
-                    device
-                        .media
-                        .pause(transport_id.as_str(), sid)
-                        .map_err(|e| format!("pause: {e}"))?;
-                    Ok(())
-                })();
-                let _ = reply.send(result);
-            }
-            Ok(CastCmd::Play { reply }) => {
-                let result = (|| {
-                    let sid = media_session_id.ok_or_else(|| "no media session".to_string())?;
-                    device
-                        .media
-                        .play(transport_id.as_str(), sid)
-                        .map_err(|e| format!("play: {e}"))?;
-                    Ok(())
-                })();
-                let _ = reply.send(result);
-            }
-            Ok(CastCmd::Disconnect { reply }) => {
-                if let Some(sid) = media_session_id {
-                    let _ = device.media.stop(transport_id.as_str(), sid);
-                }
-                let _ = device.receiver.stop_app(session_id.as_str());
-                running = false;
-                let _ = reply.send(Ok(()));
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Keep TLS alive with heartbeat if possible — try receive with care.
-                // Blocking receive would stall commands; skip unless we can timeout.
-                // rust_cast does not expose try_receive; rely on Cast device idle.
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                running = false;
-            }
-        }
-    }
-
-    http.shutdown();
-    if let Ok(mut g) = info_slot.lock() {
-        *g = None;
-    }
-    eprintln!("[cast-spike] session worker exit (clean disconnect)");
 }
 
 impl CastState {
-    fn ensure_session(
-        &self,
-        device: &CastDeviceInfo,
-    ) -> Result<Sender<CastCmd>, String> {
-        let mut guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
-        if let Some(live) = guard.as_ref() {
-            let same = live
-                .info
-                .lock()
-                .ok()
-                .and_then(|g| g.as_ref().map(|i| i.device_host == device.host))
-                .unwrap_or(false);
-            if same {
-                return Ok(live.cmd_tx.clone());
-            }
-            // Different device — tear down first
-            let old = guard.take().unwrap();
-            let (reply_tx, reply_rx) = mpsc::channel();
-            let _ = old.cmd_tx.send(CastCmd::Disconnect { reply: reply_tx });
-            let _ = reply_rx.recv_timeout(Duration::from_secs(5));
-            if let Some(h) = old._worker {
-                let _ = h.join();
-            }
-        }
+    pub fn connect(&self, host: &str, port: Option<u16>, name: Option<String>) -> Result<CastConnectInfo, String> {
+        let (ip, port) = parse_cast_host(host, port)?;
+        let snap = snapshot_ifaces();
+        let bind = snap.bind.clone().ok_or_else(|| {
+            "This PC has no home-network address to serve photos from. Disconnect VPN or Tailscale and try again.".to_string()
+        })?;
+        self.disconnect()?;
 
+        let device_name = name.unwrap_or_else(|| "Chromecast".into());
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let info_slot = Arc::new(Mutex::new(Some(CastSessionInfo {
-            device_name: device.name.clone(),
-            device_host: device.host.clone(),
-            device_port: device.port,
-            media_kind: "connecting".into(),
-            media_url_host: String::new(),
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let status = Arc::new(Mutex::new(CastLiveStatus {
+            connected: false,
+            player_state: "idle".into(),
+            remote_event: None,
+            error: None,
+            media_kind: String::new(),
             http_port: 0,
-        })));
-        let host = device.host.clone();
-        let port = device.port;
-        let name = device.name.clone();
-        let info_slot_t = Arc::clone(&info_slot);
-        let worker = thread::spawn(move || {
-            run_cast_worker(host, port, name, cmd_rx, info_slot_t);
-        });
+            bind_ip: bind.ip.to_string(),
+            }));
+        let remote_event = Arc::new(Mutex::new(None));
+        let status_t = Arc::clone(&status);
+        let remote_t = Arc::clone(&remote_event);
+        let friendly = device_name.clone();
+        let worker = thread::Builder::new()
+            .name("cast-session".into())
+            .spawn(move || {
+                run_session(ip, port, friendly, bind.ip, cmd_rx, ready_tx, status_t, remote_t);
+            })
+            .map_err(|e| format!("cast thread: {e}"))?;
 
-        // Give worker a moment to connect
-        thread::sleep(Duration::from_millis(300));
+        let info = match ready_rx.recv_timeout(Duration::from_secs(8)) {
+            Ok(Ok(info)) => info,
+            Ok(Err(e)) => {
+                let _ = worker.join();
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = cmd_tx.send(CastCmd::Disconnect {
+                    reply: mpsc::channel().0,
+                });
+                let _ = worker.join();
+                return Err(link_down_message());
+            }
+        };
+
+        let mut guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
         *guard = Some(LiveSession {
-            cmd_tx: cmd_tx.clone(),
-            info: info_slot,
-            _worker: Some(worker),
+            cmd_tx,
+            status,
+            remote_event,
+            worker: Some(worker),
         });
-        Ok(cmd_tx)
+        Ok(info)
     }
 
-    fn with_cmd<F, T>(&self, f: F) -> Result<T, String>
-    where
-        F: FnOnce(&Sender<CastCmd>) -> Result<T, String>,
-    {
-        let guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
-        let live = guard.as_ref().ok_or_else(|| "no active cast session".to_string())?;
-        f(&live.cmd_tx)
-    }
-
-    pub fn load_still(&self, device: &CastDeviceInfo) -> Result<CastSessionInfo, String> {
-        let path = resolve_spike_asset("sample-still.jpg")?;
-        let tx = self.ensure_session(device)?;
-        let (reply_tx, reply_rx) = mpsc::channel();
-        tx.send(CastCmd::Load {
-            kind: MediaKind::Still,
-            path,
-            content_type: "image/jpeg".into(),
-            reply: reply_tx,
+    pub fn set_playlist(&self, paths: Vec<String>) -> Result<PlaylistUpdate, String> {
+        let bufs = paths.iter().map(PathBuf::from).collect();
+        self.roundtrip(|tx| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            tx.send(CastCmd::SetPlaylist {
+                paths: bufs,
+                reply: reply_tx,
+            })
+            .map_err(|_| "Cast is not connected.".to_string())?;
+            reply_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| "Updating the playlist on the TV timed out.".to_string())?
         })
-        .map_err(|_| "cast worker gone".to_string())?;
-        reply_rx
-            .recv_timeout(Duration::from_secs(20))
-            .map_err(|_| "cast still timed out".to_string())??;
-        self.session_info()
     }
 
-    pub fn load_video(&self, device: &CastDeviceInfo) -> Result<CastSessionInfo, String> {
-        let path = resolve_spike_asset("sample-video.mp4")?;
-        let tx = self.ensure_session(device)?;
-        let (reply_tx, reply_rx) = mpsc::channel();
-        tx.send(CastCmd::Load {
-            kind: MediaKind::Video,
-            path,
-            content_type: "video/mp4".into(),
-            reply: reply_tx,
+    pub fn load(&self, path: String, autoplay: bool) -> Result<(), String> {
+        self.roundtrip(|tx| {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            tx.send(CastCmd::Load {
+                path: PathBuf::from(path),
+                autoplay,
+                reply: reply_tx,
+            })
+            .map_err(|_| "Cast is not connected.".to_string())?;
+            reply_rx
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| link_down_message())?
         })
-        .map_err(|_| "cast worker gone".to_string())?;
-        reply_rx
-            .recv_timeout(Duration::from_secs(30))
-            .map_err(|_| "cast video timed out".to_string())??;
-        self.session_info()
     }
 
     pub fn pause(&self) -> Result<(), String> {
-        self.with_cmd(|tx| {
+        self.roundtrip(|tx| {
             let (reply_tx, reply_rx) = mpsc::channel();
             tx.send(CastCmd::Pause { reply: reply_tx })
-                .map_err(|_| "cast worker gone".to_string())?;
+                .map_err(|_| "Cast is not connected.".to_string())?;
             reply_rx
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|_| "pause timed out".to_string())?
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| link_down_message())?
         })
     }
 
     pub fn play(&self) -> Result<(), String> {
-        self.with_cmd(|tx| {
+        self.roundtrip(|tx| {
             let (reply_tx, reply_rx) = mpsc::channel();
             tx.send(CastCmd::Play { reply: reply_tx })
-                .map_err(|_| "cast worker gone".to_string())?;
+                .map_err(|_| "Cast is not connected.".to_string())?;
             reply_rx
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|_| "play timed out".to_string())?
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_| link_down_message())?
         })
-    }
-
-    pub fn next(&self) -> Result<CastSessionInfo, String> {
-        let info = self.session_info()?;
-        let device = CastDeviceInfo {
-            name: info.device_name.clone(),
-            host: info.device_host.clone(),
-            port: info.device_port,
-            model: None,
-        };
-        // Prefer flipping still ↔ video based on current kind.
-        if info.media_kind == "still" {
-            self.load_video(&device)
-        } else {
-            self.load_still(&device)
-        }
     }
 
     pub fn disconnect(&self) -> Result<(), String> {
         let mut guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
-        let Some(live) = guard.take() else {
+        let Some(mut live) = guard.take() else {
             return Ok(());
         };
         let (reply_tx, reply_rx) = mpsc::channel();
         let _ = live.cmd_tx.send(CastCmd::Disconnect { reply: reply_tx });
-        let _ = reply_rx.recv_timeout(Duration::from_secs(8));
-        if let Some(h) = live._worker {
-            let _ = h.join();
+        let _ = reply_rx.recv_timeout(Duration::from_secs(3));
+        if let Some(worker) = live.worker.take() {
+            let _ = worker.join();
         }
         Ok(())
     }
 
-    pub fn session_info(&self) -> Result<CastSessionInfo, String> {
-        let guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
-        let live = guard.as_ref().ok_or_else(|| "no active cast session".to_string())?;
-        let info = live
-            .info
+    pub fn status(&self) -> CastLiveStatus {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return CastLiveStatus {
+                    connected: false,
+                    player_state: "idle".into(),
+                    remote_event: None,
+                    error: Some("Cast status is unavailable.".into()),
+                    media_kind: String::new(),
+                    http_port: 0,
+                    bind_ip: String::new(),
+                };
+            }
+        };
+        let Some(live) = guard.as_ref() else {
+            return CastLiveStatus {
+                connected: false,
+                player_state: "idle".into(),
+                remote_event: None,
+                error: None,
+                media_kind: String::new(),
+                http_port: 0,
+                bind_ip: String::new(),
+            };
+        };
+        let mut status = live
+            .status
             .lock()
-            .map_err(|_| "cast info lock".to_string())?
-            .clone();
-        info.ok_or_else(|| "no active cast session".into())
+            .map(|g| g.clone())
+            .unwrap_or(CastLiveStatus {
+                connected: false,
+                player_state: "idle".into(),
+                remote_event: None,
+                error: Some(link_down_message()),
+                media_kind: String::new(),
+                http_port: 0,
+                bind_ip: String::new(),
+            });
+        status.remote_event = live.remote_event.lock().ok().and_then(|mut g| g.take());
+        status
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.disconnect();
+    }
+
+    fn roundtrip<T>(&self, f: impl FnOnce(&Sender<CastCmd>) -> Result<T, String>) -> Result<T, String> {
+        let guard = self.inner.lock().map_err(|_| "cast state lock".to_string())?;
+        let live = guard.as_ref().ok_or_else(|| "Cast is not connected.".to_string())?;
+        f(&live.cmd_tx)
     }
 }
 
-// Keep Write import used for clarity in docs; silence if unused on some toolchains.
-#[allow(dead_code)]
-fn _sink_write(w: &mut dyn Write, b: &[u8]) -> std::io::Result<()> {
-    w.write_all(b)
+impl Drop for CastState {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn publish(status: &Mutex<CastLiveStatus>, edit: impl FnOnce(&mut CastLiveStatus)) {
+    if let Ok(mut g) = status.lock() {
+        edit(&mut g);
+    }
+}
+
+fn run_session(
+    host: Ipv4Addr,
+    port: u16,
+    device_name: String,
+    bind_ip: Ipv4Addr,
+    cmd_rx: Receiver<CastCmd>,
+    ready_tx: Sender<Result<CastConnectInfo, String>>,
+    status: Arc<Mutex<CastLiveStatus>>,
+    remote_event: Arc<Mutex<Option<String>>>,
+) {
+    let mut http = match MediaHttp::start_lan(bind_ip) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+            return;
+        }
+    };
+    let mut link = match CastLink::connect(host, port) {
+        Ok(l) => l,
+        Err(e) => {
+            http.shutdown();
+            let _ = ready_tx.send(Err(e));
+            return;
+        }
+    };
+    if let Err(e) = link.launch_receiver() {
+        http.shutdown();
+        let _ = ready_tx.send(Err(e));
+        return;
+    }
+
+    let info = CastConnectInfo {
+        device_name: device_name.clone(),
+        device_host: host.to_string(),
+        device_port: port,
+        bind_ip: bind_ip.to_string(),
+        http_port: http.port,
+    };
+    publish(&status, |s| {
+        s.connected = true;
+        s.http_port = http.port;
+        s.bind_ip = bind_ip.to_string();
+        s.error = None;
+    });
+    let _ = ready_tx.send(Ok(info));
+    eprintln!("[cast] session up, media port {}", http.port);
+
+    let mut flags = SessionFlags {
+        connected: true,
+        player_state: "idle".into(),
+        remote_event,
+        error: None,
+        media_kind: String::new(),
+        local_cmd: None,
+        local_cmd_at: Instant::now(),
+        last_rx: Instant::now(),
+        media_session: None,
+    };
+    let mut last_ping = Instant::now();
+    let mut running = true;
+
+    while running {
+        if flags.last_rx.elapsed() > LINK_DEAD_AFTER {
+            flags.connected = false;
+            flags.error = Some(link_down_message());
+            publish(&status, |s| {
+                s.connected = false;
+                s.error = Some(link_down_message());
+            });
+            fail_pending(&cmd_rx, &link_down_message());
+            break;
+        }
+
+        match cmd_rx.try_recv() {
+            Ok(cmd) => {
+                if !handle_cmd(cmd, &mut http, &link, &mut flags, &status, &mut running) {
+                    running = false;
+                }
+                flags.last_rx = Instant::now();
+                continue;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+
+        if last_ping.elapsed() >= Duration::from_secs(2) {
+            last_ping = Instant::now();
+            if link.ping().is_err() {
+                flags.connected = false;
+                flags.error = Some(link_down_message());
+                publish(&status, |s| {
+                    s.connected = false;
+                    s.error = Some(link_down_message());
+                });
+                fail_pending(&cmd_rx, &link_down_message());
+                break;
+            }
+        }
+
+        match link.pump() {
+            Ok(Some(state)) => {
+                flags.last_rx = Instant::now();
+                flags.note_state(state, false);
+                let name = flags.player_state.clone();
+                publish(&status, |s| {
+                    s.player_state = name;
+                    s.connected = true;
+                    s.error = None;
+                });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                flags.connected = false;
+                flags.error = Some(e.clone());
+                publish(&status, |s| {
+                    s.connected = false;
+                    s.error = Some(e.clone());
+                });
+                fail_pending(&cmd_rx, &e);
+                break;
+            }
+        }
+    }
+
+    link.stop_app(flags.media_session);
+    http.shutdown();
+    publish(&status, |s| {
+        s.connected = false;
+        if s.error.is_none() {
+            s.error = flags.error.clone();
+        }
+    });
+    eprintln!("[cast] session ended");
+}
+
+fn fail_pending(cmd_rx: &Receiver<CastCmd>, err: &str) {
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        match cmd {
+            CastCmd::SetPlaylist { reply, .. } => {
+                let _ = reply.send(Err(err.to_string()));
+            }
+            CastCmd::Load { reply, .. } | CastCmd::Pause { reply } | CastCmd::Play { reply } | CastCmd::Disconnect { reply } => {
+                let _ = reply.send(Err(err.to_string()));
+            }
+        }
+    }
+}
+
+fn handle_cmd(
+    cmd: CastCmd,
+    http: &mut MediaHttp,
+    link: &CastLink,
+    flags: &mut SessionFlags,
+    status: &Mutex<CastLiveStatus>,
+    running: &mut bool,
+) -> bool {
+    match cmd {
+        CastCmd::SetPlaylist { paths, reply } => {
+            let result = http.set_playlist(&paths);
+            let _ = reply.send(result);
+            true
+        }
+        CastCmd::Load { path, autoplay, reply } => {
+            let result = (|| {
+                let (url, ctype) = http.media_url(&path)?;
+                let kind = http.kind_of(&path)?;
+                let play = if kind == "still" { true } else { autoplay };
+                let sid = link.load_url(&url, &ctype, play)?;
+                flags.media_session = Some(sid);
+                flags.media_kind = kind.clone();
+                flags.player_state = if play { "playing" } else { "paused" }.into();
+                flags.local_cmd = Some(if play { "play" } else { "pause" });
+                flags.local_cmd_at = Instant::now();
+                flags.last_rx = Instant::now();
+                publish(status, |s| {
+                    s.connected = true;
+                    s.media_kind = kind;
+                    s.player_state = flags.player_state.clone();
+                    s.error = None;
+                });
+                eprintln!("[cast] loaded {}", flags.media_kind);
+                Ok(())
+            })();
+            let link_dead = result
+                .as_ref()
+                .err()
+                .is_some_and(|e: &String| e.contains("TV unreachable"));
+            let _ = reply.send(result);
+            if link_dead {
+                flags.connected = false;
+                publish(status, |s| {
+                    s.connected = false;
+                    s.error = Some(link_down_message());
+                });
+                return false;
+            }
+            true
+        }
+        CastCmd::Pause { reply } => {
+            flags.local_cmd = Some("pause");
+            flags.local_cmd_at = Instant::now();
+            let result = (|| {
+                let sid = flags.media_session.ok_or_else(|| "Nothing is casting.".to_string())?;
+                if flags.media_kind == "still" {
+                    flags.player_state = "paused".into();
+                    publish(status, |s| s.player_state = "paused".into());
+                    return Ok(());
+                }
+                let state = link.pause(sid)?;
+                flags.note_state(state, true);
+                flags.player_state = "paused".into();
+                flags.last_rx = Instant::now();
+                publish(status, |s| s.player_state = "paused".into());
+                Ok(())
+            })();
+            let _ = reply.send(result);
+            true
+        }
+        CastCmd::Play { reply } => {
+            flags.local_cmd = Some("play");
+            flags.local_cmd_at = Instant::now();
+            let result = (|| {
+                let sid = flags.media_session.ok_or_else(|| "Nothing is casting.".to_string())?;
+                if flags.media_kind == "still" {
+                    flags.player_state = "playing".into();
+                    publish(status, |s| s.player_state = "playing".into());
+                    return Ok(());
+                }
+                let state = link.play(sid)?;
+                flags.note_state(state, true);
+                flags.player_state = "playing".into();
+                flags.last_rx = Instant::now();
+                publish(status, |s| s.player_state = "playing".into());
+                Ok(())
+            })();
+            let _ = reply.send(result);
+            true
+        }
+        CastCmd::Disconnect { reply } => {
+            *running = false;
+            flags.connected = false;
+            publish(status, |s| {
+                s.connected = false;
+                s.error = None;
+            });
+            let _ = reply.send(Ok(()));
+            false
+        }
+    }
+}
+
+const FW_MEDIA_RULE: &str = "SlideX Cast media (Private)";
+const FW_MDNS_RULE: &str = "SlideX Cast mDNS (Private)";
+
+pub fn firewall_status() -> CastFirewallStatus {
+    #[cfg(windows)]
+    {
+        let media = netsh_show(FW_MEDIA_RULE);
+        let mdns = netsh_show(FW_MDNS_RULE);
+        return parse_firewall_pair(&media, &mdns);
+    }
+    #[cfg(not(windows))]
+    {
+        CastFirewallStatus {
+            state: "unknown".into(),
+            detail: format!(
+                "On Windows the installer adds \"{FW_MEDIA_RULE}\" and \"{FW_MDNS_RULE}\" for slideshowpro.exe: TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353, Private profile only. This check runs on Windows."
+            ),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn netsh_show(name: &str) -> String {
+    match std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+        .output()
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(e) => format!("query failed: {e}"),
+    }
+}
+
+pub fn parse_firewall_pair(media: &str, mdns: &str) -> CastFirewallStatus {
+    let media_ok = firewall_rule_ok(media, "TCP", &format!("{CAST_PORT_LO}-{CAST_PORT_HI}"));
+    let mdns_ok = firewall_rule_ok(mdns, "UDP", "5353");
+    if media_ok && mdns_ok {
+        CastFirewallStatus {
+            state: "added".into(),
+            detail: format!(
+                "Private firewall rules are installed for slideshowpro.exe: TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353."
+            ),
+        }
+    } else if media_ok || mdns_ok {
+        CastFirewallStatus {
+            state: "partial".into(),
+            detail: "Only part of the Cast firewall rule is installed. Re-run the SlideX installer and accept the Windows prompt.".into(),
+        }
+    } else if media.to_ascii_lowercase().contains("query failed") {
+        CastFirewallStatus {
+            state: "unknown".into(),
+            detail: "Could not query the Windows firewall.".into(),
+        }
+    } else {
+        CastFirewallStatus {
+            state: "missing".into(),
+            detail: format!(
+                "No Private inbound rule for slideshowpro.exe. Cast needs TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353 on private networks. Re-run the installer and accept the Windows prompt."
+            ),
+        }
+    }
+}
+
+fn firewall_rule_ok(text: &str, protocol: &str, ports: &str) -> bool {
+    let l = text.to_ascii_lowercase();
+    if l.contains("no rules match") || l.contains("query failed") {
+        return false;
+    }
+    let private = l.contains("private") && !l.contains("public");
+    // "Profiles: Private" is the success case. A rule that also lists Public is rejected
+    // because the line contains "public".
+    l.contains("slideshowpro.exe")
+        && l.contains(&protocol.to_ascii_lowercase())
+        && l.contains(&ports.to_ascii_lowercase())
+        && private
+        && l.contains("allow")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn cand(name: &str, ip: [u8; 4], prefix: u8) -> IfaceCand {
+        IfaceCand {
+            name: name.into(),
+            ip: Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
+            prefix,
+        }
+    }
+
+    #[test]
+    fn bind_prefers_home_wifi_over_tailscale_and_public() {
+        let ifaces = vec![
+            cand("Tailscale", [100, 64, 0, 5], 32),
+            cand("Ethernet", [8, 8, 8, 8], 24),
+            cand("Wi-Fi", [192, 168, 1, 20], 24),
+            cand("vEthernet", [169, 254, 1, 1], 16),
+            cand("Tailscale", [192, 168, 50, 2], 32),
+        ];
+        let pick = choose_bind_ip(&ifaces, Some(Ipv4Addr::new(100, 64, 0, 5))).unwrap();
+        assert_eq!(pick.ip, Ipv4Addr::new(192, 168, 1, 20));
+        assert!(iface_role("Tailscale", Ipv4Addr::new(100, 64, 0, 5)) == IfaceRole::Skip);
+        assert!(iface_role("eth0", Ipv4Addr::new(169, 254, 3, 4)) == IfaceRole::Skip);
+        assert!(iface_role("eth0", Ipv4Addr::UNSPECIFIED) == IfaceRole::Skip);
+        assert!(!is_safe_bind_ip(Ipv4Addr::UNSPECIFIED));
+        assert!(!is_safe_bind_ip(Ipv4Addr::new(1, 2, 3, 4)));
+        assert!(is_safe_bind_ip(Ipv4Addr::new(10, 1, 2, 3)));
+    }
+
+    #[test]
+    fn bind_uses_default_route_when_it_is_lan() {
+        let ifaces = vec![
+            cand("Wi-Fi", [192, 168, 1, 20], 24),
+            cand("Ethernet", [10, 0, 0, 8], 24),
+        ];
+        let pick = choose_bind_ip(&ifaces, Some(Ipv4Addr::new(10, 0, 0, 8))).unwrap();
+        assert_eq!(pick.ip, Ipv4Addr::new(10, 0, 0, 8));
+    }
+
+    #[test]
+    fn no_lan_means_no_bind() {
+        let ifaces = vec![
+            cand("Tailscale", [100, 64, 1, 2], 32),
+            cand("ppp", [172, 16, 0, 2], 32),
+        ];
+        // 172.16 is RFC1918 but the name is not tailscale. 172.16.0.2 is preferred.
+        let pick = choose_bind_ip(&ifaces, None).unwrap();
+        assert_eq!(pick.ip, Ipv4Addr::new(172, 16, 0, 2));
+        let only_ts = vec![cand("Tailscale", [100, 64, 1, 2], 32)];
+        assert!(choose_bind_ip(&only_ts, None).is_none());
+    }
+
+    #[test]
+    fn subnet_match_and_idle_timeout_wording() {
+        let net = Ipv4Addr::new(192, 168, 1, 20);
+        assert!(ipv4_in_subnet(Ipv4Addr::new(192, 168, 1, 55), net, 24));
+        assert!(!ipv4_in_subnet(Ipv4Addr::new(192, 168, 2, 55), net, 24));
+        assert!(is_mdns_idle_timeout("timed out waiting on a channel"));
+        assert!(is_mdns_idle_timeout("Timeout"));
+        assert!(!is_mdns_idle_timeout("channel is empty and closed"));
+        assert!(NO_TV_ERROR.contains("No TV found on this network"));
+        assert!(NO_TV_ERROR.contains("same Wi-Fi"));
+        assert!(NO_TV_ERROR.contains("firewall"));
+        assert!(NO_TV_ERROR.contains("client isolation"));
+        assert!(!NO_TV_ERROR.to_ascii_lowercase().contains("living room"));
+        let home = cand("Wi-Fi", [192, 168, 1, 20], 24);
+        assert!(device_on_home_lan(Ipv4Addr::new(192, 168, 1, 40), &[home.clone()]));
+        assert!(!device_on_home_lan(Ipv4Addr::new(192, 168, 2, 40), &[home.clone()]));
+        assert!(!device_on_home_lan(Ipv4Addr::new(8, 8, 8, 8), &[home.clone()]));
+        let other = cand("Wi-Fi", [192, 168, 1, 21], 24);
+        let fp_a = fingerprint_of(std::slice::from_ref(&home), Some(home.ip));
+        let fp_b = fingerprint_of(std::slice::from_ref(&other), Some(other.ip));
+        assert_ne!(fp_a, fp_b);
+        assert_eq!(fp_a, fingerprint_of(std::slice::from_ref(&home), Some(home.ip)));
+        assert!(parse_cast_host("192.168.1.40", None).is_ok());
+        assert_eq!(parse_cast_host("  192.168.1.40  ", Some(8009)).unwrap().1, 8009);
+    }
+
+    #[test]
+    fn refuses_unsafe_bind_without_listening() {
+        assert!(MediaHttp::start_lan(Ipv4Addr::UNSPECIFIED).is_err());
+        assert!(MediaHttp::start_lan(Ipv4Addr::new(8, 8, 8, 8)).is_err());
+        assert!(MediaHttp::start_lan(Ipv4Addr::new(100, 64, 0, 1)).is_err());
+        assert!(MediaHttp::start_lan(Ipv4Addr::new(169, 254, 1, 1)).is_err());
+        assert!((CAST_PORT_LO..=CAST_PORT_HI).all(|p| (47200..=47215).contains(&p)));
+        assert_eq!(CAST_PORT_HI - CAST_PORT_LO, 15);
+    }
+
+    fn scratch(name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("slidex-cast-{}-{}", std::process::id(), new_token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        let mut f = File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        path
+    }
+
+    fn jpeg_bytes() -> Vec<u8> {
+        vec![0xff, 0xd8, 0xff, 0xd9]
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v
+    }
+
+    fn mp4_with(entries: &[&[u8; 4]]) -> Vec<u8> {
+        fn box_of(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let size = (8 + payload.len()) as u32;
+            let mut out = size.to_be_bytes().to_vec();
+            out.extend_from_slice(typ);
+            out.extend_from_slice(payload);
+            out
+        }
+        let mut stsd_payload = vec![0, 0, 0, 0];
+        stsd_payload.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for four in entries {
+            // 4 size + 4 fourcc + 8 reserved = 16, matching the size field.
+            let entry_size: u32 = 16;
+            stsd_payload.extend_from_slice(&entry_size.to_be_bytes());
+            stsd_payload.extend_from_slice(four.as_slice());
+            stsd_payload.extend_from_slice(&[0u8; 8]);
+        }
+        let stsd = box_of(b"stsd", &stsd_payload);
+        let stbl = box_of(b"stbl", &stsd);
+        let minf = box_of(b"minf", &stbl);
+        let mdia = box_of(b"mdia", &minf);
+        let trak = box_of(b"trak", &mdia);
+        let moov = box_of(b"moov", &trak);
+        let mut ftyp = box_of(b"ftyp", b"isom");
+        // A large mdat must be skipped, not scanned, and must not hide the moov codecs.
+        let mdat = box_of(b"mdat", &[0x61, 0x76, 0x63, 0x31, 0, 0, 0, 0]);
+        ftyp.extend_from_slice(&mdat);
+        ftyp.extend_from_slice(&moov);
+        ftyp
+    }
+
+    #[test]
+    fn playlist_gate_accepts_jpeg_png_h264_and_rejects_the_rest() {
+        let jpg = scratch("a.jpg", &jpeg_bytes());
+        let png = scratch("b.png", &png_bytes());
+        let mp4 = scratch("c.mp4", &mp4_with(&[b"avc1", b"mp4a"]));
+        let hevc = scratch("d.mp4", &mp4_with(&[b"hvc1", b"mp4a"]));
+        let no_aac = scratch("e.mp4", &mp4_with(&[b"avc1"]));
+        let webp = scratch("f.webp", b"RIFF");
+        let mov = scratch("g.mov", &mp4_with(&[b"avc1", b"mp4a"]));
+        assert!(classify_playlist_file(&jpg).is_ok());
+        assert!(classify_playlist_file(&png).is_ok());
+        assert!(classify_playlist_file(&mp4).is_ok());
+        assert!(classify_playlist_file(&hevc).is_err());
+        assert!(classify_playlist_file(&no_aac).is_err());
+        assert!(classify_playlist_file(&webp).is_err());
+        assert!(classify_playlist_file(&mov).is_err());
+        assert!(mp4_is_h264_aac(&mp4).unwrap());
+        assert!(!mp4_is_h264_aac(&hevc).unwrap());
+    }
+
+    #[test]
+    fn token_allowlist_serves_only_playlist_files_and_blocks_traversal() {
+        let jpg = scratch("slide.jpg", &jpeg_bytes());
+        let other = scratch("secret.jpg", &jpeg_bytes());
+        let png = scratch("two.png", &png_bytes());
+        let http = MediaHttp::bind_on(Ipv4Addr::LOCALHOST, std::iter::once(0)).unwrap();
+        assert_eq!(http.bind_ip, Ipv4Addr::LOCALHOST);
+        assert_ne!(http.bind_ip, Ipv4Addr::UNSPECIFIED);
+        let update = http.set_playlist(&[jpg.clone(), png.clone(), other.with_file_name("nope.webp")]).unwrap();
+        assert_eq!(update.registered, 2);
+        assert!(!update.skipped.is_empty());
+
+        let (url_jpg, _) = http.media_url(&jpg).unwrap();
+        let (url_png, _) = http.media_url(&png).unwrap();
+        assert!(http.media_url(&other).is_err());
+        let token = {
+            let book = http.book.lock().unwrap();
+            assert_eq!(book.token.len(), 32);
+            assert!(!url_jpg.contains(&jpg.display().to_string()));
+            assert!(url_jpg.contains(&book.token));
+            book.token.clone()
+        };
+        assert_ne!(
+            url_jpg.split('/').last().unwrap(),
+            url_png.split('/').last().unwrap()
+        );
+
+        let (status, body) = http_get(http.bind_ip, http.port, &url_path(&url_jpg));
+        assert_eq!(status, 200, "{body:?}");
+        assert_eq!(body, jpeg_bytes());
+
+        let (status, _) = http_get(http.bind_ip, http.port, "/");
+        assert_eq!(status, 404);
+        let (status, _) = http_get(http.bind_ip, http.port, "/m/");
+        assert_eq!(status, 404);
+        let (status, _) = http_get(http.bind_ip, http.port, &format!("/m/{token}"));
+        assert_eq!(status, 404);
+        let (status, _) = http_get(
+            http.bind_ip,
+            http.port,
+            &format!("/m/{token}/{}", "deadbeef".repeat(4)),
+        );
+        assert_eq!(status, 404);
+        let (status, _) = http_get(http.bind_ip, http.port, &format!("/m/{token}/../../etc/passwd"));
+        assert_eq!(status, 404);
+        let (status, _) = http_get(http.bind_ip, http.port, &format!("/m/{token}/%2e%2e/secret.jpg"));
+        assert_eq!(status, 404);
+        let (status, _) = http_get(
+            http.bind_ip,
+            http.port,
+            &format!("/m/not-the-token/{}", url_jpg.split('/').last().unwrap()),
+        );
+        assert_eq!(status, 404);
+
+        // Path is not a URL key. Using the filename must not serve the file.
+        let (status, _) = http_get(http.bind_ip, http.port, &format!("/m/{token}/slide.jpg"));
+        assert_eq!(status, 404);
+
+        let (status, body) = http_get(http.bind_ip, http.port, &format!("{}?x=1", url_path(&url_png)));
+        assert_eq!(status, 200);
+        assert!(body.starts_with(b"\x89PNG"));
+
+        // Range for video-style clients.
+        let (status, hdr_body) = http_get_range(http.bind_ip, http.port, &url_path(&url_jpg), "bytes=1-2");
+        assert_eq!(status, 206, "{hdr_body:?}");
+        assert_eq!(hdr_body, vec![0xd8, 0xff]);
+
+        // Revoke on disconnect: a new token and an empty book.
+        {
+            let mut book = http.book.lock().unwrap();
+            book.revoke();
+            assert!(book.files.is_empty());
+            assert_ne!(book.token, token);
+        }
+        let (status, _) = http_get(http.bind_ip, http.port, &url_path(&url_jpg));
+        assert_eq!(status, 404);
+
+        let port = http.port;
+        drop(http);
+        let refused = TcpStream::connect_timeout(
+            &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            Duration::from_millis(400),
+        );
+        assert!(refused.is_err(), "media server must close when casting stops");
+    }
+
+    #[test]
+    fn resolve_helper_rejects_listing_and_foreign_keys() {
+        let mut book = AllowBook::new();
+        let path = scratch("only.jpg", &jpeg_bytes());
+        let update = replace_playlist(&mut book, &[path]);
+        assert_eq!(update.registered, 1);
+        let key = book.files.keys().next().unwrap().clone();
+        let token = book.token.clone();
+        assert!(resolve_media_url(&format!("/m/{token}/{key}"), &book).is_ok());
+        assert!(resolve_media_url("/", &book).is_err());
+        assert!(resolve_media_url(&format!("/m/{token}/{key}/extra"), &book).is_err());
+        assert!(resolve_media_url(&format!("/m/{token}/../{key}"), &book).is_err());
+        let mut other = AllowBook::new();
+        assert!(resolve_media_url(&format!("/m/{}/{}", other.token, key), &book).is_err());
+        other.revoke();
+    }
+
+    #[test]
+    fn manual_ip_rejects_public_and_accepts_lan() {
+        assert!(parse_cast_host("192.168.1.55", None).is_ok());
+        assert!(parse_cast_host("8.8.8.8", Some(8009)).is_err());
+        assert!(parse_cast_host("100.64.0.2", None).is_err());
+        assert!(parse_cast_host("not-a-host", None).is_err());
+        assert!(parse_cast_host("192.168.1.55", Some(0)).is_err());
+    }
+
+    #[test]
+    fn firewall_parser_requires_private_profile_and_ports() {
+        let media = "\
+Rule Name: SlideX Cast media (Private)
+Enabled: Yes
+Direction: In
+Profiles: Private
+LocalPort: 47200-47215
+Protocol: TCP
+Action: Allow
+Program: C:\\Users\\qa\\AppData\\Local\\SlideShowX\\slideshowpro.exe
+";
+        let mdns = "\
+Rule Name: SlideX Cast mDNS (Private)
+Profiles: Private
+LocalPort: 5353
+Protocol: UDP
+Action: Allow
+Program: C:\\Users\\qa\\AppData\\Local\\SlideShowX\\slideshowpro.exe
+";
+        let ok = parse_firewall_pair(media, mdns);
+        assert_eq!(ok.state, "added");
+        let missing = parse_firewall_pair("No rules match the specified criteria.", "No rules match");
+        assert_eq!(missing.state, "missing");
+        let public_rule = media.replace("Profiles: Private", "Profiles: Public");
+        let bad = parse_firewall_pair(&public_rule, mdns);
+        assert_ne!(bad.state, "added");
+    }
+
+    fn url_path(url: &str) -> String {
+        let rest = url.split("://").nth(1).unwrap();
+        let path = rest.split_once('/').map(|(_, p)| p).unwrap_or("");
+        format!("/{path}")
+    }
+
+    fn http_get(ip: Ipv4Addr, port: u16, path: &str) -> (u16, Vec<u8>) {
+        http_exchange(ip, port, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    }
+
+    fn http_get_range(ip: Ipv4Addr, port: u16, path: &str, range: &str) -> (u16, Vec<u8>) {
+        http_exchange(
+            ip,
+            port,
+            &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nRange: {range}\r\nConnection: close\r\n\r\n"),
+        )
+    }
+
+    fn http_exchange(ip: Ipv4Addr, port: u16, req: &str) -> (u16, Vec<u8>) {
+        let mut sock = TcpStream::connect_timeout(&SocketAddr::from((ip, port)), Duration::from_secs(2)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(2))).ok();
+        sock.write_all(req.as_bytes()).unwrap();
+        let mut buf = Vec::new();
+        sock.read_to_end(&mut buf).unwrap();
+        let text = String::from_utf8_lossy(&buf);
+        let status: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        let body = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| buf[i + 4..].to_vec())
+            .unwrap_or_default();
+        (status, body)
+    }
 }
