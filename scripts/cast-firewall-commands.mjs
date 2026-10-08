@@ -195,11 +195,43 @@ function readStatus(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
+// os.tmpdir() on the GitHub runner is an 8.3 path (C:\Users\RUNNER~1\...).
+// netsh reports "The application name could not be resolved" for that form,
+// and also for a zero-byte file. Use the long path and a real PE image.
+function stripDevicePrefix(p) {
+  if (p.startsWith('\\\\?\\UNC\\')) return `\\\\${p.slice('\\\\?\\UNC\\'.length)}`;
+  if (p.startsWith('\\\\?\\')) return p.slice('\\\\?\\'.length);
+  return p;
+}
+
+function prepareInstallDir() {
+  const candidates = [];
+  try {
+    candidates.push(path.join(stripDevicePrefix(fs.realpathSync.native(os.tmpdir())), 'SlideX Cast CI'));
+  } catch {
+    // TEMP can be missing in a stripped environment. The drive root is the fallback.
+  }
+  candidates.push(`${process.env.SystemDrive || 'C:'}\\SlideX Cast CI`);
+  const errors = [];
+  for (const dir of candidates) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.mkdirSync(dir, { recursive: true });
+      const resolved = stripDevicePrefix(fs.realpathSync.native(dir));
+      if (!resolved.includes('~')) return resolved;
+      errors.push(`${resolved} is still a short path`);
+      fs.rmSync(resolved, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(`${dir}: ${error.message}`);
+    }
+  }
+  fail(`could not create an install dir netsh can resolve\n${errors.join('\n')}`);
+}
+
 const apply = process.argv.includes('--apply');
+if (apply && process.platform !== 'win32') fail('--apply runs on Windows');
 const sysDir = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
-const instDir = apply
-  ? path.join(os.tmpdir(), 'SlideX Cast CI')
-  : 'C:\\SlideX Cast CI';
+const instDir = apply ? prepareInstallDir() : 'C:\\SlideX Cast CI';
 
 const loaded = loadCommands(instDir, sysDir);
 assertPlainQuotes('install', loaded.installParams, instDir, loaded.binary);
@@ -219,12 +251,8 @@ if (!apply) {
   process.exit(0);
 }
 
-if (process.platform !== 'win32') fail('--apply runs on Windows');
-
-fs.rmSync(instDir, { recursive: true, force: true });
-fs.mkdirSync(instDir, { recursive: true });
 const exePath = path.join(instDir, `${loaded.binary}.exe`);
-fs.writeFileSync(exePath, '');
+fs.copyFileSync(path.join(sysDir, 'cmd.exe'), exePath);
 const statusFile = path.join(instDir, 'cast-firewall.txt');
 
 try {
