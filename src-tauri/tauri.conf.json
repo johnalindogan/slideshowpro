@@ -3,6 +3,7 @@
   "productName": "SlideX",
   "version": "0.1.7",
   "identifier": "com.johnalindogan.slideshowpro",
+  "mainBinaryName": "slideshowpro",
   "build": {
     "frontendDist": "../ui"
   },
