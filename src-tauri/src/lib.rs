@@ -10,6 +10,10 @@ use serde::Serialize;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+/// Replaces Tauri's default WebView2 args, so the disable-features list must stay.
+const HIGH_PERF_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force_high_performance_gpu";
+
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
 ];
@@ -82,10 +86,16 @@ fn strip_surrounding_quotes(s: &str) -> &str {
 /// Parse CLI / Open-with args into image/video paths.
 /// Only treat args that start with `file:` as URLs — `Url::parse` would otherwise
 /// treat Windows paths like `C:/foo.jpg` as scheme `"c"` and drop them.
-fn parse_launch_args() -> Vec<PathBuf> {
+/// The executable path is kept in the list and dropped by the media filter, so a
+/// second-instance argv that still starts with the exe does not hide the first file.
+fn parse_launch_arg_list<I, S>(args: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut files = Vec::new();
-    for maybe_file in std::env::args().skip(1) {
-        let arg = strip_surrounding_quotes(&maybe_file);
+    for maybe_file in args {
+        let arg = strip_surrounding_quotes(maybe_file.as_ref());
         if arg.is_empty() || arg.starts_with('-') {
             continue;
         }
@@ -102,6 +112,18 @@ fn parse_launch_args() -> Vec<PathBuf> {
         files.push(PathBuf::from(arg));
     }
     files.into_iter().filter(|p| is_media_path(p)).collect()
+}
+
+fn parse_launch_args() -> Vec<PathBuf> {
+    parse_launch_arg_list(std::env::args())
+}
+
+fn focus_or_restore_main(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
@@ -719,6 +741,33 @@ mod slidex_store_tests {
         assert_eq!(playlist_slug(" Beach "), playlist_slug("beach"));
         assert_ne!(playlist_slug("Beach"), playlist_slug("Shore"));
     }
+
+    #[test]
+    fn second_launch_forwards_open_with_paths_and_drops_the_exe() {
+        let files = parse_launch_arg_list([
+            r"C:\Program Files\SlideX\slideshowpro.exe",
+            r"C:\Photos\Beach.jpg",
+            "--flag",
+            r"D:\clip.mp4",
+            "notes.txt",
+            "file:///tmp/other.png",
+        ]);
+        assert_eq!(files.len(), 3);
+        let shown: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        assert!(shown[0].ends_with("Beach.jpg"), "{}", shown[0]);
+        assert!(shown[1].ends_with("clip.mp4"), "{}", shown[1]);
+        assert!(shown[2].ends_with("other.png"), "{}", shown[2]);
+    }
+
+    #[test]
+    fn gpu_args_keep_the_default_disable_features_list() {
+        assert!(HIGH_PERF_BROWSER_ARGS.contains(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
+        ));
+        assert!(HIGH_PERF_BROWSER_ARGS.contains("--force_high_performance_gpu"));
+        let conf = include_str!("../tauri.conf.json");
+        assert!(conf.contains(HIGH_PERF_BROWSER_ARGS));
+    }
 }
 
 #[tauri::command]
@@ -767,6 +816,7 @@ async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
         .min_inner_size(360.0, 420.0)
         .resizable(true)
         .focused(true)
+        .additional_browser_args(HIGH_PERF_BROWSER_ARGS)
         .build()
         {
             eprintln!("[slideshowpro] open_playlist_window build failed: {e}");
@@ -861,6 +911,13 @@ fn cast_session(state: State<'_, cast::CastState>) -> Result<Option<cast::CastSe
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            focus_or_restore_main(app);
+            let files = parse_launch_arg_list(args);
+            if !files.is_empty() {
+                store_launch_paths(app, files);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(LaunchState::default())
         .manage(AllowedMedia::default())
@@ -920,6 +977,16 @@ pub fn run() {
                 return;
             }
             inject_launch_paths_to_webview(webview.app_handle());
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                // The Media Manager may be open or hidden. Closing main must
+                // exit so no windowless copy stays alive.
+                window.app_handle().exit(0);
+            }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

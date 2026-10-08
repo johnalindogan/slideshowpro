@@ -358,7 +358,12 @@ Function PageLeaveReinstall
  ${Else}
  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
  ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
- ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
+ ; Upgrading ($R0 = 1) must pass /UPDATE so the old uninstaller cannot
+ ; delete app data, even if its "delete app data" box is checked.
+ ${If} $UpdateMode = 1
+ ${OrIf} $R0 = 1
+ StrCpy $R1 "$R1 /UPDATE"
+ ${EndIf}
  ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
  StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
  ExecWait '$R1' $0
@@ -431,6 +436,10 @@ Var DeleteAppDataCheckboxState
 !define /ifndef WS_EX_LAYOUTRTL 0x00400000
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
+ ; Updates never offer this. Only an explicit uninstall may delete app data.
+ ${If} $UpdateMode = 1
+  Return
+ ${EndIf}
  ; $1 inner dialog HWND
  ; $2 window DPI
  ; $3 style
@@ -461,6 +470,10 @@ Function un.ConfirmShow ; Add add a `Delete app data` check box
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
 Function un.ConfirmLeave
+ ${If} $UpdateMode = 1
+  StrCpy $DeleteAppDataCheckboxState 0
+  Return
+ ${EndIf}
  SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
@@ -637,6 +650,52 @@ Section WebView2
  ${EndIf}
 SectionEnd
 
+; Close a running SlideX before replacing files. Ask it to exit (taskkill
+; without /F posts WM_CLOSE), wait a few seconds, and only then force-close.
+; The message tells the user SlideX will close. It does not offer to kill the app.
+!macro CloseSlideXForUpdate executableName
+ !define UniqueID ${__LINE__}
+ !if "${INSTALLMODE}" == "currentUser"
+  nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
+ !else
+  nsis_tauri_utils::FindProcess "${executableName}"
+ !endif
+ Pop $R0
+ ${If} $R0 = 0
+  IfSilent slidex_close_${UniqueID} 0
+  ${If} $PassiveMode != 1
+   MessageBox MB_OKCANCEL "SlideX will close to finish the update." IDOK slidex_close_${UniqueID} IDCANCEL slidex_cancel_${UniqueID}
+  ${EndIf}
+  slidex_close_${UniqueID}:
+  ; Graceful close first.
+  ExecWait '"$SYSDIR\taskkill.exe" /IM "${executableName}"' $R9
+  StrCpy $R8 0
+  slidex_wait_${UniqueID}:
+   Sleep 500
+   IntOp $R8 $R8 + 1
+   !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
+   !else
+    nsis_tauri_utils::FindProcess "${executableName}"
+   !endif
+   Pop $R0
+   ${If} $R0 != 0
+    Goto slidex_done_${UniqueID}
+   ${EndIf}
+   ${If} $R8 < 10
+    Goto slidex_wait_${UniqueID}
+   ${EndIf}
+  ; Still running after a few seconds: force-close.
+  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM "${executableName}"' $R9
+  Sleep 500
+  Goto slidex_done_${UniqueID}
+  slidex_cancel_${UniqueID}:
+  Abort "SlideX is still running. Close it, then run the installer again."
+  slidex_done_${UniqueID}:
+ ${EndIf}
+ !undef UniqueID
+!macroend
+
 Section Install
  SetOutPath $INSTDIR
 
@@ -644,7 +703,7 @@ Section Install
  !insertmacro NSIS_HOOK_PREINSTALL
  !endif
 
- !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe"
 
  ; Copy main executable
  File "${MAINBINARYSRCPATH}"
@@ -781,7 +840,7 @@ Section Uninstall
  !insertmacro NSIS_HOOK_PREUNINSTALL
  !endif
 
- !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+ !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe"
 
  ; Delete the app directory and its content from disk
  ; Copy main executable
@@ -866,8 +925,15 @@ Section Uninstall
  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
  ${EndIf}
 
- ; Delete app data if the checkbox is selected
- ; and if not updating
+ ; Delete app data only for an explicit uninstall with the checkbox checked.
+ ; Never during an update (/UPDATE), including uninstall-before-install.
+ ; This is the only place that removes:
+ ;   %LOCALAPPDATA%\${BUNDLEID}
+ ;   %APPDATA%\${BUNDLEID}
+ ;   and the WebView2 EBWebView data inside the local folder.
+ ${If} $UpdateMode = 1
+  StrCpy $DeleteAppDataCheckboxState 0
+ ${EndIf}
  ${If} $DeleteAppDataCheckboxState = 1
  ${AndIf} $UpdateMode <> 1
  ; Clear the install location $INSTDIR from registry

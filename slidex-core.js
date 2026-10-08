@@ -331,6 +331,40 @@
     return prefixes;
   }
 
+  var DEFAULT_IMAGE_DURATION_MS = 10000;
+  var IMAGE_DURATION_CHOICES_MS = [3000, 4000, 6000, 8000, 10000, 12000];
+
+  function savedImageDuration(stored) {
+    var n = parseInt(stored, 10);
+    for (var i = 0; i < IMAGE_DURATION_CHOICES_MS.length; i++) {
+      if (IMAGE_DURATION_CHOICES_MS[i] === n) return n;
+    }
+    return DEFAULT_IMAGE_DURATION_MS;
+  }
+
+  /* Per-item playlist duration wins, including values outside the menu (20s). */
+  function resolveImageDuration(custom, fallback) {
+    var n = parseInt(custom, 10);
+    if (n > 0) return n;
+    return savedImageDuration(fallback);
+  }
+
+  function loadingStatusText(index, total) {
+    return 'Loading ' + index + ' of ' + total + '\u2026';
+  }
+
+  /* index is the 1-based file currently loading. Finished loads are not visible and never block clicks. */
+  function backgroundLoadStep(index, total) {
+    var t = total | 0;
+    var i = index | 0;
+    var visible = t > 0 && i >= 1 && i <= t;
+    return {
+      text: visible ? loadingStatusText(i, t) : '',
+      visible: visible,
+      blocksClicks: false
+    };
+  }
+
   function playlistNameKey(name) {
     return String(name || '').trim().toLowerCase();
   }
@@ -836,6 +870,12 @@
     planLocate: planLocate,
     playlistNameKey: playlistNameKey,
     playlistNamesMatch: playlistNamesMatch,
+    DEFAULT_IMAGE_DURATION_MS: DEFAULT_IMAGE_DURATION_MS,
+    IMAGE_DURATION_CHOICES_MS: IMAGE_DURATION_CHOICES_MS,
+    savedImageDuration: savedImageDuration,
+    resolveImageDuration: resolveImageDuration,
+    loadingStatusText: loadingStatusText,
+    backgroundLoadStep: backgroundLoadStep,
     buildPlaylistDocument: buildPlaylistDocument,
     normalizePlaylist: normalizePlaylist,
     restoreItemFields: restoreItemFields,

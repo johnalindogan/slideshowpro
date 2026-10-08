@@ -366,3 +366,76 @@ test('the slideshow wires Alt+Backspace before Backspace removal and keeps Hue +
   assert.match(html, /id:'zoomOut',\s+label:'Zoom Out',\s+def:'-'/);
   assert.match(html, /id:'panRst',\s+label:'Reset Pan\/Zoom',\s+def:'p'/);
 });
+
+test('background load status names the current file and never blocks clicks', () => {
+  const mid = C.backgroundLoadStep(3, 12);
+  assert.equal(mid.text, 'Loading 3 of 12…');
+  assert.equal(mid.visible, true);
+  assert.equal(mid.blocksClicks, false);
+  assert.equal(C.loadingStatusText(3, 12), 'Loading 3 of 12…');
+  const done = C.backgroundLoadStep(13, 12);
+  assert.equal(done.visible, false);
+  assert.equal(done.text, '');
+  assert.equal(done.blocksClicks, false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id="loadstatus"/);
+  assert.match(html, /#loadstatus\{[^}]*pointer-events:none/);
+  assert.doesNotMatch(html, /id="loadstatus"[^>]*aria-modal/);
+  assert.match(html, /showLoadStatus\(i \+ 1, total\)/);
+  assert.match(html, /await yieldToMain\(\)/);
+});
+
+test('default image duration is 10 seconds and a saved per-item duration wins', () => {
+  assert.equal(C.DEFAULT_IMAGE_DURATION_MS, 10000);
+  assert.ok(C.IMAGE_DURATION_CHOICES_MS.includes(10000));
+  assert.equal(C.savedImageDuration(null), 10000);
+  assert.equal(C.savedImageDuration('8000'), 8000);
+  assert.equal(C.savedImageDuration('999'), 10000);
+  assert.equal(C.resolveImageDuration(undefined, 10000), 10000);
+  assert.equal(C.resolveImageDuration(4000, 10000), 4000);
+  assert.equal(C.resolveImageDuration(20000, 10000), 20000);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /value="10000" selected>10s/);
+  assert.match(html, /ssp_default_dur/);
+  assert.match(html, /\[10000,'10s'\]/);
+});
+
+test('0.1.8 versions match and the welcome screen reads getVersion()', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+  const tauri = JSON.parse(fs.readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const cargo = fs.readFileSync(new URL('./src-tauri/Cargo.toml', import.meta.url), 'utf8');
+  const lock = fs.readFileSync(new URL('./package-lock.json', import.meta.url), 'utf8');
+  const lib = fs.readFileSync(new URL('./src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.equal(pkg.version, '0.1.8');
+  assert.equal(tauri.version, '0.1.8');
+  assert.equal(tauri.identifier, 'com.johnalindogan.slideshowpro');
+  assert.match(cargo, /^version = "0\.1\.8"/m);
+  assert.match(lock, /"version": "0\.1\.8"/);
+  assert.equal(
+    tauri.app.windows[0].additionalBrowserArgs,
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force_high_performance_gpu'
+  );
+  assert.match(lib, /HIGH_PERF_BROWSER_ARGS/);
+  assert.match(lib, /additional_browser_args\(HIGH_PERF_BROWSER_ARGS\)/);
+  assert.match(lib, /tauri_plugin_single_instance::init/);
+  assert.match(lib, /window\.app_handle\(\)\.exit\(0\)/);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id="lver"/);
+  assert.match(html, /const getVersion = window\.__TAURI__ && window\.__TAURI__\.app && window\.__TAURI__\.app\.getVersion/);
+  assert.match(html, /el\.textContent = String\(version\)/);
+});
+
+test('installer asks SlideX to close and never deletes app data on update', () => {
+  const nsi = fs.readFileSync(new URL('./src-tauri/windows/installer.nsi', import.meta.url), 'utf8');
+  assert.match(nsi, /SlideX will close to finish the update\./);
+  assert.doesNotMatch(nsi, /Click OK to kill it/);
+  assert.match(nsi, /taskkill\.exe" \/IM/);
+  assert.match(nsi, /taskkill\.exe" \/F \/T \/IM/);
+  assert.match(nsi, /\$R0 = 1/);
+  assert.match(nsi, /StrCpy \$R1 "\$R1 \/UPDATE"/);
+  assert.match(nsi, /EBWebView/);
+  assert.match(nsi, /UPGRADEPRODUCTNAME "SlideShowX"/);
+  const deleteAt = nsi.indexOf('RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"');
+  const guardAt = nsi.lastIndexOf('$UpdateMode <> 1', deleteAt);
+  assert.ok(deleteAt !== -1 && guardAt !== -1 && deleteAt - guardAt < 500);
+});
