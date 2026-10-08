@@ -448,6 +448,11 @@ test('installer asks SlideX to close and never deletes app data on update', () =
   const macro = nsi.slice(macroStart, macroEnd);
   assert.ok(macro.indexOf('Push $R0') < macro.indexOf('FindProcess'));
   assert.match(macro, /Pop \$R0/);
+  assert.match(macro, /!define UniqueID \$\{__COUNTER__\}/);
+  assert.doesNotMatch(macro, /__LINE__/);
+  assert.ok(macro.indexOf('BringToFront') < macro.indexOf('Abort'));
+  const labelUses = macro.match(/slidex_(?:close|wait|done|cancel)_\$\{UniqueID\}/g) || [];
+  assert.ok(labelUses.length >= 4);
   const start = nsi.indexOf('reinst_uninstall:');
   const end = nsi.indexOf('reinst_done:', start);
   const block = nsi.slice(start, end);
@@ -460,6 +465,15 @@ test('installer asks SlideX to close and never deletes app data on update', () =
   const secondClose = block.lastIndexOf('!insertmacro CloseSlideXForUpdate');
   const secondExec = block.lastIndexOf("ExecWait '$R1'");
   assert.ok(updateAt !== -1 && updateAt < secondClose && secondClose < secondExec);
+  const firstClose = block.indexOf('!insertmacro CloseSlideXForUpdate');
+  const firstHide = block.indexOf('HideWindow');
+  const firstExec = block.indexOf("ExecWait '$R1'");
+  const secondHide = block.lastIndexOf('HideWindow');
+  assert.equal((block.match(/^\s*HideWindow/gm) || []).length, 2);
+  assert.ok(firstClose < firstHide && firstHide < firstExec);
+  assert.ok(secondClose < secondHide && secondHide < secondExec);
+  const insertions = nsi.match(/!insertmacro CloseSlideXForUpdate/g) || [];
+  assert.ok(insertions.length >= 2);
 });
 
 test('save before exit writes the duration and the session, then acks', () => {

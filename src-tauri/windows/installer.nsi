@@ -316,7 +316,7 @@ FunctionEnd
 ; The message tells the user SlideX will close. It does not offer to kill the app.
 ; $R0 is saved: at reinst_uninstall it is the semver compare used to pass /UPDATE.
 !macro CloseSlideXForUpdate executableName closeMessage
- !define UniqueID ${__LINE__}
+ !define UniqueID ${__COUNTER__}
  Push $R0
  !if "${INSTALLMODE}" == "currentUser"
   nsis_tauri_utils::FindProcessCurrentUser "${executableName}"
@@ -353,6 +353,7 @@ FunctionEnd
   Sleep 500
   Goto slidex_done_${UniqueID}
   slidex_cancel_${UniqueID}:
+  BringToFront
   Pop $R0
   Abort "SlideX is still running. Close it, then run the installer again."
   slidex_done_${UniqueID}:
@@ -399,13 +400,13 @@ Function PageLeaveReinstall
  ${EndIf}
 
  reinst_uninstall:
- HideWindow
  ClearErrors
 
  ${If} $WixMode = 1
  ReadRegStr $R1 HKLM "$R6" "UninstallString"
- ; Close SlideX before the old uninstaller so its kill prompt never appears.
+ ; Close SlideX while this window is still visible. Cancel leaves it up.
  !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
+ HideWindow
  ExecWait '$R1' $0
  ${Else}
  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
@@ -418,8 +419,9 @@ Function PageLeaveReinstall
  ${EndIf}
  ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
  StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
- ; $R0 already decided /UPDATE above. Close now, then run the old uninstaller.
+ ; $R0 already decided /UPDATE above. Close now, then hide, then uninstall.
  !insertmacro CloseSlideXForUpdate "${MAINBINARYNAME}.exe" "SlideX will close to finish the update."
+ HideWindow
  ExecWait '$R1' $0
  ${EndIf}
 
