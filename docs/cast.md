@@ -28,6 +28,16 @@ Plain error when nothing answers:
 
 > No TV found on this network. Check that the PC and TV are on the same Wi-Fi, the firewall, or the router's client isolation.
 
+If Windows has marked the home-LAN adapter Public, discovery, a cast that never starts, and a photo or video that does not load within 15 seconds all show this instead:
+
+> This Wi-Fi is set to Public in Windows. Set it to Private to cast.
+
+The category comes from `Get-NetConnectionProfile` on the adapter SlideX bound (the interface alias, not the SSID). Private and Domain keep the scenario message. If the category cannot be read, it is treated as unknown and the scenario message stays. SlideX does not change the category.
+
+When the TV is found but the slide does not start within 15 seconds, and the network is Private or the category cannot be read:
+
+> The TV was found, but the photo or video did not load within 15 seconds.
+
 The status line also names the adapters that were browsed and, when the PC has no home-LAN address, that VPN or Tailscale may be the only route. The slideshow keeps working, and Cast can be tried again without restarting.
 
 ## Media server
@@ -36,6 +46,7 @@ The status line also names the adapters that were browsed and, when the PC has n
 - Port is chosen at random inside TCP **47200–47215** so the firewall rule can name that range. UDP 5353 is discovery only.
 - Each URL is `http://<lan-ip>:<port>/m/<session-token>/<file-key>`. The token is per session. The key is random per playlist file. The frontend is not given the token.
 - Only files in the current playlist are registered. Directory listing, `..`, encoded dots, extra path segments, and a wrong token are 404. The book is replaced when the playlist changes and revoked when casting stops. The listener closes on disconnect and when the app exits.
+- Each connection is its own thread, up to 8 at once. Past that the server answers 503 and does not queue. Every 64 KB, and whenever a write times out, the thread checks the stop flag and that the session token is still valid. Stop or a revoke closes the socket, so a video range cannot hold the next photo or a shutdown.
 - Nothing is logged that contains a token, a device UUID, or a full path.
 - After the token check, `transform_media` opens the allowlisted file. That is the identity transform. A later slideshow-only crop sidecar can return a generated still from that function without changing auth or the socket loop. Crop is not implemented in this release.
 
@@ -53,16 +64,16 @@ Connecting again starts a new session and a new token. The app does not need a r
 
 ## Firewall
 
-The NSIS install is per-user (`RequestExecutionLevel user`, files under `%LOCALAPPDATA%\SlideShowX`). Windows will not add a port-scoped Private-only rule from that context. The installer writes a cmd and starts it with `ExecShell runas`, which is one UAC prompt. The cmd adds:
+The NSIS install is per-user (`RequestExecutionLevel user`, files under `%LOCALAPPDATA%\SlideShowX`). Windows will not add a port-scoped Private-only rule from that context. The installer does not write a script. It asks once with `ExecShell "runas"` of `cmd.exe /c` and the `netsh advfirewall` commands as arguments. Before that prompt it runs `netsh ... show rule` without elevation. If both rules already match this `slideshowpro.exe` (Private, not Public, TCP 47200–47215 and UDP 5353), it skips the prompt and writes `status=present`. The rules are:
 
 | Rule | Program | Profile | Ports |
 |---|---|---|---|
 | SlideX Cast media (Private) | `slideshowpro.exe` | Private | TCP 47200–47215 |
 | SlideX Cast mDNS (Private) | `slideshowpro.exe` | Private | UDP 5353 |
 
-Public is never set. The elevated process writes `$INSTDIR\cast-firewall.txt` (an absolute path, not the elevated `%TEMP%`) and the installer prints that file in the detail log. If the prompt is declined or netsh fails, the detail log says so and a message box says to re-run the installer. The Cast panel shows the same fact from `cast_firewall_status`, which parses `netsh advfirewall firewall show rule`. A rule that mentions Public is not counted as installed.
+Public is never set. The only file written is `$INSTDIR\cast-firewall.txt`. The elevated command prints `status=added` or `status=failed` there, and the installer copies that file into the detail log. If the prompt is declined or netsh fails, the detail log says so and a message box says to re-run the installer. Leftover `cast-firewall-add.cmd` and `cast-firewall.ok` files are deleted and not recreated. The Cast panel shows the same fact from `cast_firewall_status`, which parses `netsh advfirewall firewall show rule`. A rule that mentions Public is not counted as installed. Because the rules are Private-only, a Public network profile cannot discover or serve; the panel says to set the Wi-Fi to Private.
 
-Uninstall removes both rules with the same UAC step, unless the uninstall is the upgrade handoff (`/UPDATE`). The new install deletes and re-adds the rules, so an upgrade does not prompt twice. This PR does not build or publish the NSIS installer. QA sees the result on a real install from the detail log, `cast-firewall.txt` next to `slideshowpro.exe`, and the Cast panel line.
+Uninstall removes both rules with one elevated `cmd.exe /c` (inline `netsh` deletes, no script), unless the uninstall is the upgrade handoff (`/UPDATE`). An upgrade also skips the prompt when the rules already match this exe. This PR does not build or publish the NSIS installer. QA sees the elevated command in the detail log, `cast-firewall.txt` next to `slideshowpro.exe`, and the Cast panel line.
 
 A rule without an admin prompt cannot be limited to those ports and to Private only. The Windows "allow this app" prompt follows the current network profile and is not port-scoped, so the installer uses the UAC step instead.
 
@@ -79,7 +90,7 @@ John's network, after client isolation was turned off on the PLDT router:
 Checklist:
 
 1. Discover finds the TV within 10 seconds, 5 times out of 5, including across the 2.4 and 5 GHz bands.
-2. With the TV unreachable, the panel shows the plain no-TV error (same Wi-Fi, firewall, router client isolation) within 15 seconds, and the slideshow still works.
+2. With the TV unreachable, the panel shows the plain no-TV error (same Wi-Fi, firewall, router client isolation) within 15 seconds, and the slideshow still works. If Windows has this Wi-Fi set to Public, the panel shows "This Wi-Fi is set to Public in Windows. Set it to Private to cast." instead, including when the TV is found but a photo or video does not load within 15 seconds.
 3. Rescan starts a fresh browse. Changing the PC's network (or toggling Wi-Fi) starts a new browse without restarting SlideX. An empty list does not stick the way Chrome's did.
 4. A 20-item mixed playlist (JPEG, PNG, MP4 H.264+AAC, plus at least one unsupported file) plays on the TV in the same order and with the same slide timing as the PC. The unsupported file is skipped with a visible note and does not stall the playlist.
 5. Play, pause, next, and previous on the PC reach the TV within 1 second. A pause from the TV remote shows as paused in SlideX.

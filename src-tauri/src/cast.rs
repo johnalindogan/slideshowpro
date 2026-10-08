@@ -5,10 +5,10 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -45,6 +45,107 @@ pub const NO_TV_ERROR: &str = "No TV found on this network. Check that the PC an
 
 const UNSUPPORTED_MEDIA: &str =
     "Unsupported media. Cast plays JPEG, PNG, and MP4 (H.264 + AAC). Skipped.";
+
+/// Shown when Windows has the home LAN marked Public, so Private-only firewall rules do not apply.
+pub const PUBLIC_WIFI_MESSAGE: &str =
+    "This Wi-Fi is set to Public in Windows. Set it to Private to cast.";
+
+pub const MEDIA_LOAD_TIMEOUT_MESSAGE: &str =
+    "The TV was found, but the photo or video did not load within 15 seconds.";
+
+const HTTP_CONN_CAP: usize = 8;
+const HTTP_CHUNK: usize = 64 * 1024;
+const HTTP_IO_TIMEOUT: Duration = Duration::from_millis(200);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetCategory {
+    Public,
+    /// Private or DomainAuthenticated.
+    Private,
+    /// The category could not be read. Do not guess.
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastNotice {
+    NoTv,
+    MediaLoadTimeout,
+}
+
+/// Public always uses the Windows Public message. Private and Unknown keep the scenario text.
+pub fn cast_notice(scenario: CastNotice, category: NetCategory) -> String {
+    if category == NetCategory::Public {
+        return PUBLIC_WIFI_MESSAGE.to_string();
+    }
+    match scenario {
+        CastNotice::NoTv => NO_TV_ERROR.to_string(),
+        CastNotice::MediaLoadTimeout => MEDIA_LOAD_TIMEOUT_MESSAGE.to_string(),
+    }
+}
+
+fn media_load_notice() -> String {
+    cast_notice(CastNotice::MediaLoadTimeout, home_lan_category())
+}
+
+/// A cast that never starts on a Public network is the firewall, not a missing TV.
+fn with_public_network(existing: String) -> String {
+    if home_lan_category() == NetCategory::Public {
+        PUBLIC_WIFI_MESSAGE.to_string()
+    } else {
+        existing
+    }
+}
+
+fn home_lan_category() -> NetCategory {
+    #[cfg(windows)]
+    {
+        let alias = snapshot_ifaces().bind.map(|b| b.name);
+        return windows_lan_category(alias.as_deref());
+    }
+    #[cfg(not(windows))]
+    {
+        NetCategory::Unknown
+    }
+}
+
+#[cfg(windows)]
+fn windows_lan_category(alias: Option<&str>) -> NetCategory {
+    let Some(alias) = alias else {
+        return NetCategory::Unknown;
+    };
+    // Interface alias only (Wi-Fi, Ethernet). The SSID is a different property and is not read.
+    let script = "Get-NetConnectionProfile | ForEach-Object { $_.InterfaceAlias + \"`t\" + [string]$_.NetworkCategory }";
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output();
+    let Ok(output) = output else {
+        return NetCategory::Unknown;
+    };
+    if !output.status.success() {
+        return NetCategory::Unknown;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let Some((name, category)) = line.trim().rsplit_once('\t') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(alias) {
+            return parse_net_category(category);
+        }
+    }
+    NetCategory::Unknown
+}
+
+fn parse_net_category(raw: &str) -> NetCategory {
+    let s = raw.trim().to_ascii_lowercase();
+    if s == "public" {
+        NetCategory::Public
+    } else if s == "private" || s.starts_with("domain") {
+        NetCategory::Private
+    } else {
+        NetCategory::Unknown
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CastDeviceInfo {
@@ -305,7 +406,8 @@ fn default_route_v4() -> Result<Ipv4Addr, String> {
     }
 }
 
-fn no_tv_diagnostic(snap: &LanSnapshot, timeout_ms: u64, extra: Option<&str>) -> String {
+fn no_tv_diagnostic(snap: &LanSnapshot, timeout_ms: u64, extra: Option<&str>) -> (String, String) {
+    let notice = cast_notice(CastNotice::NoTv, home_lan_category());
     let browse = if snap.browse.is_empty() {
         "none".to_string()
     } else {
@@ -324,7 +426,24 @@ fn no_tv_diagnostic(snap: &LanSnapshot, timeout_ms: u64, extra: Option<&str>) ->
     } else {
         ""
     };
-    format!("{NO_TV_ERROR}{lan} Looked for {timeout_ms} ms on [{browse}].{skipped}{extra}")
+    let diagnostic = format!("{notice}{lan} Looked for {timeout_ms} ms on [{browse}].{skipped}{extra}");
+    (notice, diagnostic)
+}
+
+fn empty_discover(
+    snap: &LanSnapshot,
+    timeout_ms: u64,
+    interfaces: Vec<String>,
+    extra: Option<&str>,
+) -> CastDiscoverResult {
+    let (notice, diagnostic) = no_tv_diagnostic(snap, timeout_ms, extra);
+    CastDiscoverResult {
+        devices: vec![],
+        timeout_ms,
+        interfaces,
+        error: Some(notice),
+        diagnostic,
+    }
 }
 
 /// Discover Cast receivers. Returns within the timeout (hard cap 10s, always under 15s).
@@ -338,29 +457,20 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, S
     let interfaces = snap.browse.clone();
 
     if snap.bind.is_none() && snap.browse.is_empty() {
-        let diagnostic = no_tv_diagnostic(&snap, ms, None);
         eprintln!("[cast] discover: no home-network adapter");
-        return Ok(CastDiscoverResult {
-            devices: vec![],
-            timeout_ms: ms,
-            interfaces,
-            error: Some(NO_TV_ERROR.to_string()),
-            diagnostic,
-        });
+        return Ok(empty_discover(&snap, ms, interfaces, None));
     }
 
     let daemon = match ServiceDaemon::new() {
         Ok(d) => d,
         Err(e) => {
-            let diagnostic = no_tv_diagnostic(&snap, ms, Some(&format!("mDNS could not start ({e})")));
             eprintln!("[cast] discover: mDNS daemon failed to start");
-            return Ok(CastDiscoverResult {
-                devices: vec![],
-                timeout_ms: ms,
+            return Ok(empty_discover(
+                &snap,
+                ms,
                 interfaces,
-                error: Some(NO_TV_ERROR.to_string()),
-                diagnostic,
-            });
+                Some(&format!("mDNS could not start ({e})")),
+            ));
         }
     };
 
@@ -396,15 +506,13 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, S
         Ok(r) => r,
         Err(e) => {
             let _ = daemon.shutdown();
-            let diagnostic = no_tv_diagnostic(&snap, ms, Some(&format!("mDNS browse failed ({e})")));
             eprintln!("[cast] discover: browse failed to start");
-            return Ok(CastDiscoverResult {
-                devices: vec![],
-                timeout_ms: ms,
+            return Ok(empty_discover(
+                &snap,
+                ms,
                 interfaces,
-                error: Some(NO_TV_ERROR.to_string()),
-                diagnostic,
-            });
+                Some(&format!("mDNS browse failed ({e})")),
+            ));
         }
     };
 
@@ -470,10 +578,8 @@ pub fn discover_devices(timeout_ms: Option<u64>) -> Result<CastDiscoverResult, S
     list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     let extra = real_error.as_deref().or(setup_notes.first().map(String::as_str));
     let (error, diagnostic) = if list.is_empty() {
-        (
-            Some(NO_TV_ERROR.to_string()),
-            no_tv_diagnostic(&snap, ms, extra),
-        )
+        let (notice, diagnostic) = no_tv_diagnostic(&snap, ms, extra);
+        (Some(notice), diagnostic)
     } else {
         (
             None,
@@ -802,6 +908,8 @@ struct MediaHttp {
     book: Arc<Mutex<AllowBook>>,
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    inflight: Arc<AtomicUsize>,
 }
 
 impl MediaHttp {
@@ -848,9 +956,13 @@ impl MediaHttp {
             .map_err(|e| format!("http listen: {e}"))?;
         let book = Arc::new(Mutex::new(AllowBook::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let workers = Arc::new(Mutex::new(Vec::new()));
+        let inflight = Arc::new(AtomicUsize::new(0));
         let book_t = Arc::clone(&book);
         let stop_t = Arc::clone(&stop);
-        let join = thread::spawn(move || http_loop(listener, book_t, stop_t));
+        let workers_t = Arc::clone(&workers);
+        let inflight_t = Arc::clone(&inflight);
+        let join = thread::spawn(move || http_loop(listener, book_t, stop_t, workers_t, inflight_t));
         eprintln!("[cast] media server listening on one LAN address, port {port}");
         Ok(Self {
             port,
@@ -858,6 +970,8 @@ impl MediaHttp {
             book,
             stop,
             join: Some(join),
+            workers,
+            inflight,
         })
     }
 
@@ -884,11 +998,22 @@ impl MediaHttp {
 
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        let _busy = self.inflight.load(Ordering::SeqCst);
         if let Ok(mut book) = self.book.lock() {
             book.revoke();
         }
+        // Join the accept thread first so it drops the listener and stops spawning.
         if let Some(join) = self.join.take() {
             let _ = join.join();
+        }
+        let workers = self
+            .workers
+            .lock()
+            .ok()
+            .map(|mut w| std::mem::take(&mut *w))
+            .unwrap_or_default();
+        for worker in workers {
+            let _ = worker.join();
         }
         eprintln!("[cast] media server stopped and tokens revoked");
     }
@@ -900,13 +1025,47 @@ impl Drop for MediaHttp {
     }
 }
 
-fn http_loop(listener: TcpListener, book: Arc<Mutex<AllowBook>>, stop: Arc<AtomicBool>) {
+fn http_loop(
+    listener: TcpListener,
+    book: Arc<Mutex<AllowBook>>,
+    stop: Arc<AtomicBool>,
+    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    inflight: Arc<AtomicUsize>,
+) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut sock, _)) => {
-                let _ = sock.set_read_timeout(Some(Duration::from_secs(3)));
-                let _ = sock.set_write_timeout(Some(Duration::from_secs(8)));
-                let _ = serve_client(&mut sock, &book);
+                let _ = sock.set_read_timeout(Some(HTTP_IO_TIMEOUT));
+                let _ = sock.set_write_timeout(Some(HTTP_IO_TIMEOUT));
+                let _ = sock.set_nodelay(true);
+                if !claim_conn_slot(&inflight) {
+                    let _ = write_empty(&mut sock, 503);
+                    continue;
+                }
+                let book_c = Arc::clone(&book);
+                let stop_c = Arc::clone(&stop);
+                let inflight_c = Arc::clone(&inflight);
+                let spawned = thread::Builder::new().name("cast-http".into()).spawn(move || {
+                    struct Slot(Arc<AtomicUsize>);
+                    impl Drop for Slot {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    }
+                    let _slot = Slot(inflight_c);
+                    let _ = serve_client(&mut sock, &book_c, &stop_c);
+                });
+                match spawned {
+                    Ok(handle) => {
+                        if let Ok(mut list) = workers.lock() {
+                            list.retain(|h| !h.is_finished());
+                            list.push(handle);
+                        }
+                    }
+                    Err(_) => {
+                        inflight.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                 thread::sleep(Duration::from_millis(20));
@@ -919,8 +1078,23 @@ fn http_loop(listener: TcpListener, book: Arc<Mutex<AllowBook>>, stop: Arc<Atomi
     drop(listener);
 }
 
-fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>) -> std::io::Result<()> {
-    let raw = read_headers(sock)?;
+fn claim_conn_slot(inflight: &AtomicUsize) -> bool {
+    loop {
+        let current = inflight.load(Ordering::SeqCst);
+        if current >= HTTP_CONN_CAP {
+            return false;
+        }
+        if inflight
+            .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>, stop: &AtomicBool) -> std::io::Result<()> {
+    let raw = read_headers(sock, stop)?;
     let text = String::from_utf8_lossy(&raw);
     let mut lines = text.split("\r\n");
     let request = lines.next().unwrap_or("");
@@ -938,6 +1112,7 @@ fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>) -> std::io::Resul
             }
         }
     }
+    let (token, key) = media_token_key(&url).unwrap_or_else(|| (String::new(), String::new()));
     let entry = {
         let guard = match book.lock() {
             Ok(g) => g,
@@ -955,16 +1130,39 @@ fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>) -> std::io::Resul
     let len = prepared.len;
     let ctype = prepared.content_type;
     let file = prepared.file;
+    let head = method == "HEAD";
     if let Some(spec) = range {
         match parse_range(&spec, len) {
-            Some((start, end)) => write_file(sock, file, &ctype, start, end, len, method == "HEAD"),
+            Some((start, end)) => write_file(sock, file, &ctype, start, end, len, head, stop, book, &token, &key),
             None => write_empty(sock, 416),
         }
     } else if len == 0 {
-        write_file(sock, file, &ctype, 0, 0, 0, method == "HEAD")
+        write_file(sock, file, &ctype, 0, 0, 0, head, stop, book, &token, &key)
     } else {
-        write_file(sock, file, &ctype, 0, len - 1, len, method == "HEAD")
+        write_file(sock, file, &ctype, 0, len - 1, len, head, stop, book, &token, &key)
     }
+}
+
+fn media_token_key(url: &str) -> Option<(String, String)> {
+    let bare = url.split(['?', '#']).next().unwrap_or(url);
+    let mut parts = bare.split('/').filter(|s| !s.is_empty());
+    if parts.next()? != "m" {
+        return None;
+    }
+    Some((parts.next()?.to_string(), parts.next()?.to_string()))
+}
+
+fn grant_still_valid(book: &Mutex<AllowBook>, token: &str, key: &str) -> bool {
+    let Ok(guard) = book.lock() else {
+        return false;
+    };
+    token.len() == guard.token.len()
+        && ct_eq(token.as_bytes(), guard.token.as_bytes())
+        && guard.files.contains_key(key)
+}
+
+fn transfer_aborted(stop: &AtomicBool, book: &Mutex<AllowBook>, token: &str, key: &str) -> bool {
+    stop.load(Ordering::SeqCst) || !grant_still_valid(book, token, key)
 }
 
 /// Bytes to send after the playlist token check.
@@ -994,14 +1192,19 @@ fn transform_media(entry: &AllowEntry) -> std::io::Result<PreparedMedia> {
     })
 }
 
-fn read_headers(sock: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+fn read_headers(sock: &mut TcpStream, stop: &AtomicBool) -> std::io::Result<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 512];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 8192 {
+        if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "headers"));
+        }
         match sock.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
             Err(e) => return Err(e),
         }
     }
@@ -1013,10 +1216,35 @@ fn write_empty(sock: &mut TcpStream, code: u16) -> std::io::Result<()> {
         404 => "Not Found",
         405 => "Method Not Allowed",
         416 => "Range Not Satisfiable",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let msg = format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     sock.write_all(msg.as_bytes())
+}
+
+fn write_all_checked(
+    sock: &mut TcpStream,
+    mut data: &[u8],
+    stop: &AtomicBool,
+    book: &Mutex<AllowBook>,
+    token: &str,
+    key: &str,
+) -> std::io::Result<()> {
+    while !data.is_empty() {
+        if transfer_aborted(stop, book, token, key) {
+            let _ = sock.shutdown(Shutdown::Both);
+            return Err(std::io::Error::new(ErrorKind::ConnectionAborted, "cast stopped"));
+        }
+        match sock.write(data) {
+            Ok(0) => return Err(std::io::Error::new(ErrorKind::WriteZero, "closed")),
+            Ok(n) => data = &data[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 fn write_file(
@@ -1027,12 +1255,20 @@ fn write_file(
     end_inclusive: u64,
     total: u64,
     head: bool,
+    stop: &AtomicBool,
+    book: &Mutex<AllowBook>,
+    token: &str,
+    key: &str,
 ) -> std::io::Result<()> {
+    if transfer_aborted(stop, book, token, key) {
+        let _ = sock.shutdown(Shutdown::Both);
+        return Err(std::io::Error::new(ErrorKind::ConnectionAborted, "cast stopped"));
+    }
     if total == 0 {
         let msg = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         );
-        return sock.write_all(msg.as_bytes());
+        return write_all_checked(sock, msg.as_bytes(), stop, book, token, key);
     }
     if start > end_inclusive || end_inclusive >= total {
         return write_empty(sock, 416);
@@ -1048,20 +1284,24 @@ fn write_file(
         msg.push_str(&format!("Content-Range: bytes {start}-{end_inclusive}/{total}\r\n"));
     }
     msg.push_str("\r\n");
-    sock.write_all(msg.as_bytes())?;
+    write_all_checked(sock, msg.as_bytes(), stop, book, token, key)?;
     if head {
         return Ok(());
     }
     file.seek(SeekFrom::Start(start))?;
     let mut left = take;
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; HTTP_CHUNK];
     while left > 0 {
+        if transfer_aborted(stop, book, token, key) {
+            let _ = sock.shutdown(Shutdown::Both);
+            return Err(std::io::Error::new(ErrorKind::ConnectionAborted, "cast stopped"));
+        }
         let chunk = left.min(buf.len() as u64) as usize;
         let n = file.read(&mut buf[..chunk])?;
         if n == 0 {
             break;
         }
-        sock.write_all(&buf[..n])?;
+        write_all_checked(sock, &buf[..n], stop, book, token, key)?;
         left -= n as u64;
     }
     Ok(())
@@ -1224,7 +1464,7 @@ impl CastLink {
     }
 
     fn load_url(&self, url: &str, content_type: &str, autoplay: bool) -> Result<i32, String> {
-        self.set_read_timeout(READ_RPC);
+        self.set_read_timeout(Duration::from_secs(15));
         let media = Media {
             content_id: url.to_string(),
             stream_type: StreamType::Buffered,
@@ -1248,7 +1488,7 @@ impl CastLink {
             .entries
             .first()
             .map(|e| e.media_session_id)
-            .ok_or_else(|| "The TV did not start playback.".to_string())?;
+            .ok_or_else(media_load_notice)?;
         let _ = content_type;
         Ok(sid)
     }
@@ -1317,8 +1557,8 @@ fn map_load_error(err: &str) -> String {
     let l = err.to_ascii_lowercase();
     if l.contains("fail") || l.contains("invalid") || l.contains("not supported") {
         UNSUPPORTED_MEDIA.to_string()
-    } else if is_cast_timeout(err) {
-        link_down_message()
+    } else if is_cast_timeout(err) || l.contains("did not start") {
+        media_load_notice()
     } else {
         format!("The TV did not take this slide ({err}).")
     }
@@ -1465,14 +1705,14 @@ impl CastState {
             Ok(Ok(info)) => info,
             Ok(Err(e)) => {
                 let _ = worker.join();
-                return Err(e);
+                return Err(with_public_network(e));
             }
             Err(_) => {
                 let _ = cmd_tx.send(CastCmd::Disconnect {
                     reply: mpsc::channel().0,
                 });
                 let _ = worker.join();
-                return Err(link_down_message());
+                return Err(with_public_network(link_down_message()));
             }
         };
 
@@ -1511,8 +1751,8 @@ impl CastState {
             })
             .map_err(|_| "Cast is not connected.".to_string())?;
             reply_rx
-                .recv_timeout(Duration::from_secs(3))
-                .map_err(|_| link_down_message())?
+                .recv_timeout(Duration::from_secs(16))
+                .map_err(|_| media_load_notice())?
         })
     }
 
@@ -2217,6 +2457,174 @@ mod tests {
         assert!(parse_cast_host("100.64.0.2", None).is_err());
         assert!(parse_cast_host("not-a-host", None).is_err());
         assert!(parse_cast_host("192.168.1.55", Some(0)).is_err());
+    }
+
+    #[test]
+    fn cast_notice_covers_public_private_and_unknown_for_both_scenarios() {
+        assert_ne!(PUBLIC_WIFI_MESSAGE, NO_TV_ERROR);
+        assert_ne!(PUBLIC_WIFI_MESSAGE, MEDIA_LOAD_TIMEOUT_MESSAGE);
+        assert_ne!(NO_TV_ERROR, MEDIA_LOAD_TIMEOUT_MESSAGE);
+
+        assert_eq!(
+            cast_notice(CastNotice::NoTv, NetCategory::Public),
+            PUBLIC_WIFI_MESSAGE
+        );
+        assert_eq!(
+            cast_notice(CastNotice::MediaLoadTimeout, NetCategory::Public),
+            PUBLIC_WIFI_MESSAGE
+        );
+        assert_eq!(cast_notice(CastNotice::NoTv, NetCategory::Private), NO_TV_ERROR);
+        assert_eq!(cast_notice(CastNotice::NoTv, NetCategory::Unknown), NO_TV_ERROR);
+        assert_eq!(
+            cast_notice(CastNotice::MediaLoadTimeout, NetCategory::Private),
+            MEDIA_LOAD_TIMEOUT_MESSAGE
+        );
+        assert_eq!(
+            cast_notice(CastNotice::MediaLoadTimeout, NetCategory::Unknown),
+            MEDIA_LOAD_TIMEOUT_MESSAGE
+        );
+
+        assert_eq!(parse_net_category("Public"), NetCategory::Public);
+        assert_eq!(parse_net_category("private"), NetCategory::Private);
+        assert_eq!(parse_net_category("DomainAuthenticated"), NetCategory::Private);
+        assert_eq!(parse_net_category(""), NetCategory::Unknown);
+    }
+
+    fn big_jpeg(len: usize) -> Vec<u8> {
+        let mut v = vec![0xff, 0xd8, 0xff];
+        v.resize(len, 0x11);
+        v
+    }
+
+    fn hold_transfer(ip: Ipv4Addr, port: u16, path: &str) -> TcpStream {
+        let mut slow = TcpStream::connect_timeout(&SocketAddr::from((ip, port)), Duration::from_secs(2)).unwrap();
+        shrink_recv_buffer(&slow);
+        slow.set_read_timeout(Some(Duration::from_millis(200))).ok();
+        slow.set_nodelay(true).ok();
+        let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        slow.write_all(req.as_bytes()).unwrap();
+        slow
+    }
+
+    /// A small receive window keeps a large response blocked in `write`, instead of
+    /// sitting entirely in the kernel buffer.
+    fn shrink_recv_buffer(sock: &TcpStream) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let fd = sock.as_raw_fd();
+            let sz: i32 = 1024;
+            unsafe {
+                extern "C" {
+                    fn setsockopt(
+                        sockfd: i32,
+                        level: i32,
+                        optname: i32,
+                        optval: *const u8,
+                        optlen: u32,
+                    ) -> i32;
+                }
+                // Linux SOL_SOCKET = 1, SO_RCVBUF = 8.
+                let _ = setsockopt(fd, 1, 8, &sz as *const i32 as *const u8, 4);
+            }
+        }
+    }
+
+    #[test]
+    fn slow_reader_does_not_block_the_next_request() {
+        let big_path = scratch("big.jpg", &big_jpeg(2 * 1024 * 1024));
+        let small_path = scratch("small.jpg", &jpeg_bytes());
+        let http = MediaHttp::bind_on(Ipv4Addr::LOCALHOST, std::iter::once(0)).unwrap();
+        http.set_playlist(&[big_path.clone(), small_path.clone()]).unwrap();
+        let (url_big, _) = http.media_url(&big_path).unwrap();
+        let (url_small, _) = http.media_url(&small_path).unwrap();
+        let mut slow = hold_transfer(http.bind_ip, http.port, &url_path(&url_big));
+        thread::sleep(Duration::from_millis(250));
+
+        let started = Instant::now();
+        let (status, body) = http_get(http.bind_ip, http.port, &url_path(&url_small));
+        let elapsed = started.elapsed();
+        assert_eq!(status, 200, "{body:?}");
+        assert_eq!(body, jpeg_bytes());
+        assert!(elapsed < Duration::from_secs(1), "second request took {elapsed:?}");
+
+        slow.set_read_timeout(Some(Duration::from_millis(100))).ok();
+        let mut got = 0usize;
+        let mut buf = [0u8; 8192];
+        if let Ok(n) = slow.read(&mut buf) {
+            got += n;
+        }
+        assert!(
+            got < 256 * 1024,
+            "slow client should still be mid-transfer, read {got} bytes"
+        );
+    }
+
+    #[test]
+    fn shutdown_during_transfer_returns_within_one_second_and_closes_the_port() {
+        let path = scratch("hold.jpg", &big_jpeg(2 * 1024 * 1024));
+        let mut http = MediaHttp::bind_on(Ipv4Addr::LOCALHOST, std::iter::once(0)).unwrap();
+        http.set_playlist(&[path.clone()]).unwrap();
+        let (url, _) = http.media_url(&path).unwrap();
+        let port = http.port;
+        let ip = http.bind_ip;
+        let _slow = hold_transfer(ip, port, &url_path(&url));
+        thread::sleep(Duration::from_millis(150));
+        let started = Instant::now();
+        http.shutdown();
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(1), "shutdown took {elapsed:?}");
+        let refused = TcpStream::connect_timeout(
+            &SocketAddr::from((ip, port)),
+            Duration::from_millis(400),
+        );
+        assert!(refused.is_err(), "port must be closed after shutdown");
+    }
+
+    #[test]
+    fn revoked_token_is_404_including_mid_transfer() {
+        let path = scratch("rev.jpg", &big_jpeg(2 * 1024 * 1024));
+        let http = MediaHttp::bind_on(Ipv4Addr::LOCALHOST, std::iter::once(0)).unwrap();
+        http.set_playlist(&[path.clone()]).unwrap();
+        let (url, _) = http.media_url(&path).unwrap();
+        let req_path = url_path(&url);
+        let mut slow = hold_transfer(http.bind_ip, http.port, &req_path);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        let started = Instant::now();
+        while got.len() < 1024 && started.elapsed() < Duration::from_secs(2) {
+            match slow.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == ErrorKind::TimedOut || e.kind() == ErrorKind::WouldBlock => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            !got.is_empty() && got.len() < 2 * 1024 * 1024,
+            "expected an in-progress body, got {} bytes",
+            got.len()
+        );
+        {
+            let mut book = http.book.lock().unwrap();
+            book.revoke();
+        }
+        let before = got.len();
+        let drain_until = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < drain_until && got.len() < 2 * 1024 * 1024 {
+            match slow.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        assert!(
+            got.len() < 512 * 1024,
+            "revoked transfer must stop, had {before} bytes then {}",
+            got.len()
+        );
+        let (status, _) = http_get(http.bind_ip, http.port, &req_path);
+        assert_eq!(status, 404);
     }
 
     #[test]

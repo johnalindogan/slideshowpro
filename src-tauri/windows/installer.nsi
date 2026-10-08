@@ -712,34 +712,67 @@ Section WebView2
  ${EndIf}
 SectionEnd
 
+Function CastFirewallRuleOk
+ ; $R5 lowercased netsh text, $R8 lowercased exe path, $R4 protocol, $R3 ports. Sets $R7 to 1 when the rule matches.
+ StrCpy $R7 0
+ ${StrLoc} $0 $R5 "public" ">"
+ StrCmp $0 "" 0 cast_fw_rule_no
+ ${StrLoc} $0 $R5 "private" ">"
+ StrCmp $0 "" cast_fw_rule_no
+ ${StrLoc} $0 $R5 $R8 ">"
+ StrCmp $0 "" cast_fw_rule_no
+ ${StrLoc} $0 $R5 $R4 ">"
+ StrCmp $0 "" cast_fw_rule_no
+ ${StrLoc} $0 $R5 $R3 ">"
+ StrCmp $0 "" cast_fw_rule_no
+ ${StrLoc} $0 $R5 "allow" ">"
+ StrCmp $0 "" cast_fw_rule_no
+ StrCpy $R7 1
+cast_fw_rule_no:
+ ClearErrors
+FunctionEnd
+
 Function CastFirewallInstall
- ; One UAC prompt. The elevated cmd writes an absolute path under $INSTDIR,
- ; not the elevated process's %TEMP%, which is a different folder.
- StrCpy $0 "$INSTDIR\cast-firewall-add.cmd"
- StrCpy $1 "$INSTDIR\cast-firewall.txt"
- Delete "$1"
+ ; No script file. Rules are added by one elevated cmd.exe /c, or skipped when they already match this exe.
+ Delete "$INSTDIR\cast-firewall-add.cmd"
  Delete "$INSTDIR\cast-firewall.ok"
- FileOpen $2 $0 w
- FileWrite $2 "@echo off$\r$\n"
- FileWrite $2 "set ERR=0$\r$\n"
- FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\" >nul 2>&1$\r$\n"
- FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\" >nul 2>&1$\r$\n"
- FileWrite $2 "netsh advfirewall firewall add rule name=$\"${CAST_FW_MEDIA_NAME}$\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes$\r$\n"
- FileWrite $2 "if errorlevel 1 set ERR=1$\r$\n"
- FileWrite $2 "netsh advfirewall firewall add rule name=$\"${CAST_FW_MDNS_NAME}$\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes$\r$\n"
- FileWrite $2 "if errorlevel 1 set ERR=1$\r$\n"
- FileWrite $2 "echo SlideX Cast firewall> $\"$1$\"$\r$\n"
- FileWrite $2 "echo program=$INSTDIR\${MAINBINARYNAME}.exe>> $\"$1$\"$\r$\n"
- FileWrite $2 "echo profile=private>> $\"$1$\"$\r$\n"
- FileWrite $2 "echo tcp=${CAST_FW_TCP}>> $\"$1$\"$\r$\n"
- FileWrite $2 "echo udp=${CAST_FW_UDP}>> $\"$1$\"$\r$\n"
- FileWrite $2 "if %ERR%==0 (echo status=added>> $\"$1$\") else (echo status=failed>> $\"$1$\")$\r$\n"
- FileWrite $2 "netsh advfirewall firewall show rule name=$\"${CAST_FW_MEDIA_NAME}$\">> $\"$1$\"$\r$\n"
- FileWrite $2 "netsh advfirewall firewall show rule name=$\"${CAST_FW_MDNS_NAME}$\">> $\"$1$\"$\r$\n"
- FileWrite $2 "if %ERR%==0 echo ok> $\"$INSTDIR\cast-firewall.ok$\"$\r$\n"
- FileClose $2
- DetailPrint "Cast firewall: requesting Private rules for ${MAINBINARYNAME}.exe (TCP ${CAST_FW_TCP}, UDP ${CAST_FW_UDP}). Accept the Windows prompt."
- ExecShell "runas" "$0" "" SW_HIDE
+ Delete "$TEMP\slidex-cast-firewall-remove.cmd"
+ Delete "$TEMP\slidex-cast-firewall-removed.txt"
+ StrCpy $1 "$INSTDIR\cast-firewall.txt"
+ StrCpy $R8 "$INSTDIR\${MAINBINARYNAME}.exe"
+ ${StrCase} $R8 $R8 "L"
+ nsExec::ExecToStack 'netsh advfirewall firewall show rule name="${CAST_FW_MEDIA_NAME}"'
+ Pop $0
+ Pop $R5
+ nsExec::ExecToStack 'netsh advfirewall firewall show rule name="${CAST_FW_MDNS_NAME}"'
+ Pop $0
+ Pop $R6
+ ${StrCase} $R5 $R5 "L"
+ ${StrCase} $R6 $R6 "L"
+ StrCpy $R4 "tcp"
+ StrCpy $R3 "${CAST_FW_TCP}"
+ Call CastFirewallRuleOk
+ StrCpy $R9 $R7
+ StrCpy $R5 $R6
+ StrCpy $R4 "udp"
+ StrCpy $R3 "${CAST_FW_UDP}"
+ Call CastFirewallRuleOk
+ ${If} $R9 = 1
+ ${AndIf} $R7 = 1
+  FileOpen $2 "$1" w
+  FileWrite $2 "status=present$\r$\n"
+  FileWrite $2 "program=$INSTDIR\${MAINBINARYNAME}.exe$\r$\n"
+  FileWrite $2 "profile=private$\r$\n"
+  FileWrite $2 "tcp=${CAST_FW_TCP}$\r$\n"
+  FileWrite $2 "udp=${CAST_FW_UDP}$\r$\n"
+  FileClose $2
+  DetailPrint "Cast firewall: both Private rules already match $INSTDIR\${MAINBINARYNAME}.exe. No Windows prompt."
+  Return
+ ${EndIf}
+ Delete "$1"
+ StrCpy $R9 '/c "netsh advfirewall firewall delete rule name=\"${CAST_FW_MEDIA_NAME}\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"${CAST_FW_MDNS_NAME}\" >nul 2>&1 & (netsh advfirewall firewall add rule name=\"${CAST_FW_MEDIA_NAME}\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private program=\"$INSTDIR\${MAINBINARYNAME}.exe\" enable=yes && netsh advfirewall firewall add rule name=\"${CAST_FW_MDNS_NAME}\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private program=\"$INSTDIR\${MAINBINARYNAME}.exe\" enable=yes && (echo status=added>\"$INSTDIR\cast-firewall.txt\") || (echo status=failed>\"$INSTDIR\cast-firewall.txt\"))"'
+ DetailPrint "Cast firewall elevated command: $\"$SYSDIR\cmd.exe$\" $R9"
+ ExecShell "runas" "$SYSDIR\cmd.exe" '$R9' SW_HIDE
  StrCpy $3 0
 ${Do}
  Sleep 500
@@ -758,22 +791,27 @@ ${LoopUntil} $3 > 90
  Goto cast_fw_install_end
 cast_fw_install_done:
  DetailPrint "Cast firewall result file: $1"
+ StrCpy $R7 0
  ClearErrors
  FileOpen $2 "$1" r
  ${Do}
   FileRead $2 $4
   IfErrors cast_fw_install_read_done
   DetailPrint "$4"
+  ${StrLoc} $0 $4 "status=added" ">"
+  StrCmp $0 "" +2
+  StrCpy $R7 1
  ${Loop}
 cast_fw_install_read_done:
  FileClose $2
- IfFileExists "$INSTDIR\cast-firewall.ok" cast_fw_install_end
+ ${If} $R7 = 1
+  Goto cast_fw_install_end
+ ${EndIf}
  DetailPrint "Cast firewall: netsh did not add both Private rules. See $1"
  ${IfNot} ${Silent}
   MessageBox MB_OK|MB_ICONEXCLAMATION "SlideX could not add both Private firewall rules.$\r$\n$\r$\nSee $1$\r$\nRe-run the installer and accept the Windows prompt."
  ${EndIf}
 cast_fw_install_end:
- Delete "$0"
 FunctionEnd
 
 Function un.CastFirewallUninstall
@@ -781,19 +819,15 @@ Function un.CastFirewallUninstall
   DetailPrint "Cast firewall rules kept for this upgrade. The new install refreshes them."
   Goto cast_fw_un_end
  ${EndIf}
- StrCpy $0 "$TEMP\slidex-cast-firewall-remove.cmd"
- StrCpy $1 "$TEMP\slidex-cast-firewall-removed.txt"
- Delete "$1"
- FileOpen $2 $0 w
- FileWrite $2 "@echo off$\r$\n"
- FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\"$\r$\n"
- FileWrite $2 "netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\"$\r$\n"
- FileWrite $2 "echo status=removed> $\"$1$\"$\r$\n"
- FileWrite $2 "echo removed ${CAST_FW_MEDIA_NAME}>> $\"$1$\"$\r$\n"
- FileWrite $2 "echo removed ${CAST_FW_MDNS_NAME}>> $\"$1$\"$\r$\n"
- FileClose $2
- DetailPrint "Cast firewall: removing Private rules. Accept the Windows prompt."
- ExecShell "runas" "$0" "" SW_HIDE
+ Delete "$INSTDIR\cast-firewall-add.cmd"
+ Delete "$INSTDIR\cast-firewall.ok"
+ Delete "$TEMP\slidex-cast-firewall-remove.cmd"
+ Delete "$TEMP\slidex-cast-firewall-removed.txt"
+ Delete "$INSTDIR\cast-firewall.txt"
+ StrCpy $1 "$INSTDIR\cast-firewall.txt"
+ StrCpy $R9 '/c "netsh advfirewall firewall delete rule name=\"${CAST_FW_MEDIA_NAME}\" & netsh advfirewall firewall delete rule name=\"${CAST_FW_MDNS_NAME}\" & echo status=removed>\"$INSTDIR\cast-firewall.txt\""'
+ DetailPrint "Cast firewall elevated command: $\"$SYSDIR\cmd.exe$\" $R9"
+ ExecShell "runas" "$SYSDIR\cmd.exe" '$R9' SW_HIDE
  StrCpy $3 0
 ${Do}
  Sleep 500
@@ -811,6 +845,7 @@ cast_fw_un_end:
  Delete "$INSTDIR\cast-firewall.txt"
  Delete "$INSTDIR\cast-firewall.ok"
  Delete "$INSTDIR\cast-firewall-add.cmd"
+ Delete "$TEMP\slidex-cast-firewall-remove.cmd"
 FunctionEnd
 
 Section Install
@@ -913,7 +948,7 @@ Section Install
  !endif
 
  ; Private-only Cast firewall rules. A per-user install is not elevated, so this
- ; asks once via UAC (runas). The result is written to $INSTDIR\cast-firewall.txt.
+ ; asks once via UAC (cmd.exe /c, no script file) unless both rules already match.
  Call CastFirewallInstall
 
  ; Auto close this page for passive mode

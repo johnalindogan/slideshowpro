@@ -7207,6 +7207,7 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
   var skipBurst = 0;
   var chain = Promise.resolve();
   var NO_TV = "No TV found on this network. Check that the PC and TV are on the same Wi-Fi, the firewall, or the router's client isolation.";
+  var PUBLIC_WIFI = "This Wi-Fi is set to Public in Windows. Set it to Private to cast.";
 
   function setStatus(msg) { statusEl.textContent = msg || ""; }
   function esc(s) {
@@ -7286,7 +7287,9 @@ try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync
       if (list.length) {
         setStatus(field(result, "diagnostic") || ("Found " + list.length + " TV(s)."));
       } else {
-        setStatus(field(result, "diagnostic") || field(result, "error") || NO_TV);
+        var notice = field(result, "error") || "";
+        if (notice === PUBLIC_WIFI) setStatus(notice);
+        else setStatus(field(result, "diagnostic") || notice || NO_TV);
       }
     }).catch(function (e) {
       if (gen !== scanGen) return;
