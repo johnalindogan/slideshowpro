@@ -49,6 +49,51 @@ description = "Allow writing graded image/video/sidecar exports to a user-chosen
 commands.allow = ["write_export_file"]
 
 [[permission]]
+identifier = "allow-read-crop-sidecar"
+description = "Allow reading a crop sidecar beside a media file or from app data"
+commands.allow = ["read_crop_sidecar"]
+
+[[permission]]
+identifier = "allow-write-crop-sidecar"
+description = "Allow writing a crop sidecar beside a media file, or app data if that folder is not writable"
+commands.allow = ["write_crop_sidecar"]
+
+[[permission]]
+identifier = "allow-delete-crop-sidecar"
+description = "Allow deleting a crop sidecar"
+commands.allow = ["delete_crop_sidecar"]
+
+[[permission]]
+identifier = "allow-save-named-playlist"
+description = "Allow saving a named playlist JSON in app data"
+commands.allow = ["save_named_playlist"]
+
+[[permission]]
+identifier = "allow-list-named-playlists"
+description = "Allow listing named playlists stored in app data"
+commands.allow = ["list_named_playlists"]
+
+[[permission]]
+identifier = "allow-read-named-playlist"
+description = "Allow reading a named playlist from app data"
+commands.allow = ["read_named_playlist"]
+
+[[permission]]
+identifier = "allow-rename-named-playlist"
+description = "Allow renaming a named playlist in app data"
+commands.allow = ["rename_named_playlist"]
+
+[[permission]]
+identifier = "allow-delete-named-playlist"
+description = "Allow deleting a named playlist from app data"
+commands.allow = ["delete_named_playlist"]
+
+[[permission]]
+identifier = "allow-paths-exist"
+description = "Allow checking whether file paths exist, without reading their contents"
+commands.allow = ["paths_exist"]
+
+[[permission]]
 identifier = "allow-cast-discover"
 description = "Allow mDNS discovery of Chromecast / Google TV devices on LAN"
 commands.allow = ["cast_discover"]

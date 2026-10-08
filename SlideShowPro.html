@@ -41,6 +41,24 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .sl{position:absolute;inset:0;opacity:0;}
 .sl img,.sl video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;}
 .sl.on{opacity:1;}
+.ssp-view{position:absolute;inset:0;transform-origin:center center;will-change:transform;}
+.ssp-crop{position:absolute;inset:0;overflow:hidden;}
+.ssp-crop img,.ssp-crop video{position:absolute;max-width:none;}
+#cropbar{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:6;display:none;gap:6px;align-items:center;background:rgba(0,0,0,.78);padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.16);}
+#cropbar.show{display:flex;}
+#cropbar button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:5px;padding:4px 8px;font:500 11px var(--font-main);cursor:pointer;}
+#cropbar button.on{background:rgba(255,255,255,.18);border-color:#fff;}
+#cropbox{display:none;position:absolute;border:1.5px solid #fff;box-shadow:0 0 0 9999px rgba(0,0,0,.45);z-index:5;cursor:move;touch-action:none;}
+#cropbox.show{display:block;}
+.ssp-handle{position:absolute;width:10px;height:10px;background:#fff;border:1px solid #111;border-radius:2px;}
+#cropnotice{position:absolute;left:12px;bottom:12px;z-index:6;display:none;max-width:46%;background:rgba(0,0,0,.72);color:#fff;font:500 12px var(--font-main);padding:6px 10px;border-radius:6px;}
+#cropnotice.show{display:block;}
+#plib{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
+#plib.show{display:flex;}
+#plib .panel{width:min(560px,92vw);max-height:80vh;overflow:auto;background:#141414;color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:16px;font-family:var(--font-main);}
+#plib h3{font-size:16px;margin-bottom:8px;}
+#plib .row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08);font-size:13px;}
+#plib button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:5px;padding:4px 8px;cursor:pointer;font:500 12px var(--font-main);}
 
 /* Transition animations */
 @keyframes fdi{from{opacity:0}to{opacity:1}}
@@ -838,6 +856,17 @@ body.ssp-playlist-window #dock-toggle-btn {
   <div id="stage">
     <div id="fnov"></div>
     <div id="watchbadge">WATCH MODE · F5 or Esc to exit</div>
+    <div id="cropbar" role="toolbar" aria-label="Crop">
+      <button type="button" data-aspect="free">Free</button>
+      <button type="button" data-aspect="16:9">16:9</button>
+      <button type="button" data-aspect="4:3">4:3</button>
+      <button type="button" data-aspect="1:1">1:1</button>
+      <button type="button" data-aspect="9:16">9:16</button>
+      <button type="button" id="cropreset">Reset</button>
+      <button type="button" id="cropdone">Done</button>
+    </div>
+    <div id="cropbox" aria-hidden="true"></div>
+    <div id="cropnotice" role="status"></div>
     <div id="maxcomp"></div>
     <div id="maxcomp2"></div>
   </div>
@@ -977,6 +1006,12 @@ body.ssp-playlist-window #dock-toggle-btn {
       <button class="cb" id="bexport" title="Export graded image / video (E)">
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
+      <button class="cb" id="bcrop" title="Crop (non-destructive)">
+        <svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+      </button>
+      <button class="cb" id="bexportcrop" title="Export cropped still">
+        <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 13h7v7h-7z"/><path d="M14 4h6v6"/><path d="M4 14v6h6"/></svg>
+      </button>
       <button class="cb" id="btheme" title="Themes (T) — cycle 10 color presets; Shift=random; Alt=all">
         <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
       </button>
@@ -1008,8 +1043,9 @@ body.ssp-playlist-window #dock-toggle-btn {
         <button id="plopenfolder" title="Open folder">Folder</button>
         <button id="plshuffle" title="Shuffle">&#x1F500;</button>
         <button id="plnewfolder" title="New Folder">&#128193;</button>
-        <button id="plsave" title="Save Playlist">&#128190;</button>
-        <button id="plload" title="Load Playlist">&#128194;</button>
+        <button id="plsave" title="Save playlist as…">&#128190;</button>
+        <button id="plload" title="Load playlist">&#128194;</button>
+        <button id="pllocate" title="Locate folder for missing items" hidden>Locate folder…</button>
         <button id="plundock" title="Undock Media Manager">Undock</button>
         <button id="pldockback" title="Dock back to main window">Dock</button>
       </div>
@@ -1108,6 +1144,7 @@ body.ssp-playlist-window #dock-toggle-btn {
 <!-- Floating restore button -->
 <button id="showctrl">Show Controls</button>
 
+<script src="slidex-core.js"></script>
 <script>
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
@@ -2318,6 +2355,7 @@ const KB_LABELS = [
   'Drift Across · Pan ↔'
 ];
 let kbEnabled = true, kbZoomInt = 4.0, kbPanInt = 4.0, kbDirection = 'mix', kbEasing = 'ease';
+let kbManualHold = false, kbVisual = null;
 
 /* ── Media helpers ── */
 function getMediaItems() { return items.filter(it => it.type !== 'folder' && !it.unavailable); }
@@ -2388,6 +2426,7 @@ function loadItemLS(item) {
       if (d.panY !== undefined) item.panY = d.panY;
       if (d.customDur !== undefined) item.customDur = d.customDur;
       if (d.kbPreset !== undefined) item.kbPreset = d.kbPreset;
+      if (d.crop) item.crop = d.crop;
       if (d.thumbnailUrl !== undefined) item.thumbnailUrl = d.thumbnailUrl;
       break;
     }
@@ -2403,6 +2442,7 @@ function saveItemLS(item) {
       zoom: item.zoom, panX: item.panX, panY: item.panY,
       customDur: item.customDur,
       kbPreset: item.kbPreset,
+      crop: item.crop || null,
       thumbnailUrl: item.thumbnailUrl
     }));
   } catch(e) {}
@@ -2420,6 +2460,7 @@ function applyImageUpdates(item, data) {
   if (updates.panY !== undefined) item.panY = updates.panY;
   if (updates.customDur !== undefined) item.customDur = updates.customDur;
   if (updates.kbPreset !== undefined) item.kbPreset = updates.kbPreset;
+  if (updates.crop) item.crop = updates.crop;
   if (updates.thumbnailUrl !== undefined) item.thumbnailUrl = updates.thumbnailUrl;
 }
 
@@ -2733,7 +2774,7 @@ function renderKeyEditor() {
   }
   const note = document.createElement('p');
   note.className = 'kednote';
-  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Arrows pan; Esc exits watch mode / cancels remap / closes this editor. Speed − / + default to , / .';
+  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Backspace resets the view and does not remove the item; Alt+Arrows pan; Esc exits watch mode / cancels remap / closes this editor. Speed − / + default to , / . Zoom + / = and − stop at the whole image. 0 stays Hue +.';
   list.appendChild(note);
   updateConflictBanner();
 }
@@ -2894,19 +2935,26 @@ function needsSharpenBake(clr) {
 /** Draw media into a canvas with full color suite baked (B/C/H/S + LUT + sharpness). */
 function renderGradedCanvas(med, item, opts) {
   const clr = {...CLR_DEF, ...(item && item.clr)};
-  let w = (opts && opts.width) || item.w || med.videoWidth || med.naturalWidth || 0;
-  let h = (opts && opts.height) || item.h || med.videoHeight || med.naturalHeight || 0;
-  if (!w || !h) throw new Error('Unknown media dimensions');
-  const maxW = (opts && opts.maxWidth) || 0;
-  if (maxW && w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+  const natW = med.naturalWidth || med.videoWidth || (item && item.w) || 0;
+  const natH = med.naturalHeight || med.videoHeight || (item && item.h) || 0;
+  let sx = 0, sy = 0, sw = natW, sh = natH, outW = natW, outH = natH;
+  if (window.SlideXCore && natW && natH) {
+    const rect = SlideXCore.exportSourceRect(natW, natH, 1, opts && opts.ignoreCrop ? null : (item && item.crop));
+    sx = rect.sx; sy = rect.sy; sw = rect.sw; sh = rect.sh; outW = rect.outW; outH = rect.outH;
+  }
+  if (!outW || !outH) throw new Error('Unknown media dimensions');
+  if (opts && opts.width && opts.height) { outW = opts.width; outH = opts.height; }
+  else if (opts && opts.maxWidth && outW > opts.maxWidth) {
+    outH = Math.round(outH * (opts.maxWidth / outW)); outW = opts.maxWidth;
+  }
   const can = document.createElement('canvas');
-  can.width = w; can.height = h;
+  can.width = outW; can.height = outH;
   const ctx = can.getContext('2d', { willReadFrequently: true });
   ctx.filter = cssFiltersFromClr(clr);
-  ctx.drawImage(med, 0, 0, w, h);
+  ctx.drawImage(med, sx, sy, sw, sh, 0, 0, outW, outH);
   ctx.filter = 'none';
   if (needsLutBake(clr) || needsSharpenBake(clr)) {
-    const id = ctx.getImageData(0, 0, w, h);
+    const id = ctx.getImageData(0, 0, outW, outH);
     if (needsLutBake(clr)) {
       applyByteLUTToImageData(id, buildByteLUT(clr.g / 100, clr.hl / 100, clr.sh / 100));
     }
@@ -3042,19 +3090,34 @@ const getEDur = i => getItemDur(i != null ? i : cur) / getSpd();
 
 /* ── Zoom / Pan ── */
 function updZoom() { g('zlb').textContent = Math.round(zoom * 100) + '%'; }
-function changeZoom(d) {
-  zoom = Math.max(0.1, Math.min(10, zoom + d)); updZoom();
+function changeZoom(d, pointer) {
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  if (pointer && pointer.factor && window.SlideXCore) {
+    const f = frameMetrics();
+    if (f) {
+      const v = SlideXCore.zoomToward({ zoom, panX, panY }, pointer.factor, pointer.x, pointer.y, f.vpW, f.vpH, f.cw, f.ch);
+      zoom = v.zoom; panX = v.panX; panY = v.panY;
+    } else zoom = Math.max(1, Math.min(10, zoom * pointer.factor));
+  } else {
+    zoom += d;
+    if (typeof clampManualView === 'function') clampManualView();
+    else zoom = Math.max(1, Math.min(10, zoom));
+  }
+  updZoom();
   const item = getMediaItems()[cur];
-  if (item) { item.zoom = zoom; saveItemLS(item); }
+  if (item) { item.zoom = zoom; item.panX = panX; item.panY = panY; saveItemLS(item); }
   staticT();
 }
 function doPan(dx, dy) {
-  const s = 8 / zoom; panX += dx * s; panY += dy * s;
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  const s = 8 / Math.max(zoom, 1); panX += dx * s; panY += dy * s;
+  if (typeof clampManualView === 'function') clampManualView();
   const item = getMediaItems()[cur];
-  if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+  if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
   staticT();
 }
 function resetPan() {
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
   zoom = 1; panX = 0; panY = 0; updZoom();
   const item = getMediaItems()[cur];
   if (item) { item.zoom = 1; item.panX = 0; item.panY = 0; saveItemLS(item); }
@@ -3068,15 +3131,24 @@ g('zlb').onclick = () => resetPan();
 /* ── Mouse: scroll = zoom, left drag = pan, middle drag = pan, right = context menu ── */
 stage.addEventListener('wheel', e => {
   e.preventDefault();
-  const d = e.deltaY < 0 ? 0.15 : -0.15;
   if (isInCompanion(e.clientX, e.clientY)) {
+    const d = e.deltaY < 0 ? 0.15 : -0.15;
     compZoom = Math.max(0.1, Math.min(10, compZoom + d)); updCompT();
-  } else { changeZoom(d); }
+    return;
+  }
+  const sl = getSl(cur) || stage;
+  const rect = sl.getBoundingClientRect();
+  changeZoom(0, {
+    x: e.clientX - rect.left,
+    y: e.clientY - rect.top,
+    factor: Math.exp(-e.deltaY * 0.0016)
+  });
 }, {passive: false});
 
 stage.addEventListener('mousedown', e => {
   if (e.button === 0) {
-    if (e.target.closest('button,a,select,input')) return;
+    if (e.target.closest('button,a,select,input,#cropbar,#cropbox')) return;
+    if (typeof pauseKenBurnsForManual === 'function' && !isInCompanion(e.clientX, e.clientY)) pauseKenBurnsForManual();
     lDragOnComp = isInCompanion(e.clientX, e.clientY);
     lDrag = true; lDragMoved = false;
     lDragStartX = e.clientX; lDragStartY = e.clientY;
@@ -3100,10 +3172,15 @@ document.addEventListener('mousemove', e => {
       const mdx = (isMirror && !isVmax) ? -dx : dx;
       const mdy = (isMirror && isVmax) ? -dy : dy;
       compPanX = lDragPX + mdx / compZoom; compPanY = lDragPY + mdy / compZoom; updCompT();
-    } else { panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom; staticT(); }
+    } else {
+      panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom;
+      if (typeof clampManualView === 'function') clampManualView();
+      staticT();
+    }
   } else if (midDrag) {
     panX = midStartPX + (e.clientX - midStartX) / zoom;
     panY = midStartPY + (e.clientY - midStartY) / zoom;
+    if (typeof clampManualView === 'function') clampManualView();
     staticT();
   }
 });
@@ -3132,12 +3209,15 @@ function mediaPrefix() {
 }
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const m = getSl(cur)?.querySelector('img,video'); if (!m) return;
-  /* Videos: full frame (contain) + zoom/pan only — no Ken Burns end-frame offsets. */
-  const p = isV(cur) ? null : getKBPreset(cur);
-  const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
-  if (m.tagName === 'VIDEO') m.style.objectFit = 'contain';
-  m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  const m = sl?.querySelector('img,video'); if (!m || !item) return;
+  if (getActiveMaxMode(cur)) {
+    resetMaxFrame(sl);
+    m.style.transform = `${mediaPrefix()}scale(${Math.max(1, zoom).toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`;
+    return;
+  }
+  applyFrameTransform(sl, item, zoom, panX, panY);
 }
 
 /* ── Mirror ── */
@@ -3517,6 +3597,7 @@ function getPlaylistSnapshot() {
           panY: it.panY,
           customDur: it.customDur,
           kbPreset: it.kbPreset,
+          crop: it.crop || null,
           thumbnailUrl: it.thumbnailUrl
         }
       };
@@ -4139,6 +4220,7 @@ window.__sspDebugInjectSeed = openAndroidDebugInject;
 
 function finishAdd(newItems, opts) {
   newItems.forEach(it => { initItem(it); items.push(it); });
+  if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(newItems);
   if (opts && opts.light) {
     syncStripTrackSize();
     remountStripWindow();
@@ -4166,7 +4248,7 @@ function shufflePlaylist() {
 }
 
 /* ── Slide DOM (virtualized: stage mounts current ±1 only) ── */
-const STAGE_KEEP_IDS = new Set(['fnov', 'watchbadge', 'maxcomp', 'maxcomp2']);
+const STAGE_KEEP_IDS = new Set(['fnov', 'watchbadge', 'maxcomp', 'maxcomp2', 'cropbar', 'cropbox', 'cropnotice']);
 const THUMB_PLACEHOLDER = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40"><rect width="64" height="40" fill="%23222222"/></svg>';
 const TRANS_MS = { fade: 500, slide: 600, zoom: 600, none: 0 };
 
@@ -4209,7 +4291,13 @@ function createSlideEl(item, i) {
   sl.className = 'sl';
   sl.dataset.mi = String(i);
   const med = item.type === 'video' ? makeVid(item) : makeImg(item);
-  sl.appendChild(med);
+  const view = document.createElement('div');
+  view.className = 'ssp-view';
+  const cropWin = document.createElement('div');
+  cropWin.className = 'ssp-crop';
+  cropWin.appendChild(med);
+  view.appendChild(cropWin);
+  sl.appendChild(view);
   if (item.type === 'video') {
     const b = document.createElement('div'); b.className = 'vb'; b.textContent = '▶ video'; sl.appendChild(b);
     med.onended = () => {
@@ -4438,9 +4526,20 @@ function build(its) {
   buildSlideDOM();
   cur = 0; playing = true; spd = 100; selectedItems.clear(); lastClickedMI = -1;
   updSpd(); updPlayBtn();
+  if (!getMediaItems().length) {
+    playing = false; updPlayBtn();
+    try { g('sc').textContent = '0/0'; } catch (_) {}
+    if (playlistChromeOpen()) renderPlaylist();
+    autoSave();
+    if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(its);
+    if (typeof updateLocateButton === 'function') updateLocateButton();
+    return;
+  }
   applySlideSettings(0);
   showSlide(0); schedNext();
   autoSave();
+  if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(its);
+  if (typeof updateLocateButton === 'function') updateLocateButton();
 }
 
 function rebuildSlides(newCur) {
@@ -4587,7 +4686,7 @@ function buildPlRows() {
 
   items.forEach((item, itemsIdx) => {
     if (query && !visibleItems.has(itemsIdx)) {
-      if (item.type !== 'folder') miIdx++;
+      if (item.type !== 'folder' && !item.unavailable && !item.missing) miIdx++;
       return;
     }
     if (item.type === 'folder') {
@@ -4601,7 +4700,13 @@ function buildPlRows() {
     const folderIdx = items.indexOf(currentFolder);
     const isFolderOpen = currentFolder ? (forceOpenFolders.has(folderIdx) || currentFolder.open !== false) : true;
     if (currentFolder && !isFolderOpen) {
-      miIdx++;
+      if (!item.unavailable && !item.missing) miIdx++;
+      return;
+    }
+    if (item.unavailable || item.missing) {
+      const h = plRowHeight(item);
+      rows.push({ kind: 'media', itemsIdx, mi: -1, top, height: h, indent: !!currentFolder });
+      top += h;
       return;
     }
     const thisMI = miIdx++;
@@ -4682,13 +4787,13 @@ function createPlMediaRow(row) {
     thumb.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
     if (!item.thumbnailUrl) getVideoThumbnail(item);
   } else {
-    thumb.src = item.url;
+    thumb.src = item.url || THUMB_PLACEHOLDER;
   }
 
-  if (item.unavailable) div.style.opacity = '0.38';
+  if (item.unavailable || item.missing) div.style.opacity = '0.38';
   const info = document.createElement('div'); info.className = 'plinfo';
   const name = document.createElement('span'); name.className = 'plname';
-  name.textContent = (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1)));
+  name.textContent = (item.missing ? '⚠ ' + (item.name || 'Item') + ' missing' : (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1))));
   info.appendChild(name);
 
   if (item.type === 'image') {
@@ -4722,6 +4827,10 @@ function createPlMediaRow(row) {
   del.onclick = e => { e.stopPropagation(); removeItem(itemsIdx, false); };
 
   div.onclick = e => {
+    if (item.missing || item.unavailable) {
+      showToast((item.name || 'Item') + ' is missing.', 2500);
+      return;
+    }
     if (e.shiftKey && lastClickedMI >= 0) {
       const lo = Math.min(lastClickedMI, thisMI), hi = Math.max(lastClickedMI, thisMI);
       for (let k = lo; k <= hi; k++) selectedItems.add(k);
@@ -5013,7 +5122,8 @@ function savePlaylist() {
         panX: it.panX,
         panY: it.panY,
         customDur: it.customDur,
-        kbPreset: it.kbPreset
+        kbPreset: it.kbPreset,
+        crop: it.crop || null
       }
     };
   });
@@ -5097,24 +5207,49 @@ function showSlide(i) {
 }
 
 function startKB(i) {
-  if (isV(i)) return;
-  const img = getSl(i)?.querySelector('img'); if (!img) return;
+  if (isV(i)) { staticT(); return; }
+  if (kbManualHold) { staticT(); return; }
+  const sl = getSl(i);
+  const item = getMediaItems()[i];
+  const img = sl?.querySelector('img'); if (!img || !item) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const p = getKBPreset(i);
-  // KBRight (preset 3): companion does KB, main slide is static
-  if (getActiveMaxMode(i) && maxPreset === 3) {
-    const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
-    img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  if (getActiveMaxMode(i)) {
+    resetMaxFrame(sl);
+    if (maxPreset === 3) {
+      const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
+      img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+      return;
+    }
+    if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
+    const dur = getEDur(i); let st = null;
+    function stepMax(ts) {
+      if (!st) st = ts;
+      const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
+      const sc = (p.fs + (p.ts - p.fs) * ev) * zoom;
+      const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
+      img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+      if (t < 1) kbId = requestAnimationFrame(stepMax);
+    }
+    kbId = requestAnimationFrame(stepMax);
     return;
   }
-  if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
+  if (!p || !window.SlideXCore) { staticT(); return; }
+  const ends = SlideXCore.wholeImageEndpoints(
+    { fs: p.fs, ts: p.ts, fx: p.fx, fy: p.fy, tx: p.tx, ty: p.ty }, 1, 1
+  );
   const dur = getEDur(i); let st = null;
+  const box = layoutFrame(sl, item);
   function step(ts) {
     if (!st) st = ts;
     const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
-    const sc = (p.fs + (p.ts - p.fs) * ev) * zoom;
-    const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
-    img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+    const sc = ends.from.s + (ends.to.s - ends.from.s) * ev;
+    const kx = ends.from.x + (ends.to.x - ends.from.x) * ev;
+    const ky = ends.from.y + (ends.to.y - ends.from.y) * ev;
+    const baseW = box && box.base ? box.base.w : (sl.clientWidth || 1);
+    const baseH = box && box.base ? box.base.h : (sl.clientHeight || 1);
+    const v = applyFrameTransform(sl, item, sc, (kx / 100) * baseW, (ky / 100) * baseH);
+    if (v) kbVisual = v;
     if (t < 1) kbId = requestAnimationFrame(step);
   }
   kbId = requestAnimationFrame(step);
@@ -5241,6 +5376,7 @@ function goTo(i) {
 
   const prevCur = cur;
   const next = ((i % len) + len) % len;
+  if (next !== prevCur) kbManualHold = false;
 
   // Remount ±1 around destination. Adjacent advance keeps outgoing in-window
   // (as prev); far jumps skip leave node so stage stays ≤3.
@@ -5361,7 +5497,7 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 /** Save blob via Tauri dialog+write_export_file, showSaveFilePicker, or <a download>. */
-async function saveExportBlob(defaultName, blob, filters) {
+async function saveExportBlob(defaultName, blob, filters, extra) {
   if (!blob) return { ok: false, reason: 'empty' };
   if (sspIsTauri()) {
     try {
@@ -5371,8 +5507,12 @@ async function saveExportBlob(defaultName, blob, filters) {
         filters: filters || [{ name: 'Files', extensions: [defaultName.split('.').pop() || 'bin'] }]
       });
       if (path == null) return { ok: false, reason: 'cancel' };
+      if (extra && extra.refusePath && window.SlideXCore && SlideXCore.samePath(path, extra.refusePath)) {
+        showToast('That path is the original. Choose a new file.', 4000);
+        return { ok: false, reason: 'original' };
+      }
       const b64 = await blobToBase64(blob);
-      await tauriInvoke('write_export_file', { path, dataB64: b64 });
+      await tauriInvoke('write_export_file', { path, dataB64: b64, exclusive: !!(extra && extra.exclusive) });
       return { ok: true, path, via: 'tauri' };
     } catch (e) {
       console.warn('Tauri export failed', e);
@@ -5749,6 +5889,13 @@ document.addEventListener('keydown', e => {
   const t = e.target.tagName;
   if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
 
+  /* Alt+Backspace resets the view. It is handled before Backspace removal. */
+  if (window.SlideXCore && SlideXCore.isAltBackspaceReset(e)) {
+    e.preventDefault();
+    resetPan();
+    return;
+  }
+
   /* Delete / Backspace fixed (not remappable) */
   if (e.key === 'Delete') {
     e.preventDefault();
@@ -5766,6 +5913,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Backspace') {
+    if (window.SlideXCore && !SlideXCore.willRemovePlaylistItem(e)) return;
     e.preventDefault();
     const mi = getMediaItems(), item = mi[cur]; if (!item) return;
     removeItem(items.indexOf(item), false);
@@ -5958,6 +6106,657 @@ window.confirmDeleteFile = async function() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
+
+/* Inserted into the main SlideShowPro script. Depends on lets in that script. */
+let cropEditing = false;
+let cropDraft = null;
+let namedPlaylistName = null;
+
+function resetMaxFrame(sl) {
+  if (!sl) return;
+  const view = sl.querySelector('.ssp-view');
+  const cropEl = sl.querySelector('.ssp-crop');
+  const med = sl.querySelector('img,video');
+  if (view) view.style.transform = '';
+  if (cropEl) {
+    cropEl.style.left = '0px';
+    cropEl.style.top = '0px';
+    cropEl.style.width = '100%';
+    cropEl.style.height = '100%';
+    delete cropEl.dataset.key;
+  }
+  if (med) {
+    med.style.left = '0';
+    med.style.top = '0';
+    med.style.width = '100%';
+    med.style.height = '100%';
+    med.style.objectFit = '';
+  }
+}
+
+function frameMetrics() {
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!item || !sl || getActiveMaxMode(cur)) return null;
+  const med = sl.querySelector('img,video');
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || (med && (med.naturalWidth || med.videoWidth)) || vpW;
+  const natH = item.h || (med && (med.naturalHeight || med.videoHeight)) || vpH;
+  const crop = (!cropEditing && window.SlideXCore && SlideXCore.isActiveCrop(item.crop)) ? SlideXCore.normalizeCrop(item.crop) : null;
+  return {
+    item, sl, vpW, vpH, natW, natH, crop,
+    cw: Math.max(1, crop ? natW * crop.w : natW),
+    ch: Math.max(1, crop ? natH * crop.h : natH)
+  };
+}
+
+function layoutFrame(sl, item) {
+  if (!sl || !item || !window.SlideXCore) return null;
+  const view = sl.querySelector('.ssp-view');
+  const cropEl = sl.querySelector('.ssp-crop');
+  const med = sl.querySelector('img,video');
+  if (!view || !cropEl || !med) return null;
+  const maxOn = !!getActiveMaxMode(+sl.dataset.mi);
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || med.naturalWidth || med.videoWidth || vpW;
+  const natH = item.h || med.naturalHeight || med.videoHeight || vpH;
+  const useCrop = !maxOn && !cropEditing && SlideXCore.isActiveCrop(item.crop);
+  const crop = useCrop ? SlideXCore.normalizeCrop(item.crop) : { x: 0, y: 0, w: 1, h: 1, aspect: 'free' };
+  const contentW = Math.max(1, natW * crop.w);
+  const contentH = Math.max(1, natH * crop.h);
+  const base = SlideXCore.containRect(vpW, vpH, contentW, contentH);
+  const key = [Math.round(vpW), Math.round(vpH), natW, natH, crop.x, crop.y, crop.w, crop.h, maxOn ? 1 : 0].join('|');
+  if (cropEl.dataset.key !== key) {
+    cropEl.dataset.key = key;
+    if (maxOn) {
+      cropEl.style.left = '0px'; cropEl.style.top = '0px';
+      cropEl.style.width = '100%'; cropEl.style.height = '100%';
+      med.style.left = '0'; med.style.top = '0';
+      med.style.width = '100%'; med.style.height = '100%';
+    } else {
+      cropEl.style.left = base.x + 'px';
+      cropEl.style.top = base.y + 'px';
+      cropEl.style.width = base.w + 'px';
+      cropEl.style.height = base.h + 'px';
+      med.style.width = (100 / crop.w) + '%';
+      med.style.height = (100 / crop.h) + '%';
+      med.style.left = (-crop.x / crop.w * 100) + '%';
+      med.style.top = (-crop.y / crop.h * 100) + '%';
+      med.style.objectFit = 'fill';
+      med.style.transform = '';
+    }
+  }
+  return { view, cropEl, med, vpW, vpH, contentW, contentH, base, maxOn, natW, natH };
+}
+
+function applyFrameTransform(sl, item, z, px, py) {
+  const box = layoutFrame(sl, item);
+  if (!box) return null;
+  let v = { zoom: z, panX: px, panY: py };
+  if (!box.maxOn) v = SlideXCore.clampView(v, box.vpW, box.vpH, box.contentW, box.contentH);
+  box.view.style.transform = 'translate(' + v.panX.toFixed(2) + 'px,' + v.panY.toFixed(2) + 'px) scale(' + v.zoom.toFixed(4) + ') ' + mediaPrefix();
+  return v;
+}
+
+function clampManualView() {
+  if (!window.SlideXCore) { zoom = Math.max(1, Math.min(10, zoom)); return; }
+  const f = frameMetrics();
+  if (!f) { zoom = Math.max(1, Math.min(10, zoom)); return; }
+  const v = SlideXCore.clampView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch);
+  zoom = v.zoom; panX = v.panX; panY = v.panY;
+}
+
+function pauseKenBurnsForManual() {
+  if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
+  if (kbVisual) {
+    zoom = kbVisual.zoom; panX = kbVisual.panX; panY = kbVisual.panY;
+    kbVisual = null;
+    updZoom();
+  }
+  kbManualHold = true;
+}
+
+function scheduleCropHydrate(list) {
+  if (!sspIsTauri() || !window.SlideXCore) return;
+  (list || []).forEach(item => {
+    if (!item || !item.path || item.type === 'folder' || item.crop) return;
+    tauriInvoke('read_crop_sidecar', { path: item.path, name: item.name || '' }).then(res => {
+      if (!res || !res.crop || item.crop) return;
+      item.crop = SlideXCore.normalizeCrop(res.crop) || res.crop;
+      saveItemLS(item);
+      if (getMediaItems()[cur] === item && !cropEditing) {
+        const sl = getSl(cur);
+        const el = sl && sl.querySelector('.ssp-crop');
+        if (el) delete el.dataset.key;
+        if (!kbManualHold && !isV(cur)) startKB(cur); else staticT();
+      }
+    }).catch(() => {});
+  });
+}
+
+function updateLocateButton() {
+  const btn = g('pllocate');
+  if (!btn) return;
+  btn.hidden = !items.some(it => it && it.missing);
+}
+
+function syncCropOverlay() {
+  const box = g('cropbox');
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!cropEditing || !box || !item || !sl || !window.SlideXCore) {
+    if (box) box.classList.remove('show');
+    return;
+  }
+  const laid = layoutFrame(sl, Object.assign({}, item, { crop: null }));
+  if (!laid) return;
+  const c = cropDraft || { x: 0, y: 0, w: 1, h: 1 };
+  const stageRect = stage.getBoundingClientRect();
+  const slRect = sl.getBoundingClientRect();
+  box.style.left = (slRect.left - stageRect.left + laid.base.x + c.x * laid.base.w) + 'px';
+  box.style.top = (slRect.top - stageRect.top + laid.base.y + c.y * laid.base.h) + 'px';
+  box.style.width = Math.max(8, c.w * laid.base.w) + 'px';
+  box.style.height = Math.max(8, c.h * laid.base.h) + 'px';
+  box.classList.add('show');
+  box.querySelectorAll('.ssp-handle').forEach(h => {
+    const map = { nw: ['0', '0'], n: ['50%', '0'], ne: ['100%', '0'], e: ['100%', '50%'], se: ['100%', '100%'], s: ['50%', '100%'], sw: ['0', '100%'], w: ['0', '50%'] };
+    const p = map[h.dataset.dir];
+    h.style.left = p[0]; h.style.top = p[1]; h.style.transform = 'translate(-50%,-50%)';
+  });
+}
+
+async function commitCrop(crop) {
+  const item = getMediaItems()[cur];
+  if (!item || !window.SlideXCore) return;
+  item.crop = SlideXCore.normalizeCrop(crop);
+  saveItemLS(item);
+  schedAutoSave();
+  if (sspIsTauri() && item.path) {
+    try {
+      const doc = SlideXCore.cropSidecarDocument(item, item.crop);
+      const res = await tauriInvoke('write_crop_sidecar', {
+        path: item.path, name: item.name || '', documentJson: JSON.stringify(doc)
+      });
+      const note = g('cropnotice');
+      if (note && res && res.location === 'appdata') {
+        note.textContent = res.message || "The folder isn't writable. Crop saved in app data.";
+        note.classList.add('show');
+      } else if (note) note.classList.remove('show');
+    } catch (e) { console.warn('crop sidecar', e); }
+  }
+}
+
+function setCropAspect(aspect) {
+  const item = getMediaItems()[cur];
+  if (!item || !window.SlideXCore) return;
+  cropDraft = SlideXCore.applyAspect(cropDraft || { x: 0, y: 0, w: 1, h: 1 }, aspect, item.w || 1, item.h || 1);
+  g('cropbar').querySelectorAll('button[data-aspect]').forEach(b => b.classList.toggle('on', b.dataset.aspect === aspect));
+  syncCropOverlay();
+}
+
+async function resetCrop() {
+  const item = getMediaItems()[cur];
+  cropDraft = { x: 0, y: 0, w: 1, h: 1, aspect: 'free' };
+  if (item) {
+    item.crop = null;
+    saveItemLS(item);
+    schedAutoSave();
+    if (sspIsTauri() && item.path) {
+      try { await tauriInvoke('delete_crop_sidecar', { path: item.path, name: item.name || '' }); } catch (_) {}
+    }
+  }
+  const note = g('cropnotice'); if (note) note.classList.remove('show');
+  g('cropbar')?.querySelectorAll('button[data-aspect]').forEach(b => b.classList.toggle('on', b.dataset.aspect === 'free'));
+  syncCropOverlay();
+  const sl = getSl(cur);
+  const el = sl && sl.querySelector('.ssp-crop');
+  if (el) delete el.dataset.key;
+}
+
+function toggleCropEditor(force) {
+  cropEditing = typeof force === 'boolean' ? force : !cropEditing;
+  g('bcrop')?.classList.toggle('on', cropEditing);
+  g('cropbar')?.classList.toggle('show', cropEditing);
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  const el = sl && sl.querySelector('.ssp-crop');
+  if (el) delete el.dataset.key;
+  if (cropEditing) {
+    const existing = item && window.SlideXCore && SlideXCore.normalizeCrop(item.crop);
+    cropDraft = existing || { x: 0.08, y: 0.08, w: 0.84, h: 0.84, aspect: 'free' };
+    pauseKenBurnsForManual();
+    if (sl && item) applyFrameTransform(sl, item, 1, 0, 0);
+    syncCropOverlay();
+  } else {
+    g('cropbox')?.classList.remove('show');
+    if (cropDraft && item && window.SlideXCore && SlideXCore.isActiveCrop(cropDraft)) commitCrop(cropDraft);
+    kbManualHold = false;
+    if (!isV(cur)) startKB(cur); else staticT();
+  }
+}
+
+function bindCropUi() {
+  const box = g('cropbox');
+  if (!box || box.dataset.ready) return;
+  ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(dir => {
+    const h = document.createElement('div');
+    h.className = 'ssp-handle';
+    h.dataset.dir = dir;
+    box.appendChild(h);
+  });
+  box.dataset.ready = '1';
+  let drag = null;
+  box.addEventListener('pointerdown', e => {
+    if (!cropEditing || !cropDraft) return;
+    e.preventDefault(); e.stopPropagation();
+    const item = getMediaItems()[cur];
+    const sl = getSl(cur);
+    const laid = sl && item ? layoutFrame(sl, Object.assign({}, item, { crop: null })) : null;
+    if (!laid) return;
+    drag = {
+      dir: (e.target.dataset && e.target.dataset.dir) || 'move',
+      x: e.clientX, y: e.clientY,
+      crop: Object.assign({}, cropDraft),
+      base: laid.base
+    };
+    try { box.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  box.addEventListener('pointermove', e => {
+    if (!drag || !window.SlideXCore) return;
+    const dx = (e.clientX - drag.x) / Math.max(1, drag.base.w);
+    const dy = (e.clientY - drag.y) / Math.max(1, drag.base.h);
+    const c = Object.assign({}, drag.crop);
+    const dir = drag.dir;
+    if (dir === 'move') { c.x += dx; c.y += dy; }
+    else {
+      if (dir.indexOf('w') !== -1) { c.x += dx; c.w -= dx; }
+      if (dir.indexOf('e') !== -1) c.w += dx;
+      if (dir.indexOf('n') !== -1) { c.y += dy; c.h -= dy; }
+      if (dir.indexOf('s') !== -1) c.h += dy;
+    }
+    const item = getMediaItems()[cur];
+    cropDraft = (c.aspect && c.aspect !== 'free' && item)
+      ? SlideXCore.applyAspect(c, c.aspect, item.w || 1, item.h || 1)
+      : SlideXCore.normalizeCrop(c);
+    syncCropOverlay();
+  });
+  const finish = () => {
+    if (!drag) return;
+    drag = null;
+    if (cropDraft) commitCrop(cropDraft);
+  };
+  box.addEventListener('pointerup', finish);
+  box.addEventListener('pointercancel', finish);
+  g('cropbar')?.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('button[data-aspect]');
+    if (!b) return;
+    setCropAspect(b.dataset.aspect);
+    if (cropDraft) commitCrop(cropDraft);
+  });
+  if (g('cropreset')) g('cropreset').onclick = () => resetCrop();
+  if (g('cropdone')) g('cropdone').onclick = () => toggleCropEditor(false);
+  if (g('bcrop')) g('bcrop').onclick = () => toggleCropEditor();
+  if (g('bexportcrop')) g('bexportcrop').onclick = () => exportCroppedCurrent();
+}
+
+async function readItemBytes(item) {
+  if (!item) return null;
+  try {
+    if (sspIsTauri() && item.path) {
+      const b64 = await tauriInvoke('read_media_file', { path: item.path });
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    if (item.url && /^(blob:|data:)/i.test(item.url)) {
+      const res = await fetch(item.url);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+  } catch (e) { console.warn('date source unread', e); }
+  return null;
+}
+
+async function exportCroppedCurrent() {
+  const core = window.SlideXCore;
+  const item = getMediaItems()[cur];
+  const med = getSl(cur)?.querySelector('img,video');
+  if (!core || !item || !med) { showToast('Nothing to export.', 2500); return; }
+  if (med.tagName === 'VIDEO') await waitForVideoFrame(med);
+  const graded = item.type !== 'video' && !core.isDefaultGrade(item.clr);
+  const fmt = item.type === 'video' ? { ext: 'jpg', mime: 'image/jpeg', quality: 0.95 } : core.exportFormatForSource(item.name, '');
+  const usePng = fmt.ext === 'png' && !graded && item.type !== 'video';
+  let can;
+  try { can = renderGradedCanvas(med, item); }
+  catch (e) { showToast('Cropped export failed: ' + ((e && e.message) || e), 4000); return; }
+  const mime = usePng ? 'image/png' : 'image/jpeg';
+  let blob = await new Promise(resolve => can.toBlob(resolve, mime, usePng ? undefined : 0.95));
+  if (!blob) { showToast('Cropped export failed.', 3000); return; }
+  try {
+    const src = await readItemBytes(item);
+    if (src) {
+      const dest = new Uint8Array(await blob.arrayBuffer());
+      const copied = core.copyDateTaken(src, dest);
+      blob = new Blob([copied], { type: mime });
+    }
+  } catch (e) { console.warn('date-taken copy skipped', e); }
+  const desired = core.cropDownloadName(item.name, usePng ? 'png' : 'jpg');
+  let unique = desired;
+  let defaultPath = desired;
+  if (item.path) {
+    const sep = item.path.indexOf('\\') !== -1 ? '\\' : '/';
+    const dir = item.path.replace(/[\\/][^\\/]+$/, '');
+    const candidates = [desired];
+    for (let n = 2; n < 30; n++) candidates.push(desired.replace(/(\.[^.]+)$/, ' (' + n + ')$1'));
+    if (sspIsTauri()) {
+      try {
+        const full = candidates.map(n => dir + sep + n);
+        const flags = await tauriInvoke('paths_exist', { paths: full });
+        const existing = candidates.filter((_, i) => flags[i]);
+        unique = core.uniqueExportName(desired, existing);
+      } catch (_) {}
+    }
+    defaultPath = dir + sep + unique;
+    if (core.samePath(defaultPath, item.path)) {
+      showToast('Refusing to overwrite the original.', 4000);
+      return;
+    }
+  }
+  const filters = usePng ? [{ name: 'PNG Image', extensions: ['png'] }] : [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }];
+  const res = await saveExportBlob(defaultPath, blob, filters, { exclusive: true, refusePath: item.path });
+  if (res.ok) showToast('Exported ' + unique + ' (' + can.width + '×' + can.height + '). Original unchanged.', 4000);
+  else if (res.reason !== 'cancel' && res.reason !== 'original') showToast('Cropped export failed.', 3500);
+}
+
+function playlistKbState() {
+  return { kbEnabled: kbEnabled, kbZoomInt: kbZoomInt, kbPanInt: kbPanInt, kbDirection: kbDirection, kbEasing: kbEasing };
+}
+function applyPlaylistKb(kb) {
+  if (!kb) return;
+  if (kb.kbEnabled != null) kbEnabled = !!kb.kbEnabled;
+  if (kb.kbZoomInt != null) kbZoomInt = +kb.kbZoomInt;
+  if (kb.kbPanInt != null) kbPanInt = +kb.kbPanInt;
+  if (kb.kbDirection) kbDirection = kb.kbDirection;
+  if (kb.kbEasing) kbEasing = kb.kbEasing;
+}
+
+function updatesBag(fields) {
+  return {
+    clr: fields.clr, rotation: fields.rotation, mirrorX: fields.mirrorX, mirrorY: fields.mirrorY,
+    zoom: fields.zoom, panX: fields.panX, panY: fields.panY, customDur: fields.customDur,
+    kbPreset: fields.kbPreset, crop: fields.crop || null
+  };
+}
+
+async function installPlaylistDocument(doc) {
+  const core = window.SlideXCore;
+  applyPlaylistKb(doc.kb);
+  const entries = doc.items || [];
+  const paths = entries.filter(it => it && it.type !== 'folder' && it.path).map(it => it.path);
+  let flags = [];
+  if (sspIsTauri() && paths.length) {
+    try { flags = await tauriInvoke('paths_exist', { paths: paths }); }
+    catch (_) { flags = paths.map(() => false); }
+  }
+  const exists = new Map();
+  paths.forEach((p, i) => exists.set(p, !!flags[i]));
+  const foundPaths = paths.filter(p => exists.get(p));
+  let loaded = [];
+  if (foundPaths.length) {
+    try {
+      if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths: foundPaths });
+      loaded = await itemsFromMediaPaths(foundPaths);
+    } catch (e) { console.warn(e); loaded = []; }
+  }
+  const byPath = new Map();
+  loaded.forEach(it => { if (it && it.path && !byPath.has(it.path)) byPath.set(it.path, it); });
+  let missing = 0;
+  const next = entries.map(entry => {
+    if (!entry || entry.type === 'folder') {
+      return { type: 'folder', id: (entry && entry.id) || makeItemId(), name: (entry && entry.name) || 'Folder', open: !entry || entry.open !== false };
+    }
+    const fields = core.restoreItemFields(entry);
+    const hit = entry.path && byPath.get(entry.path);
+    if (!hit) {
+      missing++;
+      return {
+        id: fields.id || makeItemId(), type: fields.type || 'image', name: fields.name || 'missing',
+        url: '', path: entry.path, missing: true, unavailable: true, imageUpdates: updatesBag(fields)
+      };
+    }
+    Object.assign(hit, {
+      id: fields.id || hit.id || makeItemId(),
+      missing: false, unavailable: false,
+      imageUpdates: updatesBag(fields)
+    });
+    return hit;
+  });
+  dz.style.display = 'none'; viewer.style.display = 'flex';
+  build(next);
+  updateLocateButton();
+  if (missing > 0) showToast(missing + ' item' + (missing === 1 ? '' : 's') + ' missing.', 6000);
+}
+
+async function saveNamedPlaylistFlow() {
+  const core = window.SlideXCore;
+  if (!core) return;
+  const name = prompt('Save playlist as…', namedPlaylistName || '');
+  if (!name || !String(name).trim()) return;
+  const trimmed = String(name).trim();
+  const doc = core.buildPlaylistDocument({ items: items, name: trimmed, savedAt: Date.now(), kb: playlistKbState() });
+  if (!sspIsTauri()) {
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.download = 'SlideX_playlist.json';
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    namedPlaylistName = trimmed;
+    return;
+  }
+  let replace = false;
+  try {
+    const list = await tauriInvoke('list_named_playlists');
+    if ((list || []).some(p => String(p.name).toLowerCase() === trimmed.toLowerCase())) {
+      if (!confirm('Replace playlist "' + trimmed + '"?')) return;
+      replace = true;
+    }
+  } catch (_) {}
+  try {
+    await tauriInvoke('save_named_playlist', { name: trimmed, json: JSON.stringify(doc), replace: replace });
+    namedPlaylistName = trimmed;
+    showToast('Saved playlist ' + trimmed, 2500);
+  } catch (e) {
+    showToast('Could not save playlist: ' + ((e && e.message) || e), 4000);
+  }
+}
+
+function closePlaylistLibrary() { const el = g('plib'); if (el) el.remove(); }
+
+async function openPlaylistLibrary() {
+  if (!sspIsTauri()) { openPlaylistPicker(); return; }
+  closePlaylistLibrary();
+  const wrap = document.createElement('div');
+  wrap.id = 'plib'; wrap.className = 'show';
+  const panel = document.createElement('div'); panel.className = 'panel';
+  const h = document.createElement('h3'); h.textContent = 'Load playlist';
+  const listEl = document.createElement('div');
+  const actions = document.createElement('div');
+  actions.style.cssText = 'margin-top:12px;display:flex;gap:8px;';
+  const openFile = document.createElement('button'); openFile.type = 'button'; openFile.textContent = 'Open file…';
+  openFile.onclick = () => { closePlaylistLibrary(); openPlaylistPicker(); };
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Close';
+  cancel.onclick = () => closePlaylistLibrary();
+  actions.appendChild(openFile); actions.appendChild(cancel);
+  panel.appendChild(h); panel.appendChild(listEl); panel.appendChild(actions);
+  wrap.appendChild(panel);
+  wrap.addEventListener('click', e => { if (e.target === wrap) closePlaylistLibrary(); });
+  document.body.appendChild(wrap);
+  let rows = [];
+  try { rows = await tauriInvoke('list_named_playlists') || []; } catch (_) { rows = []; }
+  if (!rows.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No saved playlists yet.';
+    empty.style.opacity = '0.7';
+    listEl.appendChild(empty);
+  }
+  rows.forEach(row => {
+    const line = document.createElement('div'); line.className = 'row';
+    const when = row.savedAt ? new Date(row.savedAt).toLocaleString() : '';
+    const label = document.createElement('div');
+    label.textContent = row.name + ' · ' + row.count + ' item' + (row.count === 1 ? '' : 's') + (when ? ' · ' + when : '');
+    const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;';
+    const load = document.createElement('button'); load.type = 'button'; load.textContent = 'Load';
+    load.onclick = async () => {
+      closePlaylistLibrary();
+      try {
+        const text = await tauriInvoke('read_named_playlist', { name: row.name });
+        const doc = SlideXCore.normalizePlaylist(JSON.parse(text));
+        await installPlaylistDocument(doc);
+        namedPlaylistName = doc.name || row.name;
+      } catch (e) { showToast('Could not load playlist.', 4000); }
+    };
+    const ren = document.createElement('button'); ren.type = 'button'; ren.textContent = 'Rename';
+    ren.onclick = async () => {
+      const next = prompt('Rename playlist', row.name);
+      if (!next || !next.trim() || next.trim() === row.name) return;
+      try {
+        await tauriInvoke('rename_named_playlist', { from: row.name, to: next.trim() });
+        if (namedPlaylistName === row.name) namedPlaylistName = next.trim();
+        openPlaylistLibrary();
+      } catch (e) { showToast('Rename failed: ' + ((e && e.message) || e), 4000); }
+    };
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
+    del.onclick = async () => {
+      if (!confirm('Delete playlist "' + row.name + '"?')) return;
+      try {
+        await tauriInvoke('delete_named_playlist', { name: row.name });
+        if (namedPlaylistName === row.name) namedPlaylistName = null;
+        openPlaylistLibrary();
+      } catch (e) { showToast('Delete failed: ' + ((e && e.message) || e), 4000); }
+    };
+    btns.appendChild(load); btns.appendChild(ren); btns.appendChild(del);
+    line.appendChild(label); line.appendChild(btns);
+    listEl.appendChild(line);
+  });
+}
+
+async function locateMissingFolder() {
+  const core = window.SlideXCore;
+  const missing = items.filter(it => it && it.missing && it.path);
+  if (!core || !missing.length) { showToast('No missing items.', 2500); return; }
+  const picked = await pickOpenFolder(false);
+  if (!picked || picked.kind === 'cancel') return;
+  const dir = picked.path || picked.root;
+  if (!dir) { showToast('Locate folder needs a folder path.', 3500); return; }
+  const paths = missing.map(it => it.path);
+  const prefixes = [];
+  const seen = new Set();
+  paths.forEach(p => core.ancestorPrefixes(p).forEach(pre => {
+    const key = pre.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); prefixes.push(pre); }
+  }));
+  const checks = [];
+  prefixes.forEach(pre => paths.forEach(p => {
+    const rw = core.rewritePathPrefix(p, pre, dir, { caseInsensitive: true });
+    if (rw) checks.push(rw);
+  }));
+  const unique = Array.from(new Set(checks));
+  let flags = [];
+  try { flags = await tauriInvoke('paths_exist', { paths: unique }); } catch (_) { flags = []; }
+  const have = new Set();
+  unique.forEach((p, i) => { if (flags[i]) have.add(String(p).toLowerCase()); });
+  const plan = core.planLocate(paths, dir, function (p) { return have.has(String(p).toLowerCase()); }, { caseInsensitive: true });
+  if (!plan || !plan.found) { showToast('No files found under that folder.', 4000); return; }
+  if (!confirm(plan.found + ' of ' + plan.eligible + ' found. Update these paths?')) return;
+  const rewrite = new Map();
+  plan.rows.forEach(row => { if (row.exists && row.rewritten) rewrite.set(row.path, row.rewritten); });
+  const newPaths = Array.from(rewrite.values());
+  try { await tauriInvoke('register_allowed_paths', { paths: newPaths }); } catch (_) {}
+  let loaded = [];
+  try { loaded = await itemsFromMediaPaths(newPaths); } catch (_) { loaded = []; }
+  const byPath = new Map();
+  loaded.forEach(it => { if (it && it.path) byPath.set(it.path, it); });
+  items.forEach((it, idx) => {
+    if (!it || !it.missing) return;
+    const nextPath = rewrite.get(it.path);
+    if (!nextPath) return;
+    const hit = byPath.get(nextPath);
+    if (!hit) return;
+    const kept = {
+      id: it.id, clr: it.clr, crop: it.crop, kbPreset: it.kbPreset, customDur: it.customDur,
+      rotation: it.rotation, mirrorX: it.mirrorX, mirrorY: it.mirrorY, zoom: it.zoom, panX: it.panX, panY: it.panY
+    };
+    Object.assign(hit, kept, { path: nextPath, missing: false, unavailable: false, imageUpdates: updatesBag(kept) });
+    items[idx] = hit;
+  });
+  rebuildSlides(cur);
+  updateLocateButton();
+  const still = items.filter(it => it && it.missing).length;
+  if (namedPlaylistName && sspIsTauri()) {
+    try {
+      const doc = core.buildPlaylistDocument({ items: items, name: namedPlaylistName, savedAt: Date.now(), kb: playlistKbState() });
+      await tauriInvoke('save_named_playlist', { name: namedPlaylistName, json: JSON.stringify(doc), replace: true });
+    } catch (e) { console.warn('playlist rewrite save failed', e); }
+  }
+  showToast(plan.found + ' of ' + plan.eligible + ' found.' + (still ? ' ' + still + ' still missing.' : ''), 5000);
+}
+
+function bindFramingExtras() {
+  stage.addEventListener('dblclick', e => {
+    if (e.target.closest('button,a,select,input,textarea,#cropbar,#cropbox')) return;
+    e.preventDefault();
+    resetPan();
+  });
+  const pinch = { pts: new Map(), last: 0 };
+  stage.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch') return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!pinch.pts.has(e.pointerId)) return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.pts.size !== 2) return;
+    const pts = Array.from(pinch.pts.values());
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    if (pinch.last) {
+      const rect = (getSl(cur) || stage).getBoundingClientRect();
+      changeZoom(0, {
+        x: (pts[0].x + pts[1].x) / 2 - rect.left,
+        y: (pts[0].y + pts[1].y) / 2 - rect.top,
+        factor: dist / pinch.last
+      });
+    }
+    pinch.last = dist;
+  });
+  const endPinch = e => {
+    pinch.pts.delete(e.pointerId);
+    if (pinch.pts.size < 2) pinch.last = 0;
+  };
+  stage.addEventListener('pointerup', endPinch);
+  stage.addEventListener('pointercancel', endPinch);
+  window.addEventListener('resize', () => {
+    const sl = getSl(cur);
+    const el = sl && sl.querySelector('.ssp-crop');
+    if (el) delete el.dataset.key;
+    if (cropEditing) syncCropOverlay();
+    else if (getMediaItems().length && !getActiveMaxMode(cur)) {
+      if (kbManualHold || isV(cur)) staticT();
+    }
+  });
+  if (g('plsave')) g('plsave').onclick = () => saveNamedPlaylistFlow();
+  if (g('plload')) g('plload').onclick = () => openPlaylistLibrary();
+  if (g('lbplist')) g('lbplist').onclick = () => openPlaylistLibrary();
+  if (g('pllocate')) g('pllocate').onclick = () => locateMissingFolder();
+  window.sspCastMediaHook = function (item) {
+    const current = item || getMediaItems()[cur];
+    return window.SlideXCore ? SlideXCore.castMediaHook(current) : { kind: 'none' };
+  };
+  bindCropUi();
+  updateLocateButton();
+}
+bindFramingExtras();
 
 try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync init failed', e); }
 

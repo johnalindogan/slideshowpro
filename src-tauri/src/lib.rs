@@ -1,6 +1,7 @@
 mod cast;
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -306,7 +307,7 @@ const EXPORT_EXTS: &[&str] = &[
 ];
 
 #[tauri::command]
-fn write_export_file(path: String, data_b64: String) -> Result<(), String> {
+fn write_export_file(path: String, data_b64: String, exclusive: Option<bool>) -> Result<(), String> {
     let bytes = B64.decode(data_b64.as_bytes()).map_err(|e| format!("base64 decode: {e}"))?;
     if bytes.len() > EXPORT_MAX_BYTES {
         return Err("export too large".into());
@@ -321,8 +322,356 @@ fn write_export_file(path: String, data_b64: String) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&pb, &bytes).map_err(|e| e.to_string())?;
+    if exclusive.unwrap_or(false) {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pb)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    "file already exists".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        std::fs::write(&pb, &bytes).map_err(|e| e.to_string())
+    }
+}
+
+fn fnv1a64(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("bad file name")?;
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.to_string());
+    }
     Ok(())
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+fn crop_beside_path(media_path: &str) -> Result<PathBuf, String> {
+    if media_path.trim().is_empty() {
+        return Err("missing media path".into());
+    }
+    Ok(PathBuf::from(format!("{media_path}.sspcrop.json")))
+}
+
+fn crop_appdata_path(app: &AppHandle, media_path: &str, name: &str) -> Result<PathBuf, String> {
+    let base = app_data_dir(app)?.join("crops");
+    let key = format!("{media_path}|{name}");
+    let stem = Path::new(if name.is_empty() { media_path } else { name })
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("media");
+    let safe: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    Ok(base.join(format!("{:016x}_{safe}.sspcrop.json", fnv1a64(&key))))
+}
+
+fn crop_value_from_text(text: &str) -> Option<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    if doc.get("sspCropVersion").and_then(|v| v.as_u64()) != Some(1) {
+        return None;
+    }
+    let crop = doc.get("crop")?.as_object()?;
+    for key in ["x", "y", "w", "h"] {
+        let n = crop.get(key)?.as_f64()?;
+        if !n.is_finite() {
+            return None;
+        }
+    }
+    Some(doc.get("crop").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CropReadResult {
+    crop: Option<serde_json::Value>,
+    location: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CropWriteResult {
+    location: String,
+    path: String,
+    message: Option<String>,
+}
+
+#[tauri::command]
+fn read_crop_sidecar(app: AppHandle, path: String, name: Option<String>) -> Result<CropReadResult, String> {
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if let Ok(text) = std::fs::read_to_string(&beside) {
+            if let Some(crop) = crop_value_from_text(&text) {
+                return Ok(CropReadResult { crop: Some(crop), location: Some("beside".into()) });
+            }
+        }
+    }
+    if let Ok(fallback) = crop_appdata_path(&app, &path, &name) {
+        if let Ok(text) = std::fs::read_to_string(&fallback) {
+            if let Some(crop) = crop_value_from_text(&text) {
+                return Ok(CropReadResult { crop: Some(crop), location: Some("appdata".into()) });
+            }
+        }
+    }
+    Ok(CropReadResult { crop: None, location: None })
+}
+
+#[tauri::command]
+fn write_crop_sidecar(
+    app: AppHandle,
+    path: String,
+    name: Option<String>,
+    document_json: String,
+) -> Result<CropWriteResult, String> {
+    if crop_value_from_text(&document_json).is_none() {
+        return Err("invalid crop sidecar".into());
+    }
+    let bytes = document_json.as_bytes();
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if atomic_write(&beside, bytes).is_ok() {
+            return Ok(CropWriteResult {
+                location: "beside".into(),
+                path: beside.to_string_lossy().into_owned(),
+                message: None,
+            });
+        }
+    }
+    let fallback = crop_appdata_path(&app, &path, &name)?;
+    atomic_write(&fallback, bytes)?;
+    Ok(CropWriteResult {
+        location: "appdata".into(),
+        path: fallback.to_string_lossy().into_owned(),
+        message: Some("The folder isn't writable. Crop saved in app data.".into()),
+    })
+}
+
+#[tauri::command]
+fn delete_crop_sidecar(app: AppHandle, path: String, name: Option<String>) -> Result<(), String> {
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if beside.exists() {
+            let _ = std::fs::remove_file(beside);
+        }
+    }
+    if let Ok(fallback) = crop_appdata_path(&app, &path, &name) {
+        if fallback.exists() {
+            let _ = std::fs::remove_file(fallback);
+        }
+    }
+    Ok(())
+}
+
+fn playlist_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if c == ' ' || c == '-' || c == '_' {
+            if !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let base = if slug.is_empty() { "playlist" } else { slug };
+    format!("{base}-{:016x}", fnv1a64(name))
+}
+
+fn playlists_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_data_dir(app)?.join("playlists");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn playlist_file(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let dir = playlists_dir(app)?;
+    let path = dir.join(format!("{}.json", playlist_slug(name)));
+    if !path.starts_with(&dir) {
+        return Err("playlist path escaped app data".into());
+    }
+    Ok(path)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NamedPlaylistInfo {
+    name: String,
+    count: usize,
+    saved_at: Option<serde_json::Value>,
+    file: String,
+}
+
+#[tauri::command]
+fn save_named_playlist(app: AppHandle, name: String, json: String, replace: Option<bool>) -> Result<NamedPlaylistInfo, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("playlist name required".into());
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let items = doc.get("items").and_then(|v| v.as_array()).ok_or("invalid playlist")?;
+    let count = items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count();
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("name".into(), serde_json::Value::String(trimmed.to_string()));
+        obj.entry("sspVersion").or_insert(serde_json::Value::from(1));
+        obj.entry("version").or_insert(serde_json::Value::from(2));
+    }
+    let path = playlist_file(&app, trimmed)?;
+    if path.exists() && !replace.unwrap_or(false) {
+        return Err("playlist already exists".into());
+    }
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    atomic_write(&path, text.as_bytes())?;
+    Ok(NamedPlaylistInfo {
+        name: trimmed.to_string(),
+        count,
+        saved_at: doc.get("savedAt").cloned(),
+        file: path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn list_named_playlists(app: AppHandle) -> Result<Vec<NamedPlaylistInfo>, String> {
+    let dir = playlists_dir(&app)?;
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let doc: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(doc) => doc,
+            Err(_) => continue,
+        };
+        let Some(items) = doc.get("items").and_then(|v| v.as_array()) else { continue };
+        let name = doc.get("name").and_then(|v| v.as_str()).unwrap_or("Playlist").to_string();
+        let count = items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count();
+        out.push(NamedPlaylistInfo {
+            name,
+            count,
+            saved_at: doc.get("savedAt").cloned(),
+            file: path.to_string_lossy().into_owned(),
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+#[tauri::command]
+fn read_named_playlist(app: AppHandle, name: String) -> Result<String, String> {
+    let path = playlist_file(&app, name.trim())?;
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_named_playlist(app: AppHandle, from: String, to: String) -> Result<NamedPlaylistInfo, String> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err("playlist name required".into());
+    }
+    let src = playlist_file(&app, from)?;
+    let text = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
+    let dest = playlist_file(&app, to)?;
+    if dest != src && dest.exists() {
+        return Err("playlist already exists".into());
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("name".into(), serde_json::Value::String(to.to_string()));
+    }
+    let pretty = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    atomic_write(&dest, pretty.as_bytes())?;
+    if dest != src {
+        let _ = std::fs::remove_file(src);
+    }
+    let count = doc.get("items").and_then(|v| v.as_array()).map(|items| {
+        items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count()
+    }).unwrap_or(0);
+    Ok(NamedPlaylistInfo {
+        name: to.to_string(),
+        count,
+        saved_at: doc.get("savedAt").cloned(),
+        file: dest.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn delete_named_playlist(app: AppHandle, name: String) -> Result<(), String> {
+    let path = playlist_file(&app, name.trim())?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn paths_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+    Ok(paths.iter().map(|p| !p.is_empty() && Path::new(p).is_file()).collect())
+}
+
+#[cfg(test)]
+mod slidex_store_tests {
+    use super::*;
+
+    #[test]
+    fn fnv_is_stable_and_not_rust_hasher() {
+        assert_eq!(fnv1a64("G:\\Photos\\a.jpg"), fnv1a64("G:\\Photos\\a.jpg"));
+        assert_ne!(fnv1a64("a"), fnv1a64("b"));
+        assert_eq!(fnv1a64(""), 0xcbf29ce484222325);
+    }
+
+    #[test]
+    fn atomic_write_replaces_without_leaving_a_partial_file() {
+        let dir = std::env::temp_dir().join(format!("slidex-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("playlists").join("demo.json");
+        atomic_write(&path, b"{\"ok\":1}").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"ok\":1}");
+        atomic_write(&path, b"{\"ok\":2}").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"ok\":2}");
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[tauri::command]
@@ -480,6 +829,15 @@ pub fn run() {
             close_playlist_window,
             focus_playlist_window,
             write_export_file,
+            read_crop_sidecar,
+            write_crop_sidecar,
+            delete_crop_sidecar,
+            save_named_playlist,
+            list_named_playlists,
+            read_named_playlist,
+            rename_named_playlist,
+            delete_named_playlist,
+            paths_exist,
             cast_discover,
             cast_load_still,
             cast_load_video,

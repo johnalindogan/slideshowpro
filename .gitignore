@@ -2,6 +2,7 @@
 node_modules/
 dist/
 ui/index.html
+ui/slidex-core.js
 src-tauri/target/
 src-tauri/gen/
 *.log
@@ -12,4 +13,5 @@ android/local.properties
 android/.idea/
 android/captures/
 android/app/src/main/assets/SlideShowPro.html
+android/app/src/main/assets/slidex-core.js
 *.iml

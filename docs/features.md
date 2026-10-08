@@ -32,7 +32,7 @@ SlideX is a single-file slideshow viewer and playlist tool. The current app incl
 
 - Zoom in and out.
 - Reset pan and zoom.
-- Videos show the **full frame** (`object-fit: contain`, letterbox/pillarbox OK). Ken Burns motion stays **images-only**; zoom/pan/drag still apply to the uncropped video frame.
+- Videos show the **full frame** (contain, letterbox/pillarbox OK). Ken Burns motion stays **images-only**. Manual zoom and pan apply to the whole frame, or to the whole crop when one is set.
 - Mirror horizontally or vertically.
 - Rotate clockwise or counterclockwise.
 - Mute playback and adjust volume.
@@ -72,6 +72,17 @@ SlideX is a single-file slideshow viewer and playlist tool. The current app incl
 - Remove items from the playlist.
 - Delete files from the system with playlist cleanup.
 - Save and reload playlists.
+- **Save playlist as…** stores a named playlist in the app data folder for `com.johnalindogan.slideshowpro` (one JSON file per name, written atomically). Saving over an existing name asks first. The file keeps the existing `{sspVersion, version, items, imageUpdates}` shape and adds `name`, `savedAt`, global `kb`, and `imageUpdates.crop`. A downloaded `SlideX_playlist.json` and an older `SlideShowX_playlist.json` still load.
+- **Load playlist** lists name, item count, and last-saved date, with Rename and Delete (Delete asks first). **Open file…** still loads a downloaded JSON.
+- Missing files stay in the list, labeled missing, and are skipped during playback. The toast reports how many are missing.
+- **Locate folder…** rewrites a shared path prefix (drive letters and UNC, case-insensitive on Windows, on a path-segment boundary) only for files that exist at the new location. It shows a count such as `12 of 14 found` and saves only after confirm.
+
+## Crop
+
+- Crop is slideshow-only. The original file is never rewritten.
+- Drag a rectangle with edge and corner handles. Aspect presets: Free, 16:9, 4:3, 1:1, 9:16, plus Reset. Same editor for photos and videos.
+- The crop is stored as fractions of the displayed frame in a sidecar named `<file>.sspcrop.json` (`sspCropVersion`, app, source). If that folder is not writable, the sidecar is saved under app data and the screen says so. A missing or broken sidecar is ignored.
+- The browser bitmap is already oriented, so a portrait phone photo crops the picture you see.
 
 ## Ken Burns
 
@@ -81,6 +92,7 @@ SlideX is a single-file slideshow viewer and playlist tool. The current app incl
 - Choose motion direction.
 - Choose easing behavior.
 - **5 named motion presets** (plus Auto / Off) in the Ken Burns modal and playlist per-slide override: Push In · Drift ↖, Pull Back · Drift ↘, Rise · Drift ↗, Descend · Drift ↙, Drift Across · Pan ↔. Images only — no Ken Burns on video.
+- At the widest view the photo is fully visible (contain). Every Ken Burns move starts or ends on that whole image (the whole crop, when a crop is set) and only zooms in from there. Manual wheel, pinch, and drag use the same zoom and cannot zoom out past the whole image or drag it off screen. Manual interaction pauses Ken Burns on that slide; the next slide resumes it.
 
 ## Keyboard Shortcuts
 
@@ -89,7 +101,8 @@ SlideX is a single-file slideshow viewer and playlist tool. The current app incl
 - Conflict detection: two commands cannot silently share a key (prior owner is unbound, with a toast).
 - Per-command reset and **Reset all to defaults**.
 - Defaults include navigation (`←`/`→`; context-sensitive seek on video), play/pause, speed ± (`↑`/`↓` and `,`/`.` co-defaults), zoom, fullscreen, mute, mirror, rotation, hide controls, filename toggle, edit nudges (`[`/`]` = sharpness), screenshot, and export graded (`E`).
-- Fixed (not remappable): Delete / Backspace, Alt+Arrows pan (does not collide with speed arrows), Escape.
+- Fixed (not remappable): Delete / Backspace remove items, Alt+Backspace resets pan/zoom and does not remove the item, Alt+Arrows pan, Escape.
+- View keys: `+` and `=` zoom in, `-` zooms out, `p` resets pan/zoom. All three stop at the whole image. Double-click on the stage resets too. `0` stays Hue +.
 
 ## Persistence
 
@@ -101,7 +114,16 @@ SlideX is a single-file slideshow viewer and playlist tool. The current app incl
 ## Export and Capture
 
 - Save a screenshot of the current view with grades baked (including lowlights/highlights/gamma/sharpness), auto-saving to a Screenshots folder when supported.
-- **Export Graded** (toolbar or `E`): for images, write a JPEG with the full color suite baked via the native save dialog (Tauri) or browser download. For video, best-effort canvas/MediaRecorder WebM bake for short clips (≤45s); otherwise export a `.sspgrade.json` sidecar documenting the grade (ffmpeg is not bundled). Playlist save still keeps grades on the item.
+- **Export Graded** (toolbar or `E`): for images, write a JPEG with the full color suite baked via the native save dialog (Tauri) or browser download. For video, best-effort canvas/MediaRecorder WebM bake for short clips (≤45s); otherwise export a `.sspgrade.json` sidecar documenting the grade (ffmpeg is not bundled). Playlist save still keeps grades on the item. A crop is included in that same canvas path.
+- **Export cropped**: writes a new file only (`name_crop.jpg`, or `name_crop (2).jpg` when that name is taken). JPEG quality 95, PNG when the source is PNG and the grade is still default, HEIC as JPEG. Size is the crop times the oriented resolution. Date-taken metadata is copied. A graded photo reuses the graded JPEG path. A video export is the current frame at the video's native resolution. The original is never overwritten.
+
+## QA checklist
+
+- Crop a portrait phone photo, a landscape photo, and a video. Restart and confirm the crop is still there, Ken Burns stays inside the crop, the original file hash is unchanged, and the console has no script errors.
+- Export a cropped portrait photo, a graded landscape photo, and a video frame. Check each output's size, orientation, and colour. Originals stay untouched.
+- Save two named playlists of about 20 mixed items. Restart and load both. Rename one file on disk and confirm that item shows as missing. Upgrade the app and confirm both playlists are still in app data.
+- On ZB23, load a playlist that points at `\\AX03\G\...`, Locate folder against `\\AX03\Archive01`, restart, and confirm the rewritten paths persist. Items outside the old prefix stay put. `G:\Photos` does not match `G:\Photos2`.
+- Ken Burns: portrait photo, landscape photo, and a very wide panorama. Zoom fully in and out, drag to each edge, and reset with `p`, double-click, and Alt+Backspace. `+`/`=` zoom in, `-` zooms out, and `0` still raises hue.
 
 ## Supported Media
 

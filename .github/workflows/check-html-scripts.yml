@@ -12,5 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Syntax-check SlideShowPro.html inline scripts
+      - name: Syntax-check slideshow HTML inline scripts
         run: node scripts/check-html-scripts.mjs
+      - name: Unit tests
+        run: node --test slidex-core.test.mjs
