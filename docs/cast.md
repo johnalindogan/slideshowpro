@@ -46,7 +46,7 @@ The status line also names the adapters that were browsed and, when the PC has n
 - Port is chosen at random inside TCP **47200–47215** so the firewall rule can name that range. UDP 5353 is discovery only.
 - Each URL is `http://<lan-ip>:<port>/m/<session-token>/<file-key>`. The token is per session. The key is random per playlist file. The frontend is not given the token.
 - Only files in the current playlist are registered. Directory listing, `..`, encoded dots, extra path segments, and a wrong token are 404. The book is replaced when the playlist changes and revoked when casting stops. The listener closes on disconnect and when the app exits.
-- Each connection is its own thread, up to 8 at once. Past that the server answers 503 and does not queue. Every 64 KB, and whenever a write times out, the thread checks the stop flag and that the session token is still valid. Stop or a revoke closes the socket, so a video range cannot hold the next photo or a shutdown.
+- Each connection is its own thread, up to 8 at once. Past that the server answers 503 and does not queue. Sockets are non-blocking. A full TV buffer returns `WouldBlock` and the thread waits about 8 ms, then writes again only the bytes that were not accepted. It does not use a socket timeout, because on Windows that leaves the socket undefined and a retried write can drop or repeat bytes. Every 64 KB it checks the stop flag and that the session token is still valid. A connection with no forward progress for 30 seconds is closed so it cannot keep one of the 8 slots. Stop or a revoke closes the socket, so a video range cannot hold the next photo or a shutdown.
 - Nothing is logged that contains a token, a device UUID, or a full path.
 - After the token check, `transform_media` opens the allowlisted file. That is the identity transform. A later slideshow-only crop sidecar can return a generated still from that function without changing auth or the socket loop. Crop is not implemented in this release.
 
@@ -64,7 +64,7 @@ Connecting again starts a new session and a new token. The app does not need a r
 
 ## Firewall
 
-The NSIS install is per-user (`RequestExecutionLevel user`, files under `%LOCALAPPDATA%\SlideShowX`). Windows will not add a port-scoped Private-only rule from that context. The installer does not write a script. It asks once with `ExecShell "runas"` of `cmd.exe /c` and the `netsh advfirewall` commands as arguments. Before that prompt it runs `netsh ... show rule` without elevation. If both rules already match this `slideshowpro.exe` (Private, not Public, TCP 47200–47215 and UDP 5353), it skips the prompt and writes `status=present`. The rules are:
+The NSIS install is per-user (`RequestExecutionLevel user`, files under `%LOCALAPPDATA%\SlideShowX`). Windows will not add a port-scoped Private-only rule from that context. The installer does not write a script. It asks once with `ExecShell "runas"` of `cmd.exe /c` and the `netsh advfirewall` commands as arguments. `cmd /c` strips only the first and last quote, so rule names and paths use plain inner quotes (`name="SlideX Cast media (Private)"`), not backslash-quotes. Before that prompt it runs `netsh ... show rule name="..."` without elevation. If both rules already match this `slideshowpro.exe` (Private, not Public, TCP 47200–47215 and UDP 5353), it skips the prompt and writes `status=present`. The rules are:
 
 | Rule | Program | Profile | Ports |
 |---|---|---|---|

@@ -741,10 +741,10 @@ Function CastFirewallInstall
  StrCpy $1 "$INSTDIR\cast-firewall.txt"
  StrCpy $R8 "$INSTDIR\${MAINBINARYNAME}.exe"
  ${StrCase} $R8 $R8 "L"
- nsExec::ExecToStack 'netsh advfirewall firewall show rule name="${CAST_FW_MEDIA_NAME}"'
+ nsExec::ExecToStack 'netsh advfirewall firewall show rule name=$\"${CAST_FW_MEDIA_NAME}$\"'
  Pop $0
  Pop $R5
- nsExec::ExecToStack 'netsh advfirewall firewall show rule name="${CAST_FW_MDNS_NAME}"'
+ nsExec::ExecToStack 'netsh advfirewall firewall show rule name=$\"${CAST_FW_MDNS_NAME}$\"'
  Pop $0
  Pop $R6
  ${StrCase} $R5 $R5 "L"
@@ -770,7 +770,8 @@ Function CastFirewallInstall
   Return
  ${EndIf}
  Delete "$1"
- StrCpy $R9 '/c "netsh advfirewall firewall delete rule name=\"${CAST_FW_MEDIA_NAME}\" >nul 2>&1 & netsh advfirewall firewall delete rule name=\"${CAST_FW_MDNS_NAME}\" >nul 2>&1 & (netsh advfirewall firewall add rule name=\"${CAST_FW_MEDIA_NAME}\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private program=\"$INSTDIR\${MAINBINARYNAME}.exe\" enable=yes && netsh advfirewall firewall add rule name=\"${CAST_FW_MDNS_NAME}\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private program=\"$INSTDIR\${MAINBINARYNAME}.exe\" enable=yes && (echo status=added>\"$INSTDIR\cast-firewall.txt\") || (echo status=failed>\"$INSTDIR\cast-firewall.txt\"))"'
+ ; cmd /c strips only the first and last quote. Inner quotes are plain ", never \".
+ StrCpy $R9 '/c $\"netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\" >nul 2>&1 & netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\" >nul 2>&1 & (netsh advfirewall firewall add rule name=$\"${CAST_FW_MEDIA_NAME}$\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes && netsh advfirewall firewall add rule name=$\"${CAST_FW_MDNS_NAME}$\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes && (echo status=added>$\"$INSTDIR\cast-firewall.txt$\") || (echo status=failed>$\"$INSTDIR\cast-firewall.txt$\"))$\"'
  DetailPrint "Cast firewall elevated command: $\"$SYSDIR\cmd.exe$\" $R9"
  ExecShell "runas" "$SYSDIR\cmd.exe" '$R9' SW_HIDE
  StrCpy $3 0
@@ -825,7 +826,7 @@ Function un.CastFirewallUninstall
  Delete "$TEMP\slidex-cast-firewall-removed.txt"
  Delete "$INSTDIR\cast-firewall.txt"
  StrCpy $1 "$INSTDIR\cast-firewall.txt"
- StrCpy $R9 '/c "netsh advfirewall firewall delete rule name=\"${CAST_FW_MEDIA_NAME}\" & netsh advfirewall firewall delete rule name=\"${CAST_FW_MDNS_NAME}\" & echo status=removed>\"$INSTDIR\cast-firewall.txt\""'
+ StrCpy $R9 '/c $\"netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\" & netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\" & echo status=removed>$\"$INSTDIR\cast-firewall.txt$\"$\"'
  DetailPrint "Cast firewall elevated command: $\"$SYSDIR\cmd.exe$\" $R9"
  ExecShell "runas" "$SYSDIR\cmd.exe" '$R9' SW_HIDE
  StrCpy $3 0

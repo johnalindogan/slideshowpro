@@ -16,3 +16,20 @@ jobs:
         run: node scripts/check-html-scripts.mjs
       - name: Unit tests
         run: node --test slidex-core.test.mjs
+      - name: Check Cast firewall command quoting
+        run: node scripts/cast-firewall-commands.mjs --check
+
+  cast-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sync the UI the Tauri build script reads
+        run: node scripts/sync-ui.mjs
+      - name: Cast unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib cast::tests
+      - name: Run the installer firewall commands
+        run: node scripts/cast-firewall-commands.mjs --apply

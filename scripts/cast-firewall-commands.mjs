@@ -1,0 +1,269 @@
+// Read the Cast firewall command lines out of src-tauri/windows/installer.nsi.
+// That file is the only copy. NSIS `$\"` becomes a plain quote, then
+// ${defines}, $INSTDIR, and $SYSDIR are substituted the way the installer does.
+//
+//   node scripts/cast-firewall-commands.mjs --check
+//   node scripts/cast-firewall-commands.mjs --apply
+//
+// --check proves the runtime text has plain inner quotes and no \" .
+// --apply (Windows, already elevated) runs those exact command lines.
+
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const nsiPath = path.join(root, 'src-tauri', 'windows', 'installer.nsi');
+const confPath = path.join(root, 'src-tauri', 'tauri.conf.json');
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function parseDefines(text) {
+  const defs = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s*!define\s+([A-Za-z0-9_]+)\s+"(.*)"\s*$/);
+    if (match) defs[match[1]] = match[2];
+  }
+  return defs;
+}
+
+function functionBody(text, header) {
+  const start = text.indexOf(header);
+  if (start < 0) fail(`missing ${header} in installer.nsi`);
+  const end = text.indexOf('FunctionEnd', start);
+  if (end < 0) fail(`missing FunctionEnd after ${header}`);
+  return text.slice(start, end);
+}
+
+function extractQuoted(body, label) {
+  const marker = "StrCpy $R9 '";
+  const at = body.indexOf(marker);
+  if (at < 0) fail(`missing ${marker} in ${label}`);
+  const from = at + marker.length;
+  const end = body.indexOf("'", from);
+  if (end < 0) fail(`unclosed StrCpy in ${label}`);
+  return body.slice(from, end);
+}
+
+function mainBinaryName() {
+  const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+  const name = conf.mainBinaryName;
+  if (!name) fail('tauri.conf.json has no mainBinaryName');
+  return name;
+}
+
+function nsisRuntime(raw, vars) {
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    if (raw.startsWith('$\\"', i)) {
+      out += '"';
+      i += 2;
+      continue;
+    }
+    out += raw[i];
+  }
+  if (out.includes('\\"')) fail(`runtime command still contains \\" : ${out}`);
+  out = out.replace(/\$\{([A-Za-z0-9_]+)\}/g, (all, name) => {
+    if (!Object.prototype.hasOwnProperty.call(vars, name)) fail(`undefined NSIS define \${${name}}`);
+    return vars[name];
+  });
+  out = out.replaceAll('$INSTDIR', vars.INSTDIR);
+  out = out.replaceAll('$SYSDIR', vars.SYSDIR);
+  if (out.includes('${') || out.includes('$INSTDIR') || out.includes('$SYSDIR') || out.includes('$\\')) {
+    fail(`unresolved NSIS token in: ${out}`);
+  }
+  return out;
+}
+
+function loadCommands(instDir, sysDir) {
+  const text = fs.readFileSync(nsiPath, 'utf8');
+  const defs = parseDefines(text);
+  const binary = mainBinaryName();
+  const definedBinary = defs.MAINBINARYNAME;
+  if (definedBinary && !definedBinary.includes('{{') && definedBinary !== binary) {
+    fail(`MAINBINARYNAME ${definedBinary} does not match tauri.conf.json ${binary}`);
+  }
+  const vars = {
+    ...defs,
+    MAINBINARYNAME: binary,
+    INSTDIR: instDir,
+    SYSDIR: sysDir,
+  };
+  const installParams = nsisRuntime(extractQuoted(functionBody(text, 'Function CastFirewallInstall'), 'install'), vars);
+  const uninstallParams = nsisRuntime(
+    extractQuoted(functionBody(text, 'Function un.CastFirewallUninstall'), 'uninstall'),
+    vars,
+  );
+  const shows = [...text.matchAll(/nsExec::ExecToStack '([^']*)'/g)].map((match) => nsisRuntime(match[1], vars));
+  return { defs, binary, installParams, uninstallParams, shows, sysDir, instDir };
+}
+
+function assertPlainQuotes(label, params, instDir, binary) {
+  if (!params.startsWith('/c "')) fail(`${label} does not start with /c "`);
+  if (!params.endsWith('"')) fail(`${label} does not end with the outer quote`);
+  if (params.includes('\\"')) fail(`${label} still has a backslash-quote`);
+  const command = params.slice('/c "'.length, -1);
+  if (command.startsWith('"')) {
+    fail(`${label} has an extra quote after the /c opener: ${params}`);
+  }
+  const quotes = [...command].filter((ch) => ch === '"').length;
+  if (quotes % 2 !== 0) fail(`${label} has unbalanced inner quotes (${quotes})`);
+  const exe = `${instDir}\\${binary}.exe`;
+  const result = `${instDir}\\cast-firewall.txt`;
+  for (const piece of [
+    'name="SlideX Cast media (Private)"',
+    'name="SlideX Cast mDNS (Private)"',
+    `program="${exe}"`,
+  ]) {
+    if (label === 'uninstall' && piece.startsWith('program=')) continue;
+    if (!params.includes(piece)) fail(`${label} missing ${piece}`);
+  }
+  if (label === 'install') {
+    if (!params.includes('localport=47200-47215')) fail('install missing TCP range');
+    if (!params.includes('localport=5353')) fail('install missing UDP port');
+    if (!params.includes('profile=private')) fail('install missing private profile');
+    if (!params.includes(`(echo status=added>"${result}")`)) fail('install missing status=added redirect');
+    if (!params.includes(`(echo status=failed>"${result}")`)) fail('install missing status=failed redirect');
+  } else {
+    if (!params.includes(`echo status=removed>"${result}"`)) fail('uninstall missing status=removed redirect');
+  }
+  return command;
+}
+
+function printCommand(label, sysDir, params) {
+  const line = `${sysDir}\\cmd.exe ${params}`;
+  console.log(`CAST_FIREWALL_${label}_CMDLINE=${line}`);
+  return line;
+}
+
+function runCmd(sysDir, params) {
+  const exe = path.join(sysDir, 'cmd.exe');
+  const result = spawnSync(exe, [params], {
+    windowsVerbatimArguments: true,
+    stdio: 'inherit',
+  });
+  if (result.error) fail(result.error.message);
+  if (result.status !== 0) fail(`cmd exited ${result.status}`);
+}
+
+function netshShow(sysDir, ruleName) {
+  const exe = path.join(sysDir, 'netsh.exe');
+  const result = spawnSync(
+    exe,
+    ['advfirewall', 'firewall', 'show', 'rule', `name=${ruleName}`, 'verbose'],
+    { encoding: 'utf8' },
+  );
+  const text = `${result.stdout || ''}\n${result.stderr || ''}`;
+  return { status: result.status, text };
+}
+
+function field(text, name) {
+  const match = text.match(new RegExp(`^${name}:\\s*(.*)$`, 'im'));
+  return match ? match[1].trim() : '';
+}
+
+function assertRule(text, ruleName, exePath, protocol, ports) {
+  if (/no rules match/i.test(text)) fail(`rule missing: ${ruleName}\n${text}`);
+  const gotName = field(text, 'Rule Name');
+  if (gotName !== ruleName) fail(`rule name ${JSON.stringify(gotName)} != ${JSON.stringify(ruleName)}`);
+  const profiles = field(text, 'Profiles');
+  if (!/private/i.test(profiles) || /public/i.test(profiles)) {
+    fail(`${ruleName} profile is ${JSON.stringify(profiles)}, want Private only`);
+  }
+  const proto = field(text, 'Protocol');
+  if (proto.toUpperCase() !== protocol) fail(`${ruleName} protocol ${proto} != ${protocol}`);
+  const localPort = field(text, 'LocalPort');
+  if (localPort !== ports) fail(`${ruleName} port ${localPort} != ${ports}`);
+  const program = field(text, 'Program');
+  if (program.toLowerCase() !== exePath.toLowerCase()) {
+    fail(`${ruleName} program ${program} != ${exePath}`);
+  }
+  const action = field(text, 'Action');
+  if (!/allow/i.test(action)) fail(`${ruleName} action ${action}`);
+}
+
+function assertGone(text, ruleName) {
+  if (!/no rules match/i.test(text)) fail(`rule still present: ${ruleName}\n${text}`);
+}
+
+function readStatus(file) {
+  if (!fs.existsSync(file)) fail(`missing ${file}`);
+  return fs.readFileSync(file, 'utf8');
+}
+
+const apply = process.argv.includes('--apply');
+const sysDir = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32') : 'C:\\Windows\\System32';
+const instDir = apply
+  ? path.join(os.tmpdir(), 'SlideX Cast CI')
+  : 'C:\\SlideX Cast CI';
+
+const loaded = loadCommands(instDir, sysDir);
+assertPlainQuotes('install', loaded.installParams, instDir, loaded.binary);
+assertPlainQuotes('uninstall', loaded.uninstallParams, instDir, loaded.binary);
+if (loaded.shows.length !== 2) fail(`expected 2 unelevated show commands, found ${loaded.shows.length}`);
+for (const show of loaded.shows) {
+  if (show.includes('\\"')) fail(`show command still has a backslash-quote: ${show}`);
+  if (!show.includes('name="SlideX Cast')) fail(`show command missing plain quotes: ${show}`);
+  console.log(`CAST_FIREWALL_SHOW_CMDLINE=${show}`);
+}
+
+printCommand('INSTALL', sysDir, loaded.installParams);
+printCommand('UNINSTALL', sysDir, loaded.uninstallParams);
+
+if (!apply) {
+  console.log('cast firewall command check ok');
+  process.exit(0);
+}
+
+if (process.platform !== 'win32') fail('--apply runs on Windows');
+
+fs.rmSync(instDir, { recursive: true, force: true });
+fs.mkdirSync(instDir, { recursive: true });
+const exePath = path.join(instDir, `${loaded.binary}.exe`);
+fs.writeFileSync(exePath, '');
+const statusFile = path.join(instDir, 'cast-firewall.txt');
+
+try {
+  runCmd(sysDir, loaded.installParams);
+  const added = readStatus(statusFile);
+  console.log(`CAST_FIREWALL_STATUS_AFTER_INSTALL=${JSON.stringify(added)}`);
+  if (!added.includes('status=added')) fail(`cast-firewall.txt did not record status=added:\n${added}`);
+
+  const mediaName = loaded.defs.CAST_FW_MEDIA_NAME;
+  const mdnsName = loaded.defs.CAST_FW_MDNS_NAME;
+  const media = netshShow(sysDir, mediaName);
+  const mdns = netshShow(sysDir, mdnsName);
+  console.log('--- show rule media verbose ---');
+  console.log(media.text.trim());
+  console.log('--- show rule mdns verbose ---');
+  console.log(mdns.text.trim());
+  assertRule(media.text, mediaName, exePath, 'TCP', loaded.defs.CAST_FW_TCP);
+  assertRule(mdns.text, mdnsName, exePath, 'UDP', loaded.defs.CAST_FW_UDP);
+
+  runCmd(sysDir, loaded.uninstallParams);
+  const removed = readStatus(statusFile);
+  console.log(`CAST_FIREWALL_STATUS_AFTER_UNINSTALL=${JSON.stringify(removed)}`);
+  if (!removed.includes('status=removed')) fail(`cast-firewall.txt did not record status=removed:\n${removed}`);
+
+  const mediaGone = netshShow(sysDir, mediaName);
+  const mdnsGone = netshShow(sysDir, mdnsName);
+  console.log('--- show rule media after uninstall ---');
+  console.log(mediaGone.text.trim());
+  console.log('--- show rule mdns after uninstall ---');
+  console.log(mdnsGone.text.trim());
+  assertGone(mediaGone.text, mediaName);
+  assertGone(mdnsGone.text, mdnsName);
+  console.log('cast firewall install and uninstall ok');
+} finally {
+  try {
+    const cleanup = loadCommands(instDir, sysDir);
+    runCmd(sysDir, cleanup.uninstallParams);
+  } catch {
+    // The uninstall command already ran, or netsh was never installed.
+  }
+  fs.rmSync(instDir, { recursive: true, force: true });
+}

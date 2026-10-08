@@ -55,7 +55,10 @@ pub const MEDIA_LOAD_TIMEOUT_MESSAGE: &str =
 
 const HTTP_CONN_CAP: usize = 8;
 const HTTP_CHUNK: usize = 64 * 1024;
-const HTTP_IO_TIMEOUT: Duration = Duration::from_millis(200);
+/// No socket SO_RCVTIMEO/SO_SNDTIMEO. A Windows timeout leaves the socket undefined,
+/// and a retried write can drop or repeat bytes. Stall with non-blocking WouldBlock instead.
+const HTTP_POLL: Duration = Duration::from_millis(8);
+const HTTP_IDLE: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetCategory {
@@ -924,13 +927,21 @@ impl MediaHttp {
     }
 
     fn bind_on(ip: Ipv4Addr, ports: impl IntoIterator<Item = u16>) -> Result<Self, String> {
+        Self::bind_with_idle(ip, ports, HTTP_IDLE)
+    }
+
+    fn bind_with_idle(
+        ip: Ipv4Addr,
+        ports: impl IntoIterator<Item = u16>,
+        idle: Duration,
+    ) -> Result<Self, String> {
         if ip.is_unspecified() {
             return Err("Refusing to listen on 0.0.0.0.".into());
         }
         let mut last = "no port in the Cast range was free".to_string();
         for port in ports {
             match TcpListener::bind(SocketAddr::from((ip, port))) {
-                Ok(listener) => return Self::from_listener(listener, ip),
+                Ok(listener) => return Self::from_listener(listener, ip, idle),
                 Err(e) => last = e.to_string(),
             }
         }
@@ -939,7 +950,7 @@ impl MediaHttp {
         ))
     }
 
-    fn from_listener(listener: TcpListener, ip: Ipv4Addr) -> Result<Self, String> {
+    fn from_listener(listener: TcpListener, ip: Ipv4Addr, idle: Duration) -> Result<Self, String> {
         let port = listener
             .local_addr()
             .map_err(|e| format!("http local_addr: {e}"))?
@@ -962,7 +973,7 @@ impl MediaHttp {
         let stop_t = Arc::clone(&stop);
         let workers_t = Arc::clone(&workers);
         let inflight_t = Arc::clone(&inflight);
-        let join = thread::spawn(move || http_loop(listener, book_t, stop_t, workers_t, inflight_t));
+        let join = thread::spawn(move || http_loop(listener, book_t, stop_t, workers_t, inflight_t, idle));
         eprintln!("[cast] media server listening on one LAN address, port {port}");
         Ok(Self {
             port,
@@ -1031,15 +1042,22 @@ fn http_loop(
     stop: Arc<AtomicBool>,
     workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
     inflight: Arc<AtomicUsize>,
+    idle: Duration,
 ) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut sock, _)) => {
-                let _ = sock.set_read_timeout(Some(HTTP_IO_TIMEOUT));
-                let _ = sock.set_write_timeout(Some(HTTP_IO_TIMEOUT));
+                // Non-blocking. Do not set SO_RCVTIMEO or SO_SNDTIMEO.
+                if sock.set_nonblocking(true).is_err() {
+                    continue;
+                }
                 let _ = sock.set_nodelay(true);
                 if !claim_conn_slot(&inflight) {
+                    // Dropping a socket that still holds the request makes Linux send RST
+                    // and the client never sees the 503.
+                    let _ = discard_unread(&mut sock);
                     let _ = write_empty(&mut sock, 503);
+                    let _ = sock.shutdown(Shutdown::Write);
                     continue;
                 }
                 let book_c = Arc::clone(&book);
@@ -1053,7 +1071,7 @@ fn http_loop(
                         }
                     }
                     let _slot = Slot(inflight_c);
-                    let _ = serve_client(&mut sock, &book_c, &stop_c);
+                    let _ = serve_client(&mut sock, &book_c, &stop_c, idle);
                 });
                 match spawned {
                     Ok(handle) => {
@@ -1093,8 +1111,14 @@ fn claim_conn_slot(inflight: &AtomicUsize) -> bool {
     }
 }
 
-fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>, stop: &AtomicBool) -> std::io::Result<()> {
-    let raw = read_headers(sock, stop)?;
+fn serve_client(
+    sock: &mut TcpStream,
+    book: &Mutex<AllowBook>,
+    stop: &AtomicBool,
+    idle: Duration,
+) -> std::io::Result<()> {
+    let mut pace = IoPace::new(idle);
+    let raw = read_headers(sock, stop, &mut pace)?;
     let text = String::from_utf8_lossy(&raw);
     let mut lines = text.split("\r\n");
     let request = lines.next().unwrap_or("");
@@ -1133,14 +1157,80 @@ fn serve_client(sock: &mut TcpStream, book: &Mutex<AllowBook>, stop: &AtomicBool
     let head = method == "HEAD";
     if let Some(spec) = range {
         match parse_range(&spec, len) {
-            Some((start, end)) => write_file(sock, file, &ctype, start, end, len, head, stop, book, &token, &key),
+            Some((start, end)) => {
+                write_file(sock, file, &ctype, start, end, len, head, stop, book, &token, &key, &mut pace)
+            }
             None => write_empty(sock, 416),
         }
     } else if len == 0 {
-        write_file(sock, file, &ctype, 0, 0, 0, head, stop, book, &token, &key)
+        write_file(sock, file, &ctype, 0, 0, 0, head, stop, book, &token, &key, &mut pace)
     } else {
-        write_file(sock, file, &ctype, 0, len - 1, len, head, stop, book, &token, &key)
+        write_file(sock, file, &ctype, 0, len - 1, len, head, stop, book, &token, &key, &mut pace)
     }
+}
+
+struct IoPace {
+    last: Instant,
+    idle: Duration,
+}
+
+impl IoPace {
+    fn new(idle: Duration) -> Self {
+        Self {
+            last: Instant::now(),
+            idle,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.last = Instant::now();
+    }
+
+    fn stalled(&self) -> bool {
+        self.last.elapsed() >= self.idle
+    }
+}
+
+fn discard_unread(sock: &mut TcpStream) -> std::io::Result<()> {
+    let mut buf = [0u8; 1024];
+    loop {
+        match sock.read(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn close_stalled(sock: &mut TcpStream) -> std::io::Error {
+    // Write shutdown sends FIN so the TV's read returns. Drop closes the fd
+    // when the worker returns, which frees the connection slot.
+    let _ = discard_unread(sock);
+    let _ = sock.shutdown(Shutdown::Write);
+    std::io::Error::new(ErrorKind::TimedOut, "no forward progress")
+}
+
+fn io_wait(sock: &mut TcpStream, pace: &IoPace, stop: &AtomicBool) -> std::io::Result<()> {
+    if stop.load(Ordering::SeqCst) {
+        let _ = sock.shutdown(Shutdown::Both);
+        return Err(std::io::Error::new(ErrorKind::ConnectionAborted, "cast stopped"));
+    }
+    if pace.stalled() {
+        return Err(close_stalled(sock));
+    }
+    let remain = pace.idle.saturating_sub(pace.last.elapsed());
+    thread::sleep(HTTP_POLL.min(remain));
+    if stop.load(Ordering::SeqCst) {
+        let _ = sock.shutdown(Shutdown::Both);
+        return Err(std::io::Error::new(ErrorKind::ConnectionAborted, "cast stopped"));
+    }
+    if pace.stalled() {
+        return Err(close_stalled(sock));
+    }
+    Ok(())
 }
 
 fn media_token_key(url: &str) -> Option<(String, String)> {
@@ -1192,19 +1282,18 @@ fn transform_media(entry: &AllowEntry) -> std::io::Result<PreparedMedia> {
     })
 }
 
-fn read_headers(sock: &mut TcpStream, stop: &AtomicBool) -> std::io::Result<Vec<u8>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn read_headers(sock: &mut TcpStream, stop: &AtomicBool, pace: &mut IoPace) -> std::io::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 512];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 8192 {
-        if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
-            return Err(std::io::Error::new(ErrorKind::TimedOut, "headers"));
-        }
         match sock.read(&mut tmp) {
             Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Ok(n) => {
+                pace.advance();
+                buf.extend_from_slice(&tmp[..n]);
+            }
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => io_wait(sock, pace, stop)?,
             Err(e) => return Err(e),
         }
     }
@@ -1220,7 +1309,23 @@ fn write_empty(sock: &mut TcpStream, code: u16) -> std::io::Result<()> {
         _ => "OK",
     };
     let msg = format!("HTTP/1.1 {code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-    sock.write_all(msg.as_bytes())
+    let mut data = msg.as_bytes();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while !data.is_empty() {
+        match sock.write(data) {
+            Ok(0) => return Err(std::io::Error::new(ErrorKind::WriteZero, "closed")),
+            Ok(n) => data = &data[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(e);
+                }
+                thread::sleep(HTTP_POLL);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 fn write_all_checked(
@@ -1230,6 +1335,7 @@ fn write_all_checked(
     book: &Mutex<AllowBook>,
     token: &str,
     key: &str,
+    pace: &mut IoPace,
 ) -> std::io::Result<()> {
     while !data.is_empty() {
         if transfer_aborted(stop, book, token, key) {
@@ -1238,9 +1344,13 @@ fn write_all_checked(
         }
         match sock.write(data) {
             Ok(0) => return Err(std::io::Error::new(ErrorKind::WriteZero, "closed")),
-            Ok(n) => data = &data[n..],
+            Ok(n) => {
+                // Only these bytes were accepted. A later WouldBlock retries the rest, never these.
+                pace.advance();
+                data = &data[n..];
+            }
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => io_wait(sock, pace, stop)?,
             Err(e) => return Err(e),
         }
     }
@@ -1259,6 +1369,7 @@ fn write_file(
     book: &Mutex<AllowBook>,
     token: &str,
     key: &str,
+    pace: &mut IoPace,
 ) -> std::io::Result<()> {
     if transfer_aborted(stop, book, token, key) {
         let _ = sock.shutdown(Shutdown::Both);
@@ -1268,7 +1379,7 @@ fn write_file(
         let msg = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         );
-        return write_all_checked(sock, msg.as_bytes(), stop, book, token, key);
+        return write_all_checked(sock, msg.as_bytes(), stop, book, token, key, pace);
     }
     if start > end_inclusive || end_inclusive >= total {
         return write_empty(sock, 416);
@@ -1284,7 +1395,7 @@ fn write_file(
         msg.push_str(&format!("Content-Range: bytes {start}-{end_inclusive}/{total}\r\n"));
     }
     msg.push_str("\r\n");
-    write_all_checked(sock, msg.as_bytes(), stop, book, token, key)?;
+    write_all_checked(sock, msg.as_bytes(), stop, book, token, key, pace)?;
     if head {
         return Ok(());
     }
@@ -1301,7 +1412,7 @@ fn write_file(
         if n == 0 {
             break;
         }
-        write_all_checked(sock, &buf[..n], stop, book, token, key)?;
+        write_all_checked(sock, &buf[..n], stop, book, token, key, pace)?;
         left -= n as u64;
     }
     Ok(())
@@ -2509,24 +2620,30 @@ mod tests {
     /// A small receive window keeps a large response blocked in `write`, instead of
     /// sitting entirely in the kernel buffer.
     fn shrink_recv_buffer(sock: &TcpStream) {
+        let sz: i32 = 1024;
         #[cfg(unix)]
-        {
+        unsafe {
             use std::os::fd::AsRawFd;
-            let fd = sock.as_raw_fd();
-            let sz: i32 = 1024;
-            unsafe {
-                extern "C" {
-                    fn setsockopt(
-                        sockfd: i32,
-                        level: i32,
-                        optname: i32,
-                        optval: *const u8,
-                        optlen: u32,
-                    ) -> i32;
-                }
-                // Linux SOL_SOCKET = 1, SO_RCVBUF = 8.
-                let _ = setsockopt(fd, 1, 8, &sz as *const i32 as *const u8, 4);
+            extern "C" {
+                fn setsockopt(sockfd: i32, level: i32, optname: i32, optval: *const u8, optlen: u32) -> i32;
             }
+            // Linux SOL_SOCKET = 1, SO_RCVBUF = 8.
+            let _ = setsockopt(sock.as_raw_fd(), 1, 8, &sz as *const i32 as *const u8, 4);
+        }
+        #[cfg(windows)]
+        unsafe {
+            use std::os::windows::io::AsRawSocket;
+            extern "system" {
+                fn setsockopt(s: usize, level: i32, optname: i32, optval: *const u8, optlen: i32) -> i32;
+            }
+            // Windows SOL_SOCKET = 0xffff, SO_RCVBUF = 0x1002.
+            let _ = setsockopt(
+                sock.as_raw_socket() as usize,
+                0xffff,
+                0x1002,
+                &sz as *const i32 as *const u8,
+                4,
+            );
         }
     }
 
@@ -2625,6 +2742,29 @@ mod tests {
         );
         let (status, _) = http_get(http.bind_ip, http.port, &req_path);
         assert_eq!(status, 404);
+    }
+
+    #[test]
+    fn stalled_client_is_closed_after_idle_and_releases_its_slot() {
+        assert_eq!(HTTP_IDLE, Duration::from_secs(30));
+        let idle = Duration::from_millis(800);
+        let big_path = scratch("idle.jpg", &big_jpeg(4 * 1024 * 1024));
+        let small_path = scratch("idle-small.jpg", &jpeg_bytes());
+        let http = MediaHttp::bind_with_idle(Ipv4Addr::LOCALHOST, std::iter::once(0), idle).unwrap();
+        http.set_playlist(&[big_path.clone(), small_path.clone()]).unwrap();
+        let (url_big, _) = http.media_url(&big_path).unwrap();
+        let (url_small, _) = http.media_url(&small_path).unwrap();
+        let _held: Vec<_> = (0..HTTP_CONN_CAP)
+            .map(|_| hold_transfer(http.bind_ip, http.port, &url_path(&url_big)))
+            .collect();
+        thread::sleep(Duration::from_millis(200));
+        let (busy, _) = http_get(http.bind_ip, http.port, &url_path(&url_small));
+        assert_eq!(busy, 503, "eight stalled transfers should hold every connection slot");
+
+        thread::sleep(idle + Duration::from_millis(400));
+        let (status, body) = http_get(http.bind_ip, http.port, &url_path(&url_small));
+        assert_eq!(status, 200, "{body:?}");
+        assert_eq!(body, jpeg_bytes());
     }
 
     #[test]
