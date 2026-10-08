@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SlideShowX",
-  "version": "0.1.6",
+  "productName": "SlideX",
+  "version": "0.1.7",
   "identifier": "com.johnalindogan.slideshowpro",
+  "mainBinaryName": "slideshowpro",
   "build": {
     "frontendDist": "../ui"
   },
@@ -11,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SlideShowX",
+        "title": "SlideX",
         "width": 1280,
         "height": 800,
         "resizable": true,
@@ -43,7 +44,8 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "template": "windows/installer.nsi"
       }
     },
     "fileAssociations": [

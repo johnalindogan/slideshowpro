@@ -1,7 +1,7 @@
 [package]
 name = "slideshowpro"
-version = "0.1.6"
-description = "Thin Tauri Windows wrapper for SlideShowX"
+version = "0.1.7"
+description = "Thin Tauri Windows wrapper for SlideX"
 authors = ["johnalindogan"]
 edition = "2021"
 rust-version = "1.77.2"

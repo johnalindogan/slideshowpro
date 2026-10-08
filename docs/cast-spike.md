@@ -1,4 +1,4 @@
-# SlideShowX Cast Spike — Chromecast / Google TV (content cast)
+# SlideX Cast Spike — Chromecast / Google TV (content cast)
 
 **Status:** spike / draft PR  
 **Stack (LOCKED — Senior Dev GO):** **Rust Cast V2 + mDNS discovery + local LAN HTTP media server → Default Media Receiver**  
@@ -26,7 +26,7 @@
 ## Architecture
 
 ```
-[SlideShowX Tauri UI]
+[SlideX Tauri UI]
         | invoke
 [Rust commands: cast_discover / cast_load_* / cast_pause / cast_play / cast_next / cast_disconnect]
         |
@@ -71,7 +71,7 @@
 | Failure | Symptom | Mitigation / note |
 |---------|---------|-------------------|
 | PC & Chromecast on different Wi‑Fi / guest isolation | Discovery empty or cast stalls on HTTP fetch | Same SSID; disable AP/client isolation |
-| Windows Firewall blocks inbound HTTP / mDNS | Discover OK but TV black / LOAD fails | Allow SlideShowX inbound on Private networks; UDP 5353 |
+| Windows Firewall blocks inbound HTTP / mDNS | Discover OK but TV black / LOAD fails | Allow SlideX inbound on Private networks; UDP 5353 |
 | mDNS blocked / VPN (NordVPN, OpenVPN, etc.) | Slow or empty discovery | Spike timeout ≤10s; Discover UI shows iface + timeout diagnostic |
 | **Tailscale up** (even with Nord/OpenVPN off) | Discover empty while Chromecast is on same Wi‑Fi SSID | Spike prefers `192.168.x` (RFC1918) browse ifaces and skips Tailscale/`169.254`/`100.64`; diagnostic lists browse + skipped. If still empty, turn Tailscale off and re-Discover. |
 | Discover empty / mdns-sd error | Status shows diagnostic | `cast_discover` returns `devices` plus `timeout_ms`, `interfaces` (name+IPv4), optional `error`, and `diagnostic` string for Cast UI — no device UUIDs/tokens/creds |
@@ -84,7 +84,7 @@
 
 **Prereqs:** Windows build of this branch (`npm run build` / `tauri build` — do **not** overwrite John’s installed 0.1.4 NSIS unless QA uses a side-by-side/dev build). Chromecast / Google TV on same home LAN. Personal demo media only.
 
-1. Launch spike build of SlideShowX.
+1. Launch spike build of SlideX.
 2. Landing / viewer: open **Cast…** panel.
 3. **Discover** — expect living-room (or any Cast device) within ≤10s. If empty, read status diagnostic (ifaces + timeout); if Tailscale was up, turn it off and retry before blaming the Cast stack.
 4. Select device → **Cast still** — TV shows sample still full-screen (not PC desktop).
