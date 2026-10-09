@@ -1289,6 +1289,21 @@ function tauriDialogSave(opts) {
   }
   return window.__TAURI__.dialog.save(opts);
 }
+async function sspConfirm(message) {
+  if (sspIsTauri()) {
+    const dialog = window.__TAURI__ && window.__TAURI__.dialog;
+    if (dialog && typeof dialog.confirm === 'function') {
+      return (await dialog.confirm(message, { title: 'SlideX', kind: 'warning' })) === true;
+    }
+    if (dialog && typeof dialog.ask === 'function') {
+      return (await dialog.ask(message, { title: 'SlideX', kind: 'warning' })) === true;
+    }
+    return false;
+  }
+  const result = window.confirm(message);
+  if (result && typeof result.then === 'function') return (await result) === true;
+  return result === true;
+}
 
 /* ── P3: undocked playlist window role + live sync ── */
 let SSP_WINDOW_ROLE = (function () {
@@ -2218,6 +2233,7 @@ g('fiupd').onchange = function() {
 
 /* ── State ── */
 let items = [], sls = [], slByIdx = Object.create(null), cur = 0, playing = true,
+    sessionLoaded = false, sessionDirty = false,
     stagePruneTmr = null, thumbIO = null,
     stripMounted = new Map(), stripRaf = 0, plMounted = new Map(), plRaf = 0, plRows = [], plTotalH = 0, folderIngestGen = 0,
     tmr = null, ptmr = null, ps = null, kbId = null,
@@ -2815,10 +2831,18 @@ function toggleKeyEditor(force) {
 g('bked').onclick = () => toggleKeyEditor();
 g('kedclose').onclick = () => toggleKeyEditor(false);
 g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(false); });
-g('kedresetall').onclick = () => {
+g('kedresetall').onclick = async () => {
   cancelKeyListen();
-  if (!confirm('Reset all keyboard shortcuts to defaults?')) return;
-  resetAllKeys();
+  const ok = await sspConfirm('Reset all keyboard shortcuts to defaults?');
+  const defaults = {};
+  FNS.forEach(f => { defaults[f.id] = f.def; });
+  const next = (window.SlideXCore && SlideXCore.resetShortcutsIfConfirmed)
+    ? SlideXCore.resetShortcutsIfConfirmed(ok, keyMap, defaults)
+    : (ok ? defaults : keyMap);
+  if (next === keyMap) return;
+  FNS.forEach(f => { keyMap[f.id] = next[f.id]; });
+  saveKeyMap();
+  if (typeof showToast === 'function') showToast('Keyboard shortcuts restored to defaults');
   renderKeyEditor();
 };
 g('kedsearch').addEventListener('input', () => {
@@ -3119,9 +3143,9 @@ function updZoom() { g('zlb').textContent = Math.round(zoom * 100) + '%'; }
 function changeZoom(d, pointer) {
   if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
   if (pointer && pointer.factor && window.SlideXCore) {
-    const f = frameMetrics();
+    const f = (typeof frameMetrics === 'function' && frameMetrics()) || (typeof gestureMetrics === 'function' && gestureMetrics());
     if (f) {
-      const v = SlideXCore.zoomToward({ zoom, panX, panY }, pointer.factor, pointer.x, pointer.y, f.vpW, f.vpH, f.cw, f.ch);
+      const v = SlideXCore.zoomToward({ zoom, panX, panY }, pointer.factor, pointer.x, pointer.y, f.vpW, f.vpH, f.cw, f.ch, f.rotation || 0);
       zoom = v.zoom; panX = v.panX; panY = v.panY;
     } else zoom = Math.max(1, Math.min(10, zoom * pointer.factor));
   } else {
@@ -3154,7 +3178,12 @@ function readOrientationMatrix(startEl) {
   while (node && node !== stop) {
     if (!(node.dataset && node.dataset.panLayer === '1')) {
       const t = getComputedStyle(node).transform;
-      if (t && t !== 'none') m = new DOMMatrix(t).multiply(m);
+      if (t && t !== 'none') {
+        const ox = (node.clientWidth || 0) / 2;
+        const oy = (node.clientHeight || 0) / 2;
+        const local = new DOMMatrix().translate(ox, oy).multiply(new DOMMatrix(t)).translate(-ox, -oy);
+        m = local.multiply(m);
+      }
     }
     node = node.parentElement;
   }
@@ -3201,8 +3230,11 @@ function focusForZoom(clientX, clientY) {
   const pt = layoutPointInPane(pane, clientX, clientY);
   const sl = getSl(cur) || stage;
   const vr = sl.getBoundingClientRect();
-  if (window.SlideXCore && SlideXCore.zoomFocusInView) {
-    return SlideXCore.zoomFocusInView(m, pt.x, pt.y, pt.w, pt.h, vr.width || 1, vr.height || 1);
+  if (window.SlideXCore && SlideXCore.mapFocusPoint) {
+    const local = SlideXCore.mapFocusPoint(m, pt.x, pt.y);
+    const pw = pt.w > 0 ? pt.w : 1;
+    const ph = pt.h > 0 ? pt.h : 1;
+    return { x: local.x / pw * (vr.width || pw), y: local.y / ph * (vr.height || ph) };
   }
   return { x: clientX - vr.left, y: clientY - vr.top };
 }
@@ -3222,14 +3254,18 @@ function gestureMetrics() {
   return {
     vpW: vpW, vpH: vpH,
     cw: Math.max(1, crop ? natW * crop.w : natW),
-    ch: Math.max(1, crop ? natH * crop.h : natH)
+    ch: Math.max(1, crop ? natH * crop.h : natH),
+    rotation: rotation || 0,
+    flipH: !!mirrorX,
+    flipV: !!mirrorY
   };
 }
 function applySharedPan(baseX, baseY, matrix, dx, dy) {
   const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
   if (f && window.SlideXCore && SlideXCore.clampedPanAfterDelta) {
     const v = SlideXCore.clampedPanAfterDelta(
-      { zoom: zoom, panX: baseX, panY: baseY }, matrix, dx, dy, f.vpW, f.vpH, f.cw, f.ch
+      { zoom: zoom, panX: baseX, panY: baseY }, matrix, dx, dy, f.vpW, f.vpH, f.cw, f.ch,
+      { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV }
     );
     zoom = v.zoom; panX = v.panX; panY = v.panY;
     return;
@@ -3247,7 +3283,8 @@ function doPan(dx, dy) {
   const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
   if (f && window.SlideXCore && SlideXCore.arrowNudgeThenClamp) {
     const v = SlideXCore.arrowNudgeThenClamp(
-      { zoom: zoom, panX: panX, panY: panY }, m, dx, dy, f.vpW, f.vpH, f.cw, f.ch
+      { zoom: zoom, panX: panX, panY: panY }, m, dx, dy, f.vpW, f.vpH, f.cw, f.ch,
+      { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV }
     );
     zoom = v.zoom; panX = v.panX; panY = v.panY;
   } else {
@@ -3765,18 +3802,23 @@ function getPlaylistSnapshot() {
   };
 }
 let autoSaveTimer = null;
-function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
+function schedAutoSave() { sessionDirty = true; clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
 function saveSessionBeforeExit(ack) {
   clearTimeout(autoSaveTimer);
   const sel = g('dsel');
   const parsed = sel ? parseInt(sel.value, 10) : NaN;
   const ms = Number.isFinite(parsed) ? parsed : (window.SlideXCore ? SlideXCore.DEFAULT_IMAGE_DURATION_MS : 10000);
   const session = getPlaylistSnapshot();
+  const saveSession = window.SlideXCore && SlideXCore.shouldSaveSessionOnClose
+    ? SlideXCore.shouldSaveSessionOnClose({ loaded: sessionLoaded, dirty: sessionDirty, session: session })
+    : !!(session.items && session.items.length && (sessionLoaded || sessionDirty));
   if (window.SlideXCore && SlideXCore.saveBeforeExitThenAck) {
-    SlideXCore.saveBeforeExitThenAck(localStorage, ms, session, null);
+    SlideXCore.saveBeforeExitThenAck(localStorage, ms, session, null, { loaded: sessionLoaded, dirty: sessionDirty });
   } else {
     try { localStorage.setItem('ssp_default_dur', String(ms)); } catch (_) {}
-    try { localStorage.setItem('ssp_autosave', JSON.stringify(session)); } catch (_) {}
+    if (saveSession) {
+      try { localStorage.setItem('ssp_autosave', JSON.stringify(session)); } catch (_) {}
+    }
   }
   try { notifyPlaylistSync(); } catch (_) {}
   getMediaItems().forEach(it => {
@@ -3898,7 +3940,10 @@ async function restoreFromSnapshot(snap) {
     } catch (_) {}
     const missing = mediaEntries.length - pathEntries.length;
     if (missing > 0) {
-      showToast(`${missing} file${missing>1?'s':''} unavailable — no path to restore.`, 5000);
+      const note = window.SlideXCore && SlideXCore.missingFilesNotice
+        ? SlideXCore.missingFilesNotice(missing)
+        : (missing + " files couldn't be found");
+      showToast(note, 5000);
     }
     return;
   }
@@ -3964,7 +4009,12 @@ async function restoreFromSnapshot(snap) {
         done++;
         if (done === total) {
           build(finalItems.filter(Boolean));
-          if (unavailCount > 0) showToast(`${unavailCount} file${unavailCount>1?'s':''} unavailable — handles lost or permission denied.`, 5000);
+          if (unavailCount > 0) {
+            const note = window.SlideXCore && SlideXCore.missingFilesNotice
+              ? SlideXCore.missingFilesNotice(unavailCount)
+              : (unavailCount + " files couldn't be found");
+            showToast(note, 5000);
+          }
         }
       };
       if (type === 'image') {
@@ -4011,6 +4061,8 @@ g('plopenfolder').onclick = () => openFolderPicker(true);
 g('plshuffle').onclick = shufflePlaylist;
 
 g('bru').onclick = function() {
+  sessionLoaded = false;
+  sessionDirty = false;
   clearTimeout(tmr); clearInterval(ptmr);
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
@@ -4702,6 +4754,7 @@ function buildSlideDOM() {
 
 function build(its) {
   items = its; items.forEach(it => initItem(it));
+  sessionLoaded = !!(its && its.length);
   buildSlideDOM();
   cur = 0; playing = true; spd = 100; selectedItems.clear(); lastClickedMI = -1;
   updSpd(); updPlayBtn();
@@ -4923,23 +4976,46 @@ function createPlFolderRow(row) {
   div.draggable = true;
   div.dataset.plIdx = String(row.itemsIdx);
   div.style.height = (PL_FOLDER_H - 4) + 'px';
+  let toggleTimer = null;
 
   const arr = document.createElement('span'); arr.className = 'pf-arr' + (isOpen ? '' : ' closed'); arr.textContent = '▾';
   const icon = document.createElement('span'); icon.className = 'pf-icon'; icon.textContent = '📁';
   const name = document.createElement('span'); name.className = 'pf-name'; name.textContent = item.name;
   name.ondblclick = e => {
     e.stopPropagation();
+    e.preventDefault();
+    if (toggleTimer) { clearTimeout(toggleTimer); toggleTimer = null; }
     const inp = document.createElement('input');
     inp.value = item.name;
     inp.className = 'pl-rename';
     inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
     name.replaceWith(inp); inp.focus(); inp.select();
-    const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); autoSave(); };
-    inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
+    let closed = false;
+    const finish = (commit) => {
+      if (closed) return;
+      closed = true;
+      if (commit) item.name = inp.value.trim() || item.name;
+      renderPlaylist();
+      if (commit) autoSave();
+    };
+    inp.onblur = () => finish(true);
+    inp.onkeydown = e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); finish(true); }
+      else if (e2.key === 'Escape') { e2.preventDefault(); finish(false); }
+    };
   };
   const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
   del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); autoSave(); };
-  div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); notifyPlaylistSync(); };
+  div.onclick = (e) => {
+    if (e.target.closest && e.target.closest('button,input,.pl-rename')) return;
+    if (toggleTimer) clearTimeout(toggleTimer);
+    toggleTimer = setTimeout(() => {
+      toggleTimer = null;
+      item.open = item.open === false ? true : false;
+      renderPlaylist();
+      notifyPlaylistSync();
+    }, 250);
+  };
   div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
 
   div.addEventListener('dragstart', e => { plDragStart(e, itemsIdx, div); });
@@ -6372,7 +6448,10 @@ function frameMetrics() {
   return {
     item, sl, vpW, vpH, natW, natH, crop,
     cw: Math.max(1, crop ? natW * crop.w : natW),
-    ch: Math.max(1, crop ? natH * crop.h : natH)
+    ch: Math.max(1, crop ? natH * crop.h : natH),
+    rotation: rotation || 0,
+    flipH: !!mirrorX,
+    flipV: !!mirrorY
   };
 }
 
@@ -6420,7 +6499,12 @@ function applyFrameTransform(sl, item, z, px, py) {
   const box = layoutFrame(sl, item);
   if (!box) return null;
   let v = { zoom: z, panX: px, panY: py };
-  if (!box.maxOn) v = SlideXCore.clampView(v, box.vpW, box.vpH, box.contentW, box.contentH);
+  if (!box.maxOn) {
+    const orient = { rotation: (item && item.rotation) || rotation || 0, flipH: !!(item && item.mirrorX) || !!mirrorX, flipV: !!(item && item.mirrorY) || !!mirrorY };
+    v = SlideXCore.clampOrientedView
+      ? SlideXCore.clampOrientedView(v, box.vpW, box.vpH, box.contentW, box.contentH, orient)
+      : SlideXCore.clampView(v, box.vpW, box.vpH, box.contentW, box.contentH, orient.rotation);
+  }
   applyOrient(sl);
   box.view.dataset.panLayer = '1';
   box.view.style.transform = 'translate(' + v.panX.toFixed(2) + 'px,' + v.panY.toFixed(2) + 'px) scale(' + v.zoom.toFixed(4) + ')';
@@ -6429,9 +6513,12 @@ function applyFrameTransform(sl, item, z, px, py) {
 
 function clampManualView() {
   if (!window.SlideXCore) { zoom = Math.max(1, Math.min(10, zoom)); return; }
-  const f = frameMetrics();
+  const f = frameMetrics() || (typeof gestureMetrics === 'function' && gestureMetrics());
   if (!f) { zoom = Math.max(1, Math.min(10, zoom)); return; }
-  const v = SlideXCore.clampView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch);
+  const orient = { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV };
+  const v = SlideXCore.clampOrientedView
+    ? SlideXCore.clampOrientedView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch, orient)
+    : SlideXCore.clampView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch, orient.rotation);
   zoom = v.zoom; panX = v.panX; panY = v.panY;
 }
 
@@ -6792,7 +6879,12 @@ async function installPlaylistDocument(doc) {
   build(next);
   clearLoadStatus();
   updateLocateButton();
-  if (missing > 0) showToast(missing + ' item' + (missing === 1 ? '' : 's') + ' missing.', 6000);
+  if (missing > 0) {
+    const note = window.SlideXCore && SlideXCore.missingFilesNotice
+      ? SlideXCore.missingFilesNotice(missing)
+      : (missing + " files couldn't be found");
+    showToast(note, 6000);
+  }
 }
 
 async function saveNamedPlaylistFlow() {
@@ -6814,8 +6906,14 @@ async function saveNamedPlaylistFlow() {
   let replace = false;
   try {
     const list = await tauriInvoke('list_named_playlists');
-    if ((list || []).some(p => core.playlistNamesMatch(p.name, trimmed))) {
-      if (!confirm('Replace playlist "' + trimmed + '"?')) return;
+    const exists = (list || []).some(p => core.playlistNamesMatch(p.name, trimmed));
+    if (exists) {
+      const ok = await sspConfirm('Replace playlist "' + trimmed + '"?');
+      const before = (list || []).map(p => ({ name: p.name, json: null }));
+      const after = core.namedPlaylistsAfterReplace
+        ? core.namedPlaylistsAfterReplace(before, trimmed, JSON.stringify(doc), ok, true)
+        : (ok ? before : before);
+      if (!ok || after.every(row => row.json == null)) return;
       replace = true;
     }
   } catch (_) {}
@@ -6885,7 +6983,12 @@ async function openPlaylistLibrary() {
     };
     const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
     del.onclick = async () => {
-      if (!confirm('Delete playlist "' + row.name + '"?')) return;
+      const ok = await sspConfirm('Delete playlist "' + row.name + '"?');
+      const names = rows.map(r => r.name);
+      const next = (window.SlideXCore && SlideXCore.namedPlaylistsAfterDelete)
+        ? SlideXCore.namedPlaylistsAfterDelete(names, row.name, ok)
+        : (ok ? names.filter(n => n !== row.name) : names);
+      if (next.length === names.length) return;
       try {
         await tauriInvoke('delete_named_playlist', { name: row.name });
         if (namedPlaylistName === row.name) namedPlaylistName = null;
@@ -6931,9 +7034,16 @@ async function locateMissingFolder() {
   }
   const plan = core.planLocate(paths, dir, function (p) { return have.has(String(p).toLowerCase()); }, opts);
   if (!plan || !plan.found) { showToast('No files found under that folder.', 4000); return; }
-  if (!confirm(plan.found + ' of ' + plan.eligible + ' found. Update these paths?')) return;
   const rewrite = new Map();
   plan.rows.forEach(row => { if (row.exists && row.rewritten) rewrite.set(row.path, row.rewritten); });
+  const ok = await sspConfirm(plan.found + ' of ' + plan.eligible + ' found. Update these paths?');
+  const rewrites = {};
+  rewrite.forEach((next, prev) => { rewrites[prev] = next; });
+  const preview = core.itemsAfterLocateConfirm
+    ? core.itemsAfterLocateConfirm(items, rewrites, ok)
+    : items.map(it => ({ path: it && it.path, missing: !!(it && it.missing) }));
+  const changed = preview.some((it, i) => it.path !== (items[i] && items[i].path));
+  if (!changed) return;
   const newPaths = Array.from(rewrite.values());
   try { await tauriInvoke('register_allowed_paths', { paths: newPaths }); } catch (_) {}
   let loaded = [];
@@ -6983,12 +7093,10 @@ function bindFramingExtras() {
     const pts = Array.from(pinch.pts.values());
     const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
     if (pinch.last) {
-      const rect = (getSl(cur) || stage).getBoundingClientRect();
-      changeZoom(0, {
-        x: (pts[0].x + pts[1].x) / 2 - rect.left,
-        y: (pts[0].y + pts[1].y) / 2 - rect.top,
-        factor: dist / pinch.last
-      });
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      const focus = (typeof focusForZoom === 'function') ? focusForZoom(midX, midY) : { x: midX, y: midY };
+      changeZoom(0, { x: focus.x, y: focus.y, factor: dist / pinch.last });
     }
     pinch.last = dist;
   });

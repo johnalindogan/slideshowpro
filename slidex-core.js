@@ -218,32 +218,57 @@
     return { x: (vw - w) / 2, y: (vh - h) / 2, w: w, h: h };
   }
 
-  function clampView(view, vpW, vpH, contentW, contentH) {
+  function quarterTurn(rotation) {
+    var rot = ((Number(rotation) || 0) % 360 + 360) % 360;
+    return rot === 90 || rot === 270;
+  }
+
+  /* Pane size for each layout. single is the full stage; the others split it. */
+  function layoutViewport(layout, stageW, stageH) {
+    var sw = stageW > 0 ? stageW : 0;
+    var sh = stageH > 0 ? stageH : 0;
+    if (layout === 'hmax3') return { w: sw / 3, h: sh };
+    if (layout === 'vmax') return { w: sw, h: sh / 2 };
+    if (layout === 'vmax3') return { w: sw, h: sh / 3 };
+    return { w: sw, h: sh };
+  }
+
+  /*
+   * At 90/270 the fitted image's width and height swap against the viewport
+   * before the pan limits are applied. Mirrors do not swap.
+   */
+  function clampLimitAxes(fittedW, fittedH, vpW, vpH, rotation) {
+    if (quarterTurn(rotation)) return { w: fittedW, h: fittedH, limW: vpH, limH: vpW };
+    return { w: fittedW, h: fittedH, limW: vpW, limH: vpH };
+  }
+
+  function clampView(view, vpW, vpH, contentW, contentH, rotation) {
     var zoom = Number(view && view.zoom);
     if (!Number.isFinite(zoom) || zoom < 1) zoom = 1;
     if (zoom > 10) zoom = 10;
     var base = containRect(vpW, vpH, contentW, contentH);
-    var w = base.w * zoom;
-    var h = base.h * zoom;
+    var fittedW = base.w * zoom;
+    var fittedH = base.h * zoom;
+    var axes = clampLimitAxes(fittedW, fittedH, vpW, vpH, rotation);
     var panX = Number(view && view.panX); if (!Number.isFinite(panX)) panX = 0;
     var panY = Number(view && view.panY); if (!Number.isFinite(panY)) panY = 0;
-    var x = (vpW - w) / 2 + panX;
-    var y = (vpH - h) / 2 + panY;
-    if (w <= vpW + 0.5) x = (vpW - w) / 2;
-    else {
-      if (x > 0) x = 0;
-      if (x < vpW - w) x = vpW - w;
-    }
-    if (h <= vpH + 0.5) y = (vpH - h) / 2;
-    else {
-      if (y > 0) y = 0;
-      if (y < vpH - h) y = vpH - h;
-    }
-    return { zoom: zoom, panX: x - (vpW - w) / 2, panY: y - (vpH - h) / 2 };
+    var maxX = Math.max(0, (axes.w - axes.limW) / 2);
+    var maxY = Math.max(0, (axes.h - axes.limH) / 2);
+    if (panX > maxX) panX = maxX;
+    if (panX < -maxX) panX = -maxX;
+    if (panY > maxY) panY = maxY;
+    if (panY < -maxY) panY = -maxY;
+    return { zoom: zoom, panX: panX, panY: panY };
   }
 
-  function placedRect(view, vpW, vpH, contentW, contentH) {
-    var c = clampView(view, vpW, vpH, contentW, contentH);
+  /* One clamp entry for every layout. flipH/flipV do not change the limits. */
+  function clampOrientedView(view, vpW, vpH, contentW, contentH, orient) {
+    var o = orient || {};
+    return clampView(view, vpW, vpH, contentW, contentH, o.rotation || 0);
+  }
+
+  function placedRect(view, vpW, vpH, contentW, contentH, rotation) {
+    var c = clampView(view, vpW, vpH, contentW, contentH, rotation);
     var base = containRect(vpW, vpH, contentW, contentH);
     var w = base.w * c.zoom;
     var h = base.h * c.zoom;
@@ -254,17 +279,17 @@
     };
   }
 
-  function zoomToward(view, factor, pointerX, pointerY, vpW, vpH, contentW, contentH) {
-    var cur = clampView(view, vpW, vpH, contentW, contentH);
-    var rect = placedRect(cur, vpW, vpH, contentW, contentH);
+  function zoomToward(view, factor, pointerX, pointerY, vpW, vpH, contentW, contentH, rotation) {
+    var cur = clampView(view, vpW, vpH, contentW, contentH, rotation);
+    var rect = placedRect(cur, vpW, vpH, contentW, contentH, rotation);
     var zoom = cur.zoom * (Number(factor) > 0 ? Number(factor) : 1);
     if (!Number.isFinite(zoom)) zoom = cur.zoom;
     var nextUnclamped = { zoom: zoom, panX: 0, panY: 0 };
-    if (!(rect.w > 0) || !(rect.h > 0)) return clampView(nextUnclamped, vpW, vpH, contentW, contentH);
+    if (!(rect.w > 0) || !(rect.h > 0)) return clampView(nextUnclamped, vpW, vpH, contentW, contentH, rotation);
     var relX = (pointerX - rect.x) / rect.w;
     var relY = (pointerY - rect.y) / rect.h;
     var base = containRect(vpW, vpH, contentW, contentH);
-    var clampedZoom = clampView({ zoom: zoom, panX: 0, panY: 0 }, vpW, vpH, contentW, contentH).zoom;
+    var clampedZoom = clampView({ zoom: zoom, panX: 0, panY: 0 }, vpW, vpH, contentW, contentH, rotation).zoom;
     var nw = base.w * clampedZoom;
     var nh = base.h * clampedZoom;
     var newX = pointerX - relX * nw;
@@ -273,7 +298,7 @@
       zoom: clampedZoom,
       panX: newX - (vpW - nw) / 2,
       panY: newY - (vpH - nh) / 2
-    }, vpW, vpH, contentW, contentH);
+    }, vpW, vpH, contentW, contentH, rotation);
   }
 
   function wholeImageEndpoints(preset, zoomInt, panInt) {
@@ -912,27 +937,27 @@
     return M;
   }
 
-  function clampedPanAfterDelta(view, matrix, dx, dy, vpW, vpH, contentW, contentH) {
+  function clampedPanAfterDelta(view, matrix, dx, dy, vpW, vpH, contentW, contentH, orient) {
     var d = mapPanDelta(matrix, dx, dy);
     var panX = Number(view && view.panX);
     var panY = Number(view && view.panY);
     if (!Number.isFinite(panX)) panX = 0;
     if (!Number.isFinite(panY)) panY = 0;
-    return clampView({
+    return clampOrientedView({
       zoom: view && view.zoom,
       panX: panX + d.x,
       panY: panY + d.y
-    }, vpW, vpH, contentW, contentH);
+    }, vpW, vpH, contentW, contentH, orient);
   }
 
   /* Arrow nudge: map the screen step, then the same 8/zoom step, then clamp. */
-  function arrowNudgeThenClamp(view, matrix, dirX, dirY, vpW, vpH, contentW, contentH) {
+  function arrowNudgeThenClamp(view, matrix, dirX, dirY, vpW, vpH, contentW, contentH, orient) {
     var d = mapPanDelta(matrix, dirX, dirY);
     var z = Number(view && view.zoom);
     if (!Number.isFinite(z) || z < 1) z = 1;
     var s = 8 / z;
     return clampedPanAfterDelta(
-      view, matIdent(), d.x * s, d.y * s, vpW, vpH, contentW, contentH
+      view, matIdent(), d.x * s, d.y * s, vpW, vpH, contentW, contentH, orient
     );
   }
 
@@ -975,6 +1000,26 @@
     var vw = Number.isFinite(viewW) ? viewW : pw;
     var vh = Number.isFinite(viewH) ? viewH : ph;
     return { x: local.x / pw * vw, y: local.y / ph * vh };
+  }
+
+  /* Orient-only matrix: same inverse the pan helper uses, around the pane center. */
+  function orientationMatrix(vpW, vpH, orient) {
+    var o = orient || {};
+    return paneContentMatrix({
+      w: vpW, h: vpH,
+      flipH: !!o.flipH,
+      flipV: !!o.flipV,
+      rotation: o.rotation || 0,
+      scale: 1,
+      panX: 0,
+      panY: 0
+    });
+  }
+
+  function zoomAtPointer(view, factor, pointerX, pointerY, vpW, vpH, contentW, contentH, orient) {
+    var o = orient || {};
+    var local = mapFocusPoint(orientationMatrix(vpW, vpH, o), pointerX, pointerY);
+    return zoomToward(view, factor, local.x, local.y, vpW, vpH, contentW, contentH, o.rotation || 0);
   }
 
   function isTextEditingTarget(target) {
@@ -1028,10 +1073,94 @@
     return map;
   }
 
-  function saveBeforeExitThenAck(storage, durationMs, session, ack) {
+  function sessionItemCount(session) {
+    var items = session && session.items;
+    return items && items.length ? items.length : 0;
+  }
+
+  /* Empty snapshots never replace a saved session. Otherwise only loaded or dirty. */
+  function shouldSaveSessionOnClose(opts) {
+    var o = opts || {};
+    if (sessionItemCount(o.session) === 0) return false;
+    return !!(o.loaded || o.dirty);
+  }
+
+  function saveBeforeExitThenAck(storage, durationMs, session, ack, opts) {
     storage.setItem('ssp_default_dur', String(durationMs));
-    storage.setItem('ssp_autosave', JSON.stringify(session));
+    var write = true;
+    if (opts && (opts.loaded !== undefined || opts.dirty !== undefined)) {
+      write = shouldSaveSessionOnClose({
+        loaded: !!opts.loaded,
+        dirty: !!opts.dirty,
+        session: session
+      });
+    } else if (sessionItemCount(session) === 0) {
+      var existing = '';
+      try { existing = storage.getItem('ssp_autosave') || ''; } catch (e) { existing = ''; }
+      if (existing) write = false;
+    }
+    if (write) storage.setItem('ssp_autosave', JSON.stringify(session));
     if (typeof ack === 'function') ack();
+  }
+
+  function missingFilesNotice(count) {
+    var n = count | 0;
+    if (n <= 0) return '';
+    if (n === 1) return "1 file couldn't be found";
+    return n + " files couldn't be found";
+  }
+
+  /* A Promise from the Tauri confirm shim is not an answer. */
+  function confirmMeansYes(result) {
+    if (result && typeof result.then === 'function') return false;
+    return result === true;
+  }
+
+  function resetShortcutsIfConfirmed(confirmed, map, defaults) {
+    if (confirmed !== true) return map;
+    var next = {};
+    var src = defaults || {};
+    Object.keys(src).forEach(function (id) { next[id] = src[id]; });
+    return next;
+  }
+
+  function namedPlaylistsAfterReplace(list, name, doc, confirmed, exists) {
+    var rows = (list || []).map(function (row) {
+      return { name: row.name, json: row.json };
+    });
+    if (exists && confirmed !== true) return rows;
+    var key = playlistNameKey(name);
+    var found = false;
+    var next = rows.map(function (row) {
+      if (playlistNameKey(row.name) !== key) return row;
+      found = true;
+      return { name: name, json: doc };
+    });
+    if (!found) next.push({ name: name, json: doc });
+    return next;
+  }
+
+  function namedPlaylistsAfterDelete(list, name, confirmed) {
+    var rows = (list || []).slice();
+    if (confirmed !== true) return rows;
+    var key = playlistNameKey(name);
+    return rows.filter(function (row) {
+      var n = typeof row === 'string' ? row : row && row.name;
+      return playlistNameKey(n) !== key;
+    });
+  }
+
+  function itemsAfterLocateConfirm(items, rewrites, confirmed) {
+    var list = items || [];
+    var map = rewrites || {};
+    return list.map(function (it) {
+      var path = it && it.path;
+      var missing = !!(it && it.missing);
+      if (confirmed !== true) return { path: path, missing: missing };
+      var next = missing ? map[path] : null;
+      if (!next) return { path: path, missing: missing };
+      return { path: next, missing: false };
+    });
   }
 
   function joinPath(dir, name) {
@@ -1065,7 +1194,11 @@
     parseCropSidecar: parseCropSidecar,
     castMediaHook: castMediaHook,
     containRect: containRect,
+    quarterTurn: quarterTurn,
+    layoutViewport: layoutViewport,
+    clampLimitAxes: clampLimitAxes,
     clampView: clampView,
+    clampOrientedView: clampOrientedView,
     placedRect: placedRect,
     zoomToward: zoomToward,
     wholeImageEndpoints: wholeImageEndpoints,
@@ -1081,11 +1214,21 @@
     paneForArrow: paneForArrow,
     arrowGestureMatrix: arrowGestureMatrix,
     zoomFocusInView: zoomFocusInView,
+    orientationMatrix: orientationMatrix,
+    zoomAtPointer: zoomAtPointer,
     isTextEditingTarget: isTextEditingTarget,
     moreToolsKeyFires: moreToolsKeyFires,
     nextMoreToolsOpen: nextMoreToolsOpen,
     resolveKeyMap: resolveKeyMap,
+    sessionItemCount: sessionItemCount,
+    shouldSaveSessionOnClose: shouldSaveSessionOnClose,
     saveBeforeExitThenAck: saveBeforeExitThenAck,
+    missingFilesNotice: missingFilesNotice,
+    confirmMeansYes: confirmMeansYes,
+    resetShortcutsIfConfirmed: resetShortcutsIfConfirmed,
+    namedPlaylistsAfterReplace: namedPlaylistsAfterReplace,
+    namedPlaylistsAfterDelete: namedPlaylistsAfterDelete,
+    itemsAfterLocateConfirm: itemsAfterLocateConfirm,
     rewritePathPrefix: rewritePathPrefix,
     ancestorPrefixes: ancestorPrefixes,
     nextLocateProbes: nextLocateProbes,

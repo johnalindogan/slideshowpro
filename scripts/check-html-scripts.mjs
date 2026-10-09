@@ -57,7 +57,24 @@ function checkHtml(htmlPath) {
   return true;
 }
 
+const bareConfirm = /(?<![\w$.])confirm\s*\(/;
+const confirmSources = [
+  join(root, 'SlideShowPro.html'),
+  join(root, 'demo', 'SlideShowPro.html'),
+  core,
+  androidHtml,
+];
+
 let ok = true;
+for (const path of confirmSources) {
+  const text = readFileSync(path, 'utf8');
+  if (bareConfirm.test(text)) {
+    ok = false;
+    const label = path.startsWith(root) ? path.slice(root.length + 1) : path;
+    console.error(`${label} has a bare confirm() call`);
+  }
+}
+
 for (const path of targets) ok = checkHtml(path) && ok;
 
 const coreCheck = spawnSync(process.execPath, ['--check', core], { encoding: 'utf8' });

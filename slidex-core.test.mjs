@@ -633,3 +633,186 @@ test('arrow keys use the pane under the pointer and clamp after the inverse map'
   assert.ok(panBody.indexOf('arrowNudgeThenClamp') !== -1 || panBody.indexOf('mapPanDelta') !== -1);
   assert.ok(panBody.indexOf('clampManualView') > panBody.indexOf('mapPanDelta') || panBody.includes('arrowNudgeThenClamp'));
 });
+
+function coverGap(panX, panY, vpW, vpH, contentW, contentH, rotation) {
+  const zoomed = C.placedRect({ zoom: 3.2, panX: 0, panY: 0 }, vpW, vpH, contentW, contentH, rotation);
+  const boxW = zoomed.w;
+  const boxH = zoomed.h;
+  const rot = ((rotation % 360) + 360) % 360;
+  const quarter = rot === 90 || rot === 270;
+  const visW = quarter ? boxH : boxW;
+  const visH = quarter ? boxW : boxH;
+  let ox = panX;
+  let oy = panY;
+  if (rot === 90) { ox = -panY; oy = panX; }
+  else if (rot === 270) { ox = panY; oy = -panX; }
+  else if (rot === 180) { ox = -panX; oy = -panY; }
+  const left = vpW / 2 + ox - visW / 2;
+  const top = vpH / 2 + oy - visH / 2;
+  const right = left + visW;
+  const bottom = top + visH;
+  return {
+    gapX: visW + 0.5 >= vpW ? Math.max(0, left, vpW - right) : 0,
+    gapY: visH + 0.5 >= vpH ? Math.max(0, top, vpH - bottom) : 0
+  };
+}
+
+test('rotated pan limits cover the viewport in every layout, flip, and quarter turn', () => {
+  const stage = { w: 1600, h: 1000 };
+  const content = { w: 1080, h: 1920 };
+  const layouts = ['single', 'hmax3', 'vmax', 'vmax3'];
+  const flips = [false, true];
+  const turns = [0, 90];
+  const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  layouts.forEach(layout => {
+    const vp = C.layoutViewport(layout, stage.w, stage.h);
+    flips.forEach(flipH => flips.forEach(flipV => turns.forEach(rotation => {
+      corners.forEach(sign => {
+        const view = { zoom: 3.2, panX: sign[0] * 1e9, panY: sign[1] * 1e9 };
+        const orient = { flipH, flipV, rotation };
+        const clamped = C.clampOrientedView(view, vp.w, vp.h, content.w, content.h, orient);
+        const plain = C.clampOrientedView(view, vp.w, vp.h, content.w, content.h, { rotation });
+        close(clamped.panX, plain.panX);
+        close(clamped.panY, plain.panY);
+        const gap = coverGap(clamped.panX, clamped.panY, vp.w, vp.h, content.w, content.h, rotation);
+        assert.ok(gap.gapX < 1 && gap.gapY < 1, layout + ' H' + flipH + ' V' + flipV + ' r' + rotation + ' ' + sign);
+      });
+    })));
+  });
+  const raw = C.clampView({ zoom: 3.2, panX: 1e9, panY: 1e9 }, stage.w, stage.h, content.w, content.h, 0);
+  const black = coverGap(raw.panX, raw.panY, stage.w, stage.h, content.w, content.h, 90);
+  assert.ok(Math.max(black.gapX, black.gapY) > 250);
+  const fixed = C.clampOrientedView(
+    { zoom: 3.2, panX: 1e9, panY: 1e9 }, stage.w, stage.h, content.w, content.h, { rotation: 90, flipH: true, flipV: true }
+  );
+  const flush = coverGap(fixed.panX, fixed.panY, stage.w, stage.h, content.w, content.h, 90);
+  assert.ok(flush.gapX < 1 && flush.gapY < 1);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /clampOrientedView/);
+});
+
+function screenOfContent(view, relX, relY, vpW, vpH, contentW, contentH, orient) {
+  const rect = C.placedRect(view, vpW, vpH, contentW, contentH, orient.rotation || 0);
+  const M = C.orientationMatrix(vpW, vpH, orient);
+  return C.applyMatrix(M, rect.x + relX * rect.w, rect.y + relY * rect.h);
+}
+
+test('scroll zoom keeps the point under the pointer within 1px for H, V, and 90', () => {
+  const vpW = 1600, vpH = 1000, cw = 1080, ch = 1920;
+  const orients = [
+    { flipH: true, flipV: false, rotation: 0 },
+    { flipH: false, flipV: true, rotation: 0 },
+    { flipH: false, flipV: false, rotation: 90 },
+    { flipH: true, flipV: false, rotation: 90 }
+  ];
+  orients.forEach(orient => {
+    const view = C.clampOrientedView({ zoom: 4, panX: 30, panY: -20 }, vpW, vpH, cw, ch, orient);
+    const relX = 0.37, relY = 0.58;
+    const before = screenOfContent(view, relX, relY, vpW, vpH, cw, ch, orient);
+    const next = C.zoomAtPointer(view, 1.15, before.x, before.y, vpW, vpH, cw, ch, orient);
+    const after = screenOfContent(next, relX, relY, vpW, vpH, cw, ch, orient);
+    close(after.x, before.x, 1);
+    close(after.y, before.y, 1);
+  });
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  const focusAt = html.indexOf('function focusForZoom');
+  const focus = html.slice(focusAt, html.indexOf('function stopCompanionMotion', focusAt));
+  assert.match(focus, /mapFocusPoint/);
+  const zoomAt = html.indexOf('function changeZoom');
+  const zoom = html.slice(zoomAt, html.indexOf('let pointerOver', zoomAt));
+  assert.match(zoom, /zoomToward\(/);
+});
+
+test('closing the start screen leaves the saved session byte-identical', () => {
+  const saved = '{"sspVersion":1,"savedAt":1,"items":[{"id":"a","type":"image","name":"a.jpg"}]}';
+  const data = { ssp_autosave: saved };
+  const storage = {
+    getItem(k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+    setItem(k, v) { data[k] = String(v); }
+  };
+  C.saveBeforeExitThenAck(storage, 10000, { items: [] }, () => {}, { loaded: false, dirty: false });
+  assert.equal(storage.getItem('ssp_autosave'), saved);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: false, session: { items: [] } }), false);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: true, dirty: false, session: { items: [] } }), false);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: true, dirty: false, session: { items: [{ id: 'a' }] } }), true);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: true, session: { items: [{ id: 'a' }] } }), true);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: false, session: { items: [{ id: 'a' }] } }), false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /shouldSaveSessionOnClose/);
+  assert.match(html, /sessionLoaded/);
+});
+
+test('cancel leaves shortcuts, playlists, and locate paths unchanged', () => {
+  const pending = Promise.resolve(true);
+  assert.equal(C.confirmMeansYes(pending), false);
+  assert.equal(C.confirmMeansYes(false), false);
+  assert.equal(C.confirmMeansYes(true), true);
+  const map = { rotCW: 'x', moreTools: 'q' };
+  const defaults = { rotCW: 'r', moreTools: 'd' };
+  assert.equal(C.resetShortcutsIfConfirmed(false, map, defaults), map);
+  assert.equal(C.resetShortcutsIfConfirmed(pending, map, defaults), map);
+  const reset = C.resetShortcutsIfConfirmed(true, map, defaults);
+  assert.equal(reset.rotCW, 'r');
+  assert.equal(reset.moreTools, 'd');
+  assert.notEqual(reset, map);
+
+  const store = [{ name: 'Trip', json: '{"items":[1]}' }];
+  const kept = C.namedPlaylistsAfterReplace(store, 'Trip', '{"items":[2]}', false, true);
+  assert.equal(kept[0].json, '{"items":[1]}');
+  assert.equal(kept.length, 1);
+  const replaced = C.namedPlaylistsAfterReplace(store, 'Trip', '{"items":[2]}', true, true);
+  assert.equal(replaced[0].json, '{"items":[2]}');
+  assert.equal(store[0].json, '{"items":[1]}');
+
+  const names = ['Trip', 'Home'];
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', false), names);
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', pending), names);
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', true), ['Home']);
+
+  const items = [{ path: 'C:\\old\\a.jpg', missing: true }, { path: 'C:\\keep\\b.jpg', missing: false }];
+  const rewrites = { 'C:\\old\\a.jpg': 'D:\\new\\a.jpg' };
+  const cancelled = C.itemsAfterLocateConfirm(items, rewrites, false);
+  assert.equal(cancelled[0].path, items[0].path);
+  assert.equal(cancelled[0].missing, true);
+  assert.equal(cancelled[1].path, items[1].path);
+  const applied = C.itemsAfterLocateConfirm(items, rewrites, true);
+  assert.equal(applied[0].path, 'D:\\new\\a.jpg');
+  assert.equal(applied[0].missing, false);
+  assert.equal(applied[1].path, items[1].path);
+  assert.equal(items[0].path, 'C:\\old\\a.jpg');
+
+  assert.equal(C.missingFilesNotice(3), "3 files couldn't be found");
+  assert.equal(C.missingFilesNotice(1), "1 file couldn't be found");
+  assert.equal(C.missingFilesNotice(0), '');
+});
+
+test('HTML and JS have no bare confirm() and the four prompts await a dialog', () => {
+  const bare = /(?<![\w$.])confirm\s*\(/;
+  ['./SlideShowPro.html', './slidex-core.js', './demo/SlideShowPro.html'].forEach(rel => {
+    const text = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.equal(bare.test(text), false, rel);
+  });
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /async function sspConfirm/);
+  assert.match(html, /dialog\.confirm\(/);
+  assert.match(html, /window\.confirm\(message\)/);
+  const resetAt = html.indexOf("g('kedresetall').onclick");
+  const reset = html.slice(resetAt, html.indexOf("g('kedsearch')", resetAt));
+  assert.match(reset, /await sspConfirm\(/);
+  assert.ok(reset.indexOf('await sspConfirm') < reset.indexOf('keyMap[f.id]'));
+  const save = html.slice(html.indexOf('async function saveNamedPlaylistFlow'), html.indexOf('function closePlaylistLibrary'));
+  assert.match(save, /await sspConfirm\(/);
+  assert.ok(save.indexOf('await sspConfirm') < save.indexOf('save_named_playlist'));
+  const delAt = html.indexOf('del.onclick = async');
+  const del = html.slice(delAt, html.indexOf('btns.appendChild(load)', delAt));
+  assert.match(del, /await sspConfirm\(/);
+  assert.ok(del.indexOf('await sspConfirm') < del.indexOf('delete_named_playlist'));
+  const locate = html.slice(html.indexOf('async function locateMissingFolder'), html.indexOf('function bindFramingExtras'));
+  assert.match(locate, /await sspConfirm\(/);
+  assert.ok(locate.indexOf('await sspConfirm') < locate.indexOf('register_allowed_paths'));
+  const caps = fs.readFileSync(new URL('./src-tauri/capabilities/default.json', import.meta.url), 'utf8');
+  assert.match(caps, /dialog:allow-ask/);
+  assert.match(caps, /dialog:allow-confirm/);
+  assert.match(html, /missingFilesNotice/);
+  assert.match(html, /toggleTimer/);
+});

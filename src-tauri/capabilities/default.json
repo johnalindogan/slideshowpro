@@ -14,6 +14,8 @@
     "core:path:default",
     "core:app:default",
     "dialog:default",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
     "allow-get-launch-paths",
     "allow-read-media-file",
     "allow-media-file-size",
