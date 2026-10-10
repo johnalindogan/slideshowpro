@@ -42,7 +42,7 @@ The status line also names the adapters that were browsed and, when the PC has n
 
 ## Media server
 
-- Binds one RFC1918 address, never `0.0.0.0`, never a public or Tailscale address.
+- Binds the physical Wi-Fi or Ethernet adapter whose subnet contains the TV. NordLynx, WireGuard, Hyper-V `vEthernet`, WSL, and other virtual or VPN adapters are skipped even when they use an RFC1918 address. If none of those physical adapters is on the TV's subnet, Cast shows the VPN or Tailscale message. Never `0.0.0.0`, a public address, or Tailscale.
 - Port is chosen at random inside TCP **47200–47215** so the firewall rule can name that range. UDP 5353 is discovery only.
 - Each URL is `http://<lan-ip>:<port>/m/<session-token>/<file-key>`. The token is per session. The key is random per playlist file. The frontend is not given the token.
 - Only files in the current playlist are registered. Directory listing, `..`, encoded dots, extra path segments, and a wrong token are 404. The book is replaced when the playlist changes and revoked when casting stops. The listener closes on disconnect and when the app exits.
@@ -66,10 +66,10 @@ Connecting again starts a new session and a new token. The app does not need a r
 
 The NSIS install is per-user (`RequestExecutionLevel user`, files under `%LOCALAPPDATA%\SlideShowX`). Windows will not add a port-scoped Private-only rule from that context. The installer does not write a script. It asks once with `ExecShell "runas"` of `cmd.exe /c` and the `netsh advfirewall` commands as arguments. `cmd /c` strips only the first and last quote, so rule names and paths use plain inner quotes (`name="SlideX Cast media (Private)"`), not backslash-quotes. Before that prompt it runs `netsh ... show rule name="..."` without elevation. If both rules already match this `slideshowpro.exe` (Private, not Public, TCP 47200–47215 and UDP 5353), it skips the prompt and writes `status=present`. The rules are:
 
-| Rule | Program | Profile | Ports |
-|---|---|---|---|
-| SlideX Cast media (Private) | `slideshowpro.exe` | Private | TCP 47200–47215 |
-| SlideX Cast mDNS (Private) | `slideshowpro.exe` | Private | UDP 5353 |
+| Rule | Program | Profile | Ports | Remote |
+|---|---|---|---|---|
+| SlideX Cast media (Private) | `slideshowpro.exe` | Private | TCP 47200–47215 | `localsubnet` |
+| SlideX Cast mDNS (Private) | `slideshowpro.exe` | Private | UDP 5353 | `localsubnet` |
 
 Public is never set. The only file written is `$INSTDIR\cast-firewall.txt`. The elevated command prints `status=added` or `status=failed` there, and the installer copies that file into the detail log. If the prompt is declined or netsh fails, the detail log says so and a message box says to re-run the installer. Leftover `cast-firewall-add.cmd` and `cast-firewall.ok` files are deleted and not recreated. The Cast panel shows the same fact from `cast_firewall_status`, which parses `netsh advfirewall firewall show rule`. A rule that mentions Public is not counted as installed. Because the rules are Private-only, a Public network profile cannot discover or serve; the panel says to set the Wi-Fi to Private.
 

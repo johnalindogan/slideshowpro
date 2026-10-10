@@ -126,6 +126,8 @@ function assertPlainQuotes(label, params, instDir, binary) {
     if (!params.includes('localport=47200-47215')) fail('install missing TCP range');
     if (!params.includes('localport=5353')) fail('install missing UDP port');
     if (!params.includes('profile=private')) fail('install missing private profile');
+    const localSubnet = params.split('remoteip=localsubnet').length - 1;
+    if (localSubnet !== 2) fail(`install should set remoteip=localsubnet on both rules, found ${localSubnet}`);
     if (!params.includes(`(echo status=added>"${result}")`)) fail('install missing status=added redirect');
     if (!params.includes(`(echo status=failed>"${result}")`)) fail('install missing status=failed redirect');
   } else {
@@ -184,6 +186,10 @@ function assertRule(text, ruleName, exePath, protocol, ports) {
   }
   const action = field(text, 'Action');
   if (!/allow/i.test(action)) fail(`${ruleName} action ${action}`);
+  const remote = field(text, 'RemoteIP');
+  if (!/local\s*subnet/i.test(remote)) {
+    fail(`${ruleName} remote IP ${JSON.stringify(remote)}, want LocalSubnet`);
+  }
 }
 
 function assertGone(text, ruleName) {

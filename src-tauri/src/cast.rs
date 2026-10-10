@@ -212,12 +212,20 @@ pub enum IfaceRole {
     Skip,
 }
 
-/// Home-LAN addresses we will bind and browse. Public, Tailscale, and link-local are skipped.
+/// Shown when the only routes are VPN, Tailscale, or a virtual adapter the TV cannot reach.
+pub const NO_HOME_LAN_MESSAGE: &str =
+    "This PC has no home-network address to serve photos from. Disconnect VPN or Tailscale and try again.";
+
+/// Home-LAN addresses we will bind and browse. Public, Tailscale, VPN, virtual, and link-local are skipped.
 pub fn iface_role(name: &str, ip: Ipv4Addr) -> IfaceRole {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_broadcast() {
         return IfaceRole::Skip;
     }
-    if is_link_local_v4(ip) || is_cgnat_v4(ip) || is_tailscale_named(name) {
+    if is_link_local_v4(ip)
+        || is_cgnat_v4(ip)
+        || is_tailscale_named(name)
+        || is_virtual_or_vpn_named(name)
+    {
         return IfaceRole::Skip;
     }
     if is_rfc1918_v4(ip) {
@@ -244,6 +252,27 @@ pub fn is_cgnat_v4(ip: Ipv4Addr) -> bool {
 pub fn is_tailscale_named(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.contains("tailscale") || n.contains("zerotier")
+}
+
+/// NordLynx, Hyper-V, and other virtual NICs often hold an RFC1918 address.
+/// The TV is not on those subnets, so they are not bind candidates.
+pub fn is_virtual_or_vpn_named(name: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "vethernet",
+        "hyper-v",
+        "default switch",
+        "nordlynx",
+        "wireguard",
+        "tap-",
+        "wintun",
+        "openvpn",
+        "vpn",
+        "virtualbox",
+        "vmware",
+        "wsl",
+    ];
+    let n = name.to_ascii_lowercase();
+    MARKERS.iter().any(|marker| n.contains(marker))
 }
 
 pub fn is_safe_bind_ip(ip: Ipv4Addr) -> bool {
@@ -286,6 +315,30 @@ pub fn choose_bind_ip<'a>(
             .then(a.ip.cmp(&b.ip))
     });
     preferred.first().copied()
+}
+
+/// After a TV is found, bind the physical adapter whose subnet contains that TV.
+/// A default-route VPN address is not a candidate. None means [`NO_HOME_LAN_MESSAGE`].
+pub fn choose_bind_for_device<'a>(
+    ifaces: &'a [IfaceCand],
+    device: Ipv4Addr,
+) -> Option<&'a IfaceCand> {
+    let mut hits: Vec<&IfaceCand> = ifaces
+        .iter()
+        .filter(|i| iface_role(&i.name, i.ip) == IfaceRole::Preferred)
+        .filter(|i| ipv4_in_subnet(device, i.ip, i.prefix))
+        .collect();
+    if hits.is_empty() {
+        return None;
+    }
+    hits.sort_by(|a, b| {
+        b.prefix
+            .cmp(&a.prefix)
+            .then(prefix_rank(a.ip).cmp(&prefix_rank(b.ip)))
+            .then(a.name.cmp(&b.name))
+            .then(a.ip.cmp(&b.ip))
+    });
+    hits.first().copied()
 }
 
 fn prefix_of(mask: Ipv4Addr) -> u8 {
@@ -1784,9 +1837,9 @@ impl CastState {
     pub fn connect(&self, host: &str, port: Option<u16>, name: Option<String>) -> Result<CastConnectInfo, String> {
         let (ip, port) = parse_cast_host(host, port)?;
         let snap = snapshot_ifaces();
-        let bind = snap.bind.clone().ok_or_else(|| {
-            "This PC has no home-network address to serve photos from. Disconnect VPN or Tailscale and try again.".to_string()
-        })?;
+        let bind = choose_bind_for_device(&snap.preferred, ip)
+            .cloned()
+            .ok_or_else(|| NO_HOME_LAN_MESSAGE.to_string())?;
         self.disconnect()?;
 
         let device_name = name.unwrap_or_else(|| "Chromecast".into());
@@ -2327,6 +2380,66 @@ mod tests {
         assert!(!is_safe_bind_ip(Ipv4Addr::UNSPECIFIED));
         assert!(!is_safe_bind_ip(Ipv4Addr::new(1, 2, 3, 4)));
         assert!(is_safe_bind_ip(Ipv4Addr::new(10, 1, 2, 3)));
+        assert_eq!(
+            iface_role("NordLynx", Ipv4Addr::new(10, 5, 0, 2)),
+            IfaceRole::Skip
+        );
+        assert_eq!(
+            iface_role("vEthernet (Default Switch)", Ipv4Addr::new(172, 22, 80, 1)),
+            IfaceRole::Skip
+        );
+    }
+
+    #[test]
+    fn nordlynx_default_route_does_not_beat_wifi() {
+        let ifaces = vec![
+            cand("NordLynx", [10, 5, 0, 2], 32),
+            cand("Wi-Fi", [192, 168, 1, 20], 24),
+        ];
+        let pick = choose_bind_ip(&ifaces, Some(Ipv4Addr::new(10, 5, 0, 2))).unwrap();
+        assert_eq!(pick.name, "Wi-Fi");
+        assert_eq!(pick.ip, Ipv4Addr::new(192, 168, 1, 20));
+    }
+
+    #[test]
+    fn hyperv_vethernet_does_not_beat_wifi() {
+        let ifaces = vec![
+            cand("vEthernet (Default Switch)", [172, 22, 80, 1], 20),
+            cand("Wi-Fi", [192, 168, 1, 42], 24),
+        ];
+        let pick = choose_bind_ip(&ifaces, Some(Ipv4Addr::new(172, 22, 80, 1))).unwrap();
+        assert_eq!(pick.ip, Ipv4Addr::new(192, 168, 1, 42));
+        assert_eq!(
+            iface_role("Hyper-V Virtual Ethernet Adapter", Ipv4Addr::new(172, 16, 0, 4)),
+            IfaceRole::Skip
+        );
+    }
+
+    #[test]
+    fn only_nordlynx_returns_no_bind_and_the_vpn_message() {
+        let ifaces = vec![cand("NordLynx", [10, 5, 0, 2], 32)];
+        assert!(choose_bind_ip(&ifaces, Some(Ipv4Addr::new(10, 5, 0, 2))).is_none());
+        let tv = Ipv4Addr::new(10, 5, 0, 9);
+        assert!(choose_bind_for_device(&ifaces, tv).is_none());
+        assert!(NO_HOME_LAN_MESSAGE.contains("VPN"));
+        assert!(NO_HOME_LAN_MESSAGE.contains("Tailscale"));
+    }
+
+    #[test]
+    fn tv_subnet_match_wins_over_the_default_route() {
+        let ifaces = vec![
+            cand("Ethernet", [10, 0, 0, 8], 24),
+            cand("Wi-Fi", [192, 168, 1, 20], 24),
+            cand("NordLynx", [10, 5, 0, 2], 32),
+        ];
+        let route = choose_bind_ip(&ifaces, Some(Ipv4Addr::new(10, 0, 0, 8))).unwrap();
+        assert_eq!(route.ip, Ipv4Addr::new(10, 0, 0, 8));
+        let tv = Ipv4Addr::new(192, 168, 1, 56);
+        let pick = choose_bind_for_device(&ifaces, tv).unwrap();
+        assert_eq!(pick.name, "Wi-Fi");
+        assert_eq!(pick.ip, Ipv4Addr::new(192, 168, 1, 20));
+        let off_lan = Ipv4Addr::new(10, 5, 0, 9);
+        assert!(choose_bind_for_device(&ifaces, off_lan).is_none());
     }
 
     #[test]
