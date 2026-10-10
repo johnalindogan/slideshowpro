@@ -100,7 +100,7 @@ function loadCommands(instDir, sysDir) {
     vars,
   );
   const installBody = functionBody(text, 'Function CastFirewallInstall');
-  const prechecks = [...installBody.matchAll(/nsExec::ExecToStack `([^`]*)`/g)].map((match) =>
+  const prechecks = [...installBody.matchAll(/nsExec::ExecToStack '([^']*)'/g)].map((match) =>
     nsisRuntime(match[1], vars),
   );
   const matchAt = installBody.indexOf('status=match');
@@ -168,24 +168,163 @@ function runCmd(sysDir, params) {
   if (result.status !== 0) fail(`cmd exited ${result.status}`);
 }
 
+const ps1Path = path.join(root, 'src-tauri', 'windows', 'cast-fw-check.ps1');
+
+function assertLineLimit(text, binaryName) {
+  const defs = parseDefines(text);
+  defs.MAINBINARYNAME = binaryName;
+  const lines = text.split(/\r?\n/);
+  let max = 0;
+  lines.forEach((line, index) => {
+    let resolved = line;
+    for (let pass = 0; pass < 4; pass++) {
+      resolved = resolved.replace(/\$\{([A-Za-z0-9_]+)\}/g, (all, name) => {
+        if (!Object.prototype.hasOwnProperty.call(defs, name)) return all;
+        const value = defs[name] === '{{main_binary_name}}' ? binaryName : defs[name];
+        return value;
+      });
+    }
+    resolved = resolved.replaceAll('{{main_binary_name}}', binaryName);
+    if (resolved.length > max) max = resolved.length;
+    if (resolved.length > 1000) {
+      fail(
+        `installer.nsi:${index + 1} is ${resolved.length} chars after !define substitution (limit 1000): ${resolved.slice(0, 180)}`,
+      );
+    }
+  });
+  console.log(`CAST_FIREWALL_NSIS_MAX_LINE=${max}`);
+}
+
+function assertFlagOrder(label, text) {
+  const flags = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File';
+  if (!text.includes(flags)) fail(`${label} missing ${flags}`);
+  const ps = text.toLowerCase();
+  if (!ps.includes('\\system32\\windowspowershell\\v1.0\\powershell.exe')) {
+    fail(`${label} does not use the System32 PowerShell path`);
+  }
+  if (/(^|[^\\\w])powershell\.exe/i.test(text.replace(/\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/gi, ''))) {
+    fail(`${label} also invokes powershell.exe from PATH`);
+  }
+}
+
+function assertAppCallSite() {
+  const cast = fs.readFileSync(path.join(root, 'src-tauri', 'src', 'cast.rs'), 'utf8');
+  const start = cast.indexOf('fn firewall_powershell_file_args');
+  if (start < 0) fail('cast.rs is missing firewall_powershell_file_args');
+  const end = cast.indexOf('\nfn ', start + 10);
+  const body = cast.slice(start, end);
+  const order = ['"-NoProfile"', '"-NonInteractive"', '"-ExecutionPolicy"', '"Bypass"', '"-File"', '"-ExePath"'];
+  let pos = 0;
+  for (const token of order) {
+    const at = body.indexOf(token, pos);
+    if (at < 0) fail(`app firewall args missing ${token} after the previous flag`);
+    pos = at + token.length;
+  }
+  if (body.includes('"-Command"')) fail('app firewall check still uses -Command');
+  if (body.includes(".replace('\\''")) {
+    fail('app firewall check still interpolates the exe path into quotes');
+  }
+  if (!cast.includes('fn powershell_exe_under_windows_dir')) {
+    fail('app does not resolve System32 powershell.exe');
+  }
+  if (!cast.includes("r\"C:\\O'Brien\\slideshowpro.exe\"") && !cast.includes('O\'Brien')) {
+    fail('app firewall test does not pass an apostrophe path as its own argument');
+  }
+}
+
 function splitPrecheck(commandLine) {
-  const match = commandLine.match(/^"([^"]+)"\s+-NoProfile\s+-NonInteractive\s+-Command\s+"([\s\S]*)"$/);
-  if (!match) fail(`pre-check is not a full-path PowerShell -NoProfile -NonInteractive command: ${commandLine}`);
+  const match = commandLine.match(
+    /^"([^"]+)"\s+-NoProfile\s+-NonInteractive\s+-ExecutionPolicy\s+Bypass\s+-File\s+"([^"]+)"\s+-ExePath\s+"([^"]+)"([\s\S]*)$/,
+  );
+  if (!match) {
+    fail(`pre-check is not a full-path PowerShell -File -ExecutionPolicy Bypass command: ${commandLine}`);
+  }
   const exe = match[1];
   if (!exe.toLowerCase().endsWith('\\system32\\windowspowershell\\v1.0\\powershell.exe')) {
     fail(`pre-check exe is not System32 PowerShell: ${exe}`);
   }
-  return { exe, script: match[2] };
+  return { exe, script: match[2], exePath: match[3], rest: match[4].trim() };
 }
 
-function runPrecheck(commandLine) {
-  const { exe, script } = splitPrecheck(commandLine);
-  const result = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+function powershellArgs(commandLine) {
+  const parsed = splitPrecheck(commandLine);
+  const rest = parsed.rest.length ? parsed.rest.split(/\s+(?=(?:[^"]*"[^"]*")*[^"]*$)/) : [];
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    parsed.script,
+    '-ExePath',
+    parsed.exePath,
+    ...rest.map((part) => part.replace(/^"|"$/g, '')),
+  ];
+  return { exe: parsed.exe, args };
+}
+
+function runPrecheck(commandLine, extraArgs = []) {
+  const { exe, args } = powershellArgs(commandLine);
+  const result = spawnSync(exe, [...args, ...extraArgs], { encoding: 'utf8' });
   return {
     status: result.status,
     text: `${result.stdout || ''}\n${result.stderr || ''}`,
     error: result.error,
   };
+}
+
+function runFixture(sysDir, exePath, records) {
+  const file = path.join(os.tmpdir(), `slidex-fw-${process.pid}-${Math.random().toString(16).slice(2)}.json`);
+  fs.writeFileSync(file, JSON.stringify(records));
+  try {
+    const ps = path.join(sysDir, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const result = spawnSync(
+      ps,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        ps1Path,
+        '-ExePath',
+        exePath,
+        '-MediaName',
+        'SlideX Cast media (Private)',
+        '-MdnsName',
+        'SlideX Cast mDNS (Private)',
+        '-TcpPorts',
+        '47200-47215',
+        '-UdpPort',
+        '5353',
+        '-Fixture',
+        file,
+      ],
+      { encoding: 'utf8' },
+    );
+    if (result.error) fail(result.error.message);
+    return `${result.stdout || ''}\n${result.stderr || ''}`;
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+}
+
+function ruleRecord(program, profile, remote) {
+  const row = (name, protocol, localport) => ({
+    name,
+    enabled: true,
+    direction: 'Inbound',
+    action: 'Allow',
+    profile,
+    program,
+    remote,
+    protocol,
+    localport,
+  });
+  return [
+    row('SlideX Cast media (Private)', 'TCP', '47200-47215'),
+    row('SlideX Cast mDNS (Private)', 'UDP', '5353'),
+  ];
 }
 
 function netshShow(sysDir, ruleName) {
@@ -278,15 +417,9 @@ const instDir = apply ? prepareInstallDir() : 'C:\\SlideX Cast CI';
 const loaded = loadCommands(instDir, sysDir);
 assertPlainQuotes('install', loaded.installParams, instDir, loaded.binary);
 assertPlainQuotes('uninstall', loaded.uninstallParams, instDir, loaded.binary);
-if (!loaded.skipsElevation) {
-  fail('CastFirewallInstall does not return before ExecShell when the pre-check reports status=match');
-}
-if (loaded.prechecks.length !== 1) fail(`expected 1 unelevated PowerShell pre-check, found ${loaded.prechecks.length}`);
-const precheck = loaded.prechecks[0];
-const psExe = `${sysDir}\\WindowsPowerShell\\v1.0\\powershell.exe`;
-if (!precheck.startsWith(`"${psExe}"`)) fail(`pre-check does not use the full PowerShell path: ${precheck}`);
-if (!precheck.includes(' -NoProfile ')) fail('pre-check missing -NoProfile');
-if (!precheck.includes(' -NonInteractive ')) fail('pre-check missing -NonInteractive');
+assertLineLimit(fs.readFileSync(nsiPath, 'utf8'), loaded.binary);
+if (!fs.existsSync(ps1Path)) fail(`missing ${ps1Path}`);
+const ps1 = fs.readFileSync(ps1Path, 'utf8');
 for (const piece of [
   'Get-NetFirewallRule',
   'Get-NetFirewallApplicationFilter',
@@ -294,19 +427,45 @@ for (const piece of [
   'Get-NetFirewallPortFilter',
   'LocalSubnet',
   'status=match',
+  'param(',
 ]) {
-  if (!precheck.includes(piece)) fail(`pre-check missing ${piece}`);
+  if (!ps1.includes(piece)) fail(`cast-fw-check.ps1 missing ${piece}`);
 }
+if (!loaded.skipsElevation) {
+  fail('CastFirewallInstall does not return before ExecShell when the pre-check reports status=match');
+}
+if (!fs.readFileSync(nsiPath, 'utf8').includes('Delete "$INSTDIR\\cast-fw-check.ps1"')) {
+  fail('uninstaller does not delete cast-fw-check.ps1');
+}
+if (loaded.prechecks.length !== 1) fail(`expected 1 unelevated PowerShell pre-check, found ${loaded.prechecks.length}`);
+const precheck = loaded.prechecks[0];
+const psExe = `${sysDir}\\WindowsPowerShell\\v1.0\\powershell.exe`;
+if (!precheck.startsWith(`"${psExe}"`)) fail(`pre-check does not use the full PowerShell path: ${precheck}`);
+assertFlagOrder('installer pre-check', precheck);
+if (!precheck.includes('cast-fw-check.ps1')) fail('pre-check does not run cast-fw-check.ps1');
+if (!precheck.includes('-ExePath')) fail('pre-check does not pass -ExePath');
 if (/\bnetsh\b/i.test(precheck)) fail('pre-check still shells out to netsh');
-if (/(^|\s)powershell\.exe(\s|$)/i.test(precheck.replace(psExe, ''))) {
-  fail('pre-check also invokes powershell.exe from PATH');
-}
+if (precheck.includes('-Command')) fail('pre-check still uses -Command');
+assertAppCallSite();
 console.log(`CAST_FIREWALL_PRECHECK_CMDLINE=${precheck}`);
 
 printCommand('INSTALL', sysDir, loaded.installParams);
 printCommand('UNINSTALL', sysDir, loaded.uninstallParams);
 
 splitPrecheck(precheck);
+
+function assertFixture(label, text, expect) {
+  if (!text.includes(expect)) fail(`${label}: expected ${expect} in\n${text}`);
+}
+
+if (process.platform === 'win32') {
+  const apostrophe = "C:\\O'Brien\\slideshowpro.exe";
+  assertFixture('apostrophe path', runFixture(sysDir, apostrophe, ruleRecord(apostrophe, 'Private', 'LocalSubnet')), 'status=match');
+  assertFixture('wrong program', runFixture(sysDir, apostrophe, ruleRecord('C:\\Other\\slideshowpro.exe', 'Private', 'LocalSubnet')), 'status=nomatch');
+  assertFixture('public only', runFixture(sysDir, apostrophe, ruleRecord(apostrophe, 'Public', 'LocalSubnet')), 'status=nomatch');
+  assertFixture('missing localsubnet', runFixture(sysDir, apostrophe, ruleRecord(apostrophe, 'Private', 'Any')), 'status=nomatch');
+  console.log('CAST_FIREWALL_PS1_FIXTURES=ok');
+}
 
 if (!apply) {
   console.log('cast firewall command check ok');
@@ -315,9 +474,20 @@ if (!apply) {
 
 const exePath = path.join(instDir, `${loaded.binary}.exe`);
 fs.copyFileSync(path.join(sysDir, 'cmd.exe'), exePath);
+fs.copyFileSync(ps1Path, path.join(instDir, 'cast-fw-check.ps1'));
 const statusFile = path.join(instDir, 'cast-firewall.txt');
 
 try {
+  const first = runPrecheck(loaded.prechecks[0]);
+  console.log('--- first install pre-check (no elevation) ---');
+  console.log(first.text.trim());
+  if (first.error) fail(first.error.message);
+  if (!first.text.includes('status=nomatch') && !first.text.includes('status=added')) {
+    fail(`first install pre-check should report nomatch before the rules exist:\n${first.text}`);
+  }
+  const firstState = first.text.includes('status=nomatch') ? 'nomatch' : 'added';
+  console.log(`CAST_FIREWALL_FIRST_INSTALL=${firstState}`);
+
   runCmd(sysDir, loaded.installParams);
   const added = readStatus(statusFile);
   console.log(`CAST_FIREWALL_STATUS_AFTER_INSTALL=${JSON.stringify(added)}`);

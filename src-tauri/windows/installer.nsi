@@ -1,6 +1,4 @@
 Unicode true
-; The unelevated Cast firewall pre-check is a PowerShell -Command longer than 1024.
-!define NSIS_MAX_STRLEN 8192
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
 ; Currently undocumented on NSIS's website but is in the Docs folder of source tree, see
@@ -715,14 +713,14 @@ Section WebView2
 SectionEnd
 
 Function CastFirewallInstall
- ; No script file. Rules are added by one elevated cmd.exe /c, or skipped when they already match this exe.
- ; The pre-check is unelevated and calls PowerShell by its System32 path, never PATH.
+ ; Rules are added by one elevated cmd.exe /c, or skipped when cast-fw-check.ps1 reports a match.
+ ; The pre-check is unelevated. PowerShell is the System32 binary, never PATH.
  Delete "$INSTDIR\cast-firewall-add.cmd"
  Delete "$INSTDIR\cast-firewall.ok"
  Delete "$TEMP\slidex-cast-firewall-remove.cmd"
  Delete "$TEMP\slidex-cast-firewall-removed.txt"
  StrCpy $1 "$INSTDIR\cast-firewall.txt"
- nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$e='$INSTDIR\${MAINBINARYNAME}.exe'; function N([string]$$p){ if([string]::IsNullOrWhiteSpace($$p)){ return '' }; $$p=$$p.Trim().Replace('/','\'); if($$p.StartsWith('\\?\UNC\')){ $$p='\\'+$$p.Substring(8) } elseif($$p.StartsWith('\\?\')){ $$p=$$p.Substring(4) }; return $$p.TrimEnd('\') }; function E([string]$$n,[string]$$t,[string]$$o){ foreach($$r in @(Get-NetFirewallRule -DisplayName $$n -ErrorAction SilentlyContinue)){ $$a=@($$r | Get-NetFirewallApplicationFilter); $$d=@($$r | Get-NetFirewallAddressFilter); $$f=@($$r | Get-NetFirewallPortFilter); if($$a.Length -lt 1 -or $$f.Length -lt 1){ continue }; $$pg=[string]$$a[0].Program; $$rm=@(); foreach($$x in $$d){ foreach($$y in @($$x.RemoteAddress)){ $$rm+=[string]$$y } }; $$remote=$$rm -join ','; $$pt=$$f[0].Protocol.ToString(); $$lp=@(); foreach($$y in @($$f[0].LocalPort)){ $$lp+=[string]$$y }; $$local=$$lp -join ','; $$g=$$r.Profile.ToString(); $$en=$$r.Enabled.ToString() -eq 'True'; $$di=$$r.Direction.ToString(); $$ac=$$r.Action.ToString(); if($$en -and $$di -eq 'Inbound' -and $$ac -eq 'Allow' -and ((N $$pg).ToLower() -eq (N $$e).ToLower()) -and ($$g -match 'Private' -or $$g -eq 'Any') -and $$g -ne 'Public' -and $$remote -match 'LocalSubnet' -and ($$pt -eq $$t -or ($$t -eq 'TCP' -and $$pt -eq '6') -or ($$t -eq 'UDP' -and $$pt -eq '17')) -and (($$local -replace '\s','') -eq $$o)){ return $$true } }; return $$false }; if((E '${CAST_FW_MEDIA_NAME}' 'TCP' '${CAST_FW_TCP}') -and (E '${CAST_FW_MDNS_NAME}' 'UDP' '${CAST_FW_UDP}')){ 'status=match' } else { 'status=nomatch' }"`
+ nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\cast-fw-check.ps1" -ExePath "$INSTDIR\${MAINBINARYNAME}.exe" -MediaName "${CAST_FW_MEDIA_NAME}" -MdnsName "${CAST_FW_MDNS_NAME}" -TcpPorts "${CAST_FW_TCP}" -UdpPort "${CAST_FW_UDP}"'
  Pop $0
  Pop $R5
  ${StrLoc} $0 $R5 "status=match" ">"
@@ -814,6 +812,7 @@ cast_fw_un_end:
  Delete "$INSTDIR\cast-firewall.txt"
  Delete "$INSTDIR\cast-firewall.ok"
  Delete "$INSTDIR\cast-firewall-add.cmd"
+ Delete "$INSTDIR\cast-fw-check.ps1"
  Delete "$TEMP\slidex-cast-firewall-remove.cmd"
 FunctionEnd
 
@@ -916,8 +915,11 @@ Section Install
  !insertmacro NSIS_HOOK_POSTINSTALL
  !endif
 
- ; Private-only Cast firewall rules. A per-user install is not elevated, so this
- ; asks once via UAC (cmd.exe /c, no script file) unless both rules already match.
+ ; Private-only Cast firewall rules. File the check script first, then ask once
+ ; via UAC (cmd.exe /c, no elevated script) unless both rules already match.
+{{#each resources}}
+ File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
+{{/each}}
  Call CastFirewallInstall
 
  ; Auto close this page for passive mode

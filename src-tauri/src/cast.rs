@@ -2289,35 +2289,48 @@ fn windows_dir_from_env() -> String {
         .unwrap_or_else(|_| r"C:\Windows".to_string())
 }
 
-fn firewall_powershell_args(script: &str) -> Vec<String> {
+/// Args for `powershell.exe -File cast-fw-check.ps1`. The exe path is its own
+/// argument, never interpolated into a quoted script string.
+pub fn firewall_powershell_file_args(script: &Path, exe: &str) -> Vec<String> {
     vec![
         "-NoProfile".into(),
         "-NonInteractive".into(),
-        "-Command".into(),
-        script.to_string(),
+        "-ExecutionPolicy".into(),
+        "Bypass".into(),
+        "-File".into(),
+        script.display().to_string(),
+        "-ExePath".into(),
+        exe.to_string(),
+        "-MediaName".into(),
+        FW_MEDIA_RULE.into(),
+        "-MdnsName".into(),
+        FW_MDNS_RULE.into(),
+        "-TcpPorts".into(),
+        format!("{CAST_PORT_LO}-{CAST_PORT_HI}"),
+        "-UdpPort".into(),
+        "5353".into(),
     ]
 }
 
-fn firewall_query_script(exe: &str) -> String {
-    let quoted = exe.replace('\'', "''");
-    let ports = format!("{CAST_PORT_LO}-{CAST_PORT_HI}");
-    format!(
-        r#"$exe='{quoted}'; foreach($spec in @(@{{n='{media}';t='TCP';o='{ports}'}},@{{n='{mdns}';t='UDP';o='5353'}})) {{ foreach($r in @(Get-NetFirewallRule -DisplayName $spec.n -ErrorAction SilentlyContinue)) {{ $app=@($r | Get-NetFirewallApplicationFilter); $addr=@($r | Get-NetFirewallAddressFilter); $pf=@($r | Get-NetFirewallPortFilter); $program=''; if($app.Length -gt 0) {{ $program=[string]$app[0].Program }}; $remote=((@($addr) | ForEach-Object {{ @($_.RemoteAddress) }}) | ForEach-Object {{ "$_" }}) -join ','; $protocol=''; $localport=''; if($pf.Length -gt 0) {{ $protocol=$pf[0].Protocol.ToString(); $localport=((@($pf[0].LocalPort)) | ForEach-Object {{ "$_" }}) -join ',' }}; [pscustomobject]@{{name=$spec.n;enabled=($r.Enabled.ToString() -eq 'True');direction=$r.Direction.ToString();action=$r.Action.ToString();profile=$r.Profile.ToString();program=$program;remote=$remote;protocol=$protocol;localport=$localport}} | ConvertTo-Json -Compress }} }}"#,
-        quoted = quoted,
-        media = FW_MEDIA_RULE,
-        mdns = FW_MDNS_RULE,
-        ports = ports,
-    )
+#[cfg(windows)]
+fn cast_fw_check_script() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let beside = dir.join("cast-fw-check.ps1");
+            if beside.is_file() {
+                return beside;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("windows")
+        .join("cast-fw-check.ps1")
 }
 
 pub fn firewall_status() -> CastFirewallStatus {
     #[cfg(windows)]
     {
-        let report = query_firewall_text();
-        let exe = std::env::current_exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        return parse_firewall_report(&report, &exe);
+        return parse_firewall_script_output(&query_firewall_text());
     }
     #[cfg(not(windows))]
     {
@@ -2336,22 +2349,54 @@ fn query_firewall_text() -> String {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(e) => return format!("query failed: {e}"),
     };
+    let script = cast_fw_check_script();
+    if !script.is_file() {
+        return format!("query failed: {} is not installed", script.display());
+    }
     let program = powershell_exe_under_windows_dir(&windows_dir_from_env());
-    let script = firewall_query_script(&exe);
     match std::process::Command::new(&program)
-        .args(firewall_powershell_args(&script))
+        .args(firewall_powershell_file_args(&script, &exe))
         .output()
     {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-            if !out.status.success() && stdout.trim().is_empty() {
+            if !out.status.success() && !stdout.to_ascii_lowercase().contains("status=") {
                 let err = String::from_utf8_lossy(&out.stderr);
-                format!("query failed: {err}")
+                format!("query failed: {err}\n{stdout}")
             } else {
                 stdout
             }
         }
         Err(e) => format!("query failed: {e}"),
+    }
+}
+
+pub fn parse_firewall_script_output(text: &str) -> CastFirewallStatus {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("status=match") {
+        CastFirewallStatus {
+            state: "added".into(),
+            detail: format!(
+                "Private firewall rules are installed for slideshowpro.exe: TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353."
+            ),
+        }
+    } else if lower.contains("status=partial") {
+        CastFirewallStatus {
+            state: "partial".into(),
+            detail: "Only part of the Cast firewall rule is installed. Re-run the SlideX installer and accept the Windows prompt.".into(),
+        }
+    } else if lower.contains("query failed") {
+        CastFirewallStatus {
+            state: "unknown".into(),
+            detail: "Could not query the Windows firewall.".into(),
+        }
+    } else {
+        CastFirewallStatus {
+            state: "missing".into(),
+            detail: format!(
+                "No Private inbound rule for slideshowpro.exe. Cast needs TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353 on private networks. Re-run the installer and accept the Windows prompt."
+            ),
+        }
     }
 }
 
@@ -3063,17 +3108,43 @@ mod tests {
         );
         assert!(exe.contains(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
         assert_ne!(exe.to_ascii_lowercase(), "powershell.exe");
-        let script = firewall_query_script(r"C:\SlideX\slideshowpro.exe");
-        let args = firewall_powershell_args(&script);
-        assert_eq!(args[0], "-NoProfile");
-        assert_eq!(args[1], "-NonInteractive");
-        assert_eq!(args[2], "-Command");
-        assert!(script.contains("Get-NetFirewallRule"));
-        assert!(script.contains("Get-NetFirewallApplicationFilter"));
-        assert!(script.contains("Get-NetFirewallAddressFilter"));
-        assert!(script.contains("Get-NetFirewallPortFilter"));
-        assert!(script.contains("ConvertTo-Json"));
-        assert!(!script.to_ascii_lowercase().contains("netsh"));
+        let script = Path::new(r"C:\SlideX\cast-fw-check.ps1");
+        let program = r"C:\O'Brien\slideshowpro.exe";
+        let args = firewall_powershell_file_args(script, program);
+        assert_eq!(
+            &args[..6],
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                r"C:\SlideX\cast-fw-check.ps1"
+            ]
+        );
+        assert_eq!(args[6], "-ExePath");
+        assert_eq!(args[7], program);
+        assert!(!args.iter().any(|arg| arg == "-Command"));
+        assert!(!args.iter().any(|arg| arg.contains("'$") || arg.contains(&format!("'{program}'"))));
+        let joined = args.join(" ");
+        assert!(!joined.contains("-Command"));
+        assert!(joined.contains("-ExecutionPolicy Bypass -File"));
+        assert_eq!(parse_firewall_script_output("status=match").state, "added");
+        assert_eq!(parse_firewall_script_output("status=partial").state, "partial");
+        assert_eq!(parse_firewall_script_output("status=nomatch").state, "missing");
+        assert_eq!(
+            parse_firewall_script_output("query failed: denied").state,
+            "unknown"
+        );
+        let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("windows")
+            .join("cast-fw-check.ps1");
+        let body = std::fs::read_to_string(&bundled).unwrap();
+        assert!(body.contains("Get-NetFirewallRule"));
+        assert!(body.contains("Get-NetFirewallApplicationFilter"));
+        assert!(body.contains("Get-NetFirewallAddressFilter"));
+        assert!(body.contains("Get-NetFirewallPortFilter"));
+        assert!(body.contains("status=match"));
     }
 
     #[test]

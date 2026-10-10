@@ -43,6 +43,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "windows/cast-fw-check.ps1": "cast-fw-check.ps1"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
