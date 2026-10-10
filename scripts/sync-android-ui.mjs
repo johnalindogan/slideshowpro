@@ -8,4 +8,5 @@ const destDir = join(root, 'android', 'app', 'src', 'main', 'assets');
 const dest = join(destDir, 'SlideShowPro.html');
 mkdirSync(destDir, { recursive: true });
 copyFileSync(src, dest);
+copyFileSync(join(root, 'slidex-core.js'), join(destDir, 'slidex-core.js'));
 console.log('Synced SlideShowPro.html -> android/app/src/main/assets/SlideShowPro.html');

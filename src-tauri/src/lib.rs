@@ -1,13 +1,19 @@
 mod cast;
 
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+
+/// Replaces Tauri's default WebView2 args, so the disable-features list must stay.
+const HIGH_PERF_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force_high_performance_gpu";
 
 const IMAGE_EXTS: &[&str] = &[
     "jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "ico",
@@ -81,10 +87,16 @@ fn strip_surrounding_quotes(s: &str) -> &str {
 /// Parse CLI / Open-with args into image/video paths.
 /// Only treat args that start with `file:` as URLs — `Url::parse` would otherwise
 /// treat Windows paths like `C:/foo.jpg` as scheme `"c"` and drop them.
-fn parse_launch_args() -> Vec<PathBuf> {
+/// The executable path is kept in the list and dropped by the media filter, so a
+/// second-instance argv that still starts with the exe does not hide the first file.
+fn parse_launch_arg_list<I, S>(args: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut files = Vec::new();
-    for maybe_file in std::env::args().skip(1) {
-        let arg = strip_surrounding_quotes(&maybe_file);
+    for maybe_file in args {
+        let arg = strip_surrounding_quotes(maybe_file.as_ref());
         if arg.is_empty() || arg.starts_with('-') {
             continue;
         }
@@ -101,6 +113,18 @@ fn parse_launch_args() -> Vec<PathBuf> {
         files.push(PathBuf::from(arg));
     }
     files.into_iter().filter(|p| is_media_path(p)).collect()
+}
+
+fn parse_launch_args() -> Vec<PathBuf> {
+    parse_launch_arg_list(std::env::args())
+}
+
+fn focus_or_restore_main(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf, String> {
@@ -306,7 +330,7 @@ const EXPORT_EXTS: &[&str] = &[
 ];
 
 #[tauri::command]
-fn write_export_file(path: String, data_b64: String) -> Result<(), String> {
+fn write_export_file(path: String, data_b64: String, exclusive: Option<bool>) -> Result<(), String> {
     let bytes = B64.decode(data_b64.as_bytes()).map_err(|e| format!("base64 decode: {e}"))?;
     if bytes.len() > EXPORT_MAX_BYTES {
         return Err("export too large".into());
@@ -321,8 +345,449 @@ fn write_export_file(path: String, data_b64: String) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
     }
-    std::fs::write(&pb, &bytes).map_err(|e| e.to_string())?;
+    if exclusive.unwrap_or(false) {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pb)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    "file already exists".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        std::fs::write(&pb, &bytes).map_err(|e| e.to_string())
+    }
+}
+
+fn fnv1a64(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    atomic_write_with(path, bytes, |from, to| std::fs::rename(from, to))
+}
+
+/// Write `bytes` to a temp file in the same directory, `sync_all`, then rename over `path`.
+/// `rename` replaces an existing target (on Windows, MoveFileExW with MOVEFILE_REPLACE_EXISTING).
+/// The previous file is never deleted first, so a crash or a failed rename leaves it intact.
+fn atomic_write_with<R>(path: &Path, bytes: &[u8], rename_fn: R) -> Result<(), String>
+where
+    R: Fn(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("bad file name")?;
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    {
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    if let Err(err) = rename_fn(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.to_string());
+    }
     Ok(())
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+fn crop_beside_path(media_path: &str) -> Result<PathBuf, String> {
+    if media_path.trim().is_empty() {
+        return Err("missing media path".into());
+    }
+    Ok(PathBuf::from(format!("{media_path}.sspcrop.json")))
+}
+
+fn crop_appdata_path(app: &AppHandle, media_path: &str, name: &str) -> Result<PathBuf, String> {
+    let base = app_data_dir(app)?.join("crops");
+    let key = format!("{media_path}|{name}");
+    let stem = Path::new(if name.is_empty() { media_path } else { name })
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("media");
+    let safe: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    Ok(base.join(format!("{:016x}_{safe}.sspcrop.json", fnv1a64(&key))))
+}
+
+fn crop_value_from_text(text: &str) -> Option<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    if doc.get("sspCropVersion").and_then(|v| v.as_u64()) != Some(1) {
+        return None;
+    }
+    let crop = doc.get("crop")?.as_object()?;
+    for key in ["x", "y", "w", "h"] {
+        let n = crop.get(key)?.as_f64()?;
+        if !n.is_finite() {
+            return None;
+        }
+    }
+    Some(doc.get("crop").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CropReadResult {
+    crop: Option<serde_json::Value>,
+    location: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CropWriteResult {
+    location: String,
+    path: String,
+    message: Option<String>,
+}
+
+#[tauri::command]
+fn read_crop_sidecar(app: AppHandle, path: String, name: Option<String>) -> Result<CropReadResult, String> {
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if let Ok(text) = std::fs::read_to_string(&beside) {
+            if let Some(crop) = crop_value_from_text(&text) {
+                return Ok(CropReadResult { crop: Some(crop), location: Some("beside".into()) });
+            }
+        }
+    }
+    if let Ok(fallback) = crop_appdata_path(&app, &path, &name) {
+        if let Ok(text) = std::fs::read_to_string(&fallback) {
+            if let Some(crop) = crop_value_from_text(&text) {
+                return Ok(CropReadResult { crop: Some(crop), location: Some("appdata".into()) });
+            }
+        }
+    }
+    Ok(CropReadResult { crop: None, location: None })
+}
+
+#[tauri::command]
+fn write_crop_sidecar(
+    app: AppHandle,
+    path: String,
+    name: Option<String>,
+    document_json: String,
+) -> Result<CropWriteResult, String> {
+    if crop_value_from_text(&document_json).is_none() {
+        return Err("invalid crop sidecar".into());
+    }
+    let bytes = document_json.as_bytes();
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if atomic_write(&beside, bytes).is_ok() {
+            return Ok(CropWriteResult {
+                location: "beside".into(),
+                path: beside.to_string_lossy().into_owned(),
+                message: None,
+            });
+        }
+    }
+    let fallback = crop_appdata_path(&app, &path, &name)?;
+    atomic_write(&fallback, bytes)?;
+    Ok(CropWriteResult {
+        location: "appdata".into(),
+        path: fallback.to_string_lossy().into_owned(),
+        message: Some("The folder isn't writable. Crop saved in app data.".into()),
+    })
+}
+
+#[tauri::command]
+fn delete_crop_sidecar(app: AppHandle, path: String, name: Option<String>) -> Result<(), String> {
+    let name = name.unwrap_or_default();
+    if let Ok(beside) = crop_beside_path(&path) {
+        if beside.exists() {
+            let _ = std::fs::remove_file(beside);
+        }
+    }
+    if let Ok(fallback) = crop_appdata_path(&app, &path, &name) {
+        if fallback.exists() {
+            let _ = std::fs::remove_file(fallback);
+        }
+    }
+    Ok(())
+}
+
+fn playlist_slug(name: &str) -> String {
+    let key = name.trim().to_lowercase();
+    let mut slug = String::new();
+    for c in key.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if c == ' ' || c == '-' || c == '_' {
+            if !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let base = if slug.is_empty() { "playlist" } else { slug };
+    format!("{base}-{:016x}", fnv1a64(&key))
+}
+
+fn playlists_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_data_dir(app)?.join("playlists");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn playlist_file(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let dir = playlists_dir(app)?;
+    let path = dir.join(format!("{}.json", playlist_slug(name)));
+    if !path.starts_with(&dir) {
+        return Err("playlist path escaped app data".into());
+    }
+    Ok(path)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NamedPlaylistInfo {
+    name: String,
+    count: usize,
+    saved_at: Option<serde_json::Value>,
+    file: String,
+}
+
+#[tauri::command]
+fn save_named_playlist(app: AppHandle, name: String, json: String, replace: Option<bool>) -> Result<NamedPlaylistInfo, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("playlist name required".into());
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    let items = doc.get("items").and_then(|v| v.as_array()).ok_or("invalid playlist")?;
+    let count = items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count();
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("name".into(), serde_json::Value::String(trimmed.to_string()));
+        obj.entry("sspVersion").or_insert(serde_json::Value::from(1));
+        obj.entry("version").or_insert(serde_json::Value::from(2));
+    }
+    let path = playlist_file(&app, trimmed)?;
+    if path.exists() && !replace.unwrap_or(false) {
+        return Err("playlist already exists".into());
+    }
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    atomic_write(&path, text.as_bytes())?;
+    Ok(NamedPlaylistInfo {
+        name: trimmed.to_string(),
+        count,
+        saved_at: doc.get("savedAt").cloned(),
+        file: path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn list_named_playlists(app: AppHandle) -> Result<Vec<NamedPlaylistInfo>, String> {
+    let dir = playlists_dir(&app)?;
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => continue,
+        };
+        let doc: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(doc) => doc,
+            Err(_) => continue,
+        };
+        let Some(items) = doc.get("items").and_then(|v| v.as_array()) else { continue };
+        let name = doc.get("name").and_then(|v| v.as_str()).unwrap_or("Playlist").to_string();
+        let count = items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count();
+        out.push(NamedPlaylistInfo {
+            name,
+            count,
+            saved_at: doc.get("savedAt").cloned(),
+            file: path.to_string_lossy().into_owned(),
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+#[tauri::command]
+fn read_named_playlist(app: AppHandle, name: String) -> Result<String, String> {
+    let path = playlist_file(&app, name.trim())?;
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_named_playlist(app: AppHandle, from: String, to: String) -> Result<NamedPlaylistInfo, String> {
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() {
+        return Err("playlist name required".into());
+    }
+    let src = playlist_file(&app, from)?;
+    let text = std::fs::read_to_string(&src).map_err(|e| e.to_string())?;
+    let dest = playlist_file(&app, to)?;
+    if dest != src && dest.exists() {
+        return Err("playlist already exists".into());
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("name".into(), serde_json::Value::String(to.to_string()));
+    }
+    let pretty = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    atomic_write(&dest, pretty.as_bytes())?;
+    if dest != src {
+        let _ = std::fs::remove_file(src);
+    }
+    let count = doc.get("items").and_then(|v| v.as_array()).map(|items| {
+        items.iter().filter(|it| it.get("type").and_then(|t| t.as_str()) != Some("folder")).count()
+    }).unwrap_or(0);
+    Ok(NamedPlaylistInfo {
+        name: to.to_string(),
+        count,
+        saved_at: doc.get("savedAt").cloned(),
+        file: dest.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn delete_named_playlist(app: AppHandle, name: String) -> Result<(), String> {
+    let path = playlist_file(&app, name.trim())?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn paths_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+    Ok(paths.iter().map(|p| !p.is_empty() && Path::new(p).is_file()).collect())
+}
+
+#[cfg(test)]
+mod slidex_store_tests {
+    use super::*;
+
+    #[test]
+    fn fnv_is_stable_and_not_rust_hasher() {
+        assert_eq!(fnv1a64("G:\\Photos\\a.jpg"), fnv1a64("G:\\Photos\\a.jpg"));
+        assert_ne!(fnv1a64("a"), fnv1a64("b"));
+        assert_eq!(fnv1a64(""), 0xcbf29ce484222325);
+    }
+
+    #[test]
+    fn atomic_write_replaces_without_leaving_a_partial_file() {
+        let dir = std::env::temp_dir().join(format!("slidex-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("playlists").join("demo.json");
+        atomic_write(&path, b"{\"ok\":1}").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"ok\":1}");
+        atomic_write(&path, b"{\"ok\":2}").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"ok\":2}");
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
+        assert!(leftovers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_over_a_playlist_keeps_complete_old_content_when_rename_fails() {
+        let dir = std::env::temp_dir().join(format!("slidex-atomic-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("playlists").join("Beach.json");
+        let old = br#"{"name":"Beach","items":[{"id":"a","type":"image","name":"a.jpg"}]}"#;
+        let new = br#"{"name":"Beach","items":[{"id":"b","type":"image","name":"b.jpg"}]}"#;
+        atomic_write(&path, old).unwrap();
+        let err = atomic_write_with(&path, new, |_from, _to| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated rename failure",
+            ))
+        });
+        assert!(err.is_err());
+        assert!(path.is_file());
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk, old, "failed rename must leave the complete old playlist");
+        assert_ne!(on_disk, new);
+        assert!(on_disk.starts_with(b"{") && on_disk.ends_with(b"}"));
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "a failed rename must not leave a partial temp file");
+        atomic_write(&path, new).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn playlist_slug_ignores_case_and_keeps_distinct_names_apart() {
+        assert_eq!(playlist_slug("Beach"), playlist_slug("beach"));
+        assert_eq!(playlist_slug("Beach"), playlist_slug("BEACH"));
+        assert_eq!(playlist_slug(" Beach "), playlist_slug("beach"));
+        assert_ne!(playlist_slug("Beach"), playlist_slug("Shore"));
+    }
+
+    #[test]
+    fn second_launch_forwards_open_with_paths_and_drops_the_exe() {
+        let files = parse_launch_arg_list([
+            r"C:\Program Files\SlideX\slideshowpro.exe",
+            r"C:\Photos\Beach.jpg",
+            "--flag",
+            r"D:\clip.mp4",
+            "notes.txt",
+            "file:///tmp/other.png",
+        ]);
+        assert_eq!(files.len(), 3);
+        let shown: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        assert!(shown[0].ends_with("Beach.jpg"), "{}", shown[0]);
+        assert!(shown[1].ends_with("clip.mp4"), "{}", shown[1]);
+        assert!(shown[2].ends_with("other.png"), "{}", shown[2]);
+    }
+
+    #[test]
+    fn gpu_args_keep_the_default_disable_features_list() {
+        assert!(HIGH_PERF_BROWSER_ARGS.contains(
+            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
+        ));
+        assert!(HIGH_PERF_BROWSER_ARGS.contains("--force_high_performance_gpu"));
+        let conf = include_str!("../tauri.conf.json");
+        assert!(conf.contains(HIGH_PERF_BROWSER_ARGS));
+    }
+
+    #[test]
+    fn close_waits_for_save_ack_or_two_second_timeout_and_ignores_reentry() {
+        assert!(SAVE_BEFORE_EXIT_TIMEOUT <= Duration::from_secs(2));
+        assert_eq!(SAVE_BEFORE_EXIT_TIMEOUT.as_millis(), 2000);
+
+        let gate = ExitSaveGate::new();
+        assert_eq!(gate.on_close_requested(), ExitCloseAction::BeginSave);
+        assert_eq!(gate.on_close_requested(), ExitCloseAction::AlreadyWaiting);
+        assert!(!gate.should_exit(ExitSignal::Timeout, 1999));
+        assert!(gate.should_exit(ExitSignal::Timeout, 2000));
+        assert!(!gate.should_exit(ExitSignal::Ack, 0));
+        assert!(!gate.should_exit(ExitSignal::Timeout, 5000));
+
+        let acked = ExitSaveGate::new();
+        assert_eq!(acked.on_close_requested(), ExitCloseAction::BeginSave);
+        assert!(acked.should_exit(ExitSignal::Ack, 0));
+        assert!(!acked.should_exit(ExitSignal::Timeout, 2000));
+    }
 }
 
 #[tauri::command]
@@ -371,6 +836,7 @@ async fn open_playlist_window(app: AppHandle) -> Result<(), String> {
         .min_inner_size(360.0, 420.0)
         .resizable(true)
         .focused(true)
+        .additional_browser_args(HIGH_PERF_BROWSER_ARGS)
         .build()
         {
             eprintln!("[slideshowpro] open_playlist_window build failed: {e}");
@@ -462,13 +928,103 @@ fn cast_session(state: State<'_, cast::CastState>) -> Result<Option<cast::CastSe
     Ok(state.session_info().ok())
 }
 
+/// Ask the page to save, then exit. Never wait longer than this.
+const SAVE_BEFORE_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+const SAVE_BEFORE_EXIT_EVENT: &str = "slidex://save-before-exit";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitPhase {
+    Idle,
+    Waiting,
+    Exiting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitSignal {
+    Ack,
+    Timeout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitCloseAction {
+    BeginSave,
+    AlreadyWaiting,
+}
+
+struct ExitSaveGate {
+    phase: Mutex<ExitPhase>,
+}
+
+impl ExitSaveGate {
+    fn new() -> Self {
+        Self {
+            phase: Mutex::new(ExitPhase::Idle),
+        }
+    }
+
+    fn on_close_requested(&self) -> ExitCloseAction {
+        let mut phase = self.phase.lock().expect("exit save gate");
+        if *phase == ExitPhase::Idle {
+            *phase = ExitPhase::Waiting;
+            ExitCloseAction::BeginSave
+        } else {
+            ExitCloseAction::AlreadyWaiting
+        }
+    }
+
+    /// Ack always finishes a wait. Timeout finishes only at >= 2s.
+    /// A second signal does not exit again.
+    fn should_exit(&self, signal: ExitSignal, elapsed_ms: u64) -> bool {
+        let mut phase = self.phase.lock().expect("exit save gate");
+        if *phase != ExitPhase::Waiting {
+            return false;
+        }
+        let ready = match signal {
+            ExitSignal::Ack => true,
+            ExitSignal::Timeout => elapsed_ms >= SAVE_BEFORE_EXIT_TIMEOUT.as_millis() as u64,
+        };
+        if ready {
+            *phase = ExitPhase::Exiting;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn finish_exit_save(app: &AppHandle, signal: ExitSignal) {
+    let elapsed = match signal {
+        ExitSignal::Ack => 0,
+        ExitSignal::Timeout => SAVE_BEFORE_EXIT_TIMEOUT.as_millis() as u64,
+    };
+    let Some(gate) = app.try_state::<ExitSaveGate>() else {
+        return;
+    };
+    if gate.should_exit(signal, elapsed) {
+        app.exit(0);
+    }
+}
+
+#[tauri::command]
+fn slidex_save_done(app: AppHandle) {
+    finish_exit_save(&app, ExitSignal::Ack);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            focus_or_restore_main(app);
+            let files = parse_launch_arg_list(args);
+            if !files.is_empty() {
+                store_launch_paths(app, files);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(LaunchState::default())
         .manage(AllowedMedia::default())
         .manage(cast::CastState::default())
+        .manage(ExitSaveGate::new())
         .invoke_handler(tauri::generate_handler![
             get_launch_paths,
             read_media_file,
@@ -480,6 +1036,15 @@ pub fn run() {
             close_playlist_window,
             focus_playlist_window,
             write_export_file,
+            read_crop_sidecar,
+            write_crop_sidecar,
+            delete_crop_sidecar,
+            save_named_playlist,
+            list_named_playlists,
+            read_named_playlist,
+            rename_named_playlist,
+            delete_named_playlist,
+            paths_exist,
             cast_discover,
             cast_load_still,
             cast_load_video,
@@ -487,7 +1052,8 @@ pub fn run() {
             cast_play,
             cast_next,
             cast_disconnect,
-            cast_session
+            cast_session,
+            slidex_save_done
         ])
         .setup(|app| {
             #[cfg(any(windows, target_os = "linux"))]
@@ -515,6 +1081,27 @@ pub fn run() {
                 return;
             }
             inject_launch_paths_to_webview(webview.app_handle());
+        })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Keep the window up until the page saves or the timeout fires.
+                // A second close while waiting must not emit again or exit twice.
+                // The Media Manager may be open or hidden; exiting the process
+                // still ends it once the save finishes.
+                api.prevent_close();
+                let gate = window.state::<ExitSaveGate>();
+                if gate.on_close_requested() == ExitCloseAction::BeginSave {
+                    let _ = window.emit(SAVE_BEFORE_EXIT_EVENT, ());
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(SAVE_BEFORE_EXIT_TIMEOUT);
+                        finish_exit_save(&app, ExitSignal::Timeout);
+                    });
+                }
+            }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,0 +1,818 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import test from 'node:test';
+
+const context = { console, Uint8Array, Date, Object, Math, String, Number, Array };
+context.globalThis = context;
+vm.runInNewContext(fs.readFileSync(new URL('./slidex-core.js', import.meta.url), 'utf8'), context);
+const C = context.SlideXCore;
+
+const KB = [
+  { fs: 1.0, ts: 1.15, fx: 0, fy: 0, tx: -3, ty: -3 },
+  { fs: 1.15, ts: 1.0, fx: -3, fy: -3, tx: 0, ty: 0 },
+  { fs: 1.0, ts: 1.12, fx: 3, fy: 3, tx: -2, ty: -2 },
+  { fs: 1.12, ts: 1.0, fx: -2, fy: 2, tx: 2, ty: -2 },
+  { fs: 1.0, ts: 1.1, fx: -4, fy: 0, tx: 4, ty: 0 }
+];
+const ASPECTS = ['free', '16:9', '4:3', '1:1', '9:16'];
+
+test('export size follows the displayed frame for EXIF orientations 1–8', () => {
+  const rawW = 4000, rawH = 3001;
+  const crop = { x: 0.1, y: 0.2, w: 0.3333, h: 0.4, aspect: 'free' };
+  for (let o = 1; o <= 8; o++) {
+    const d = C.orientedSize(rawW, rawH, o);
+    if (o >= 5) { assert.equal(d.w, rawH); assert.equal(d.h, rawW); }
+    else { assert.equal(d.w, rawW); assert.equal(d.h, rawH); }
+    const size = C.exportPixelSize(rawW, rawH, o, crop);
+    assert.ok(Math.abs(size.width - crop.w * d.w) < 1, `w ori ${o}`);
+    assert.ok(Math.abs(size.height - crop.h * d.h) < 1, `h ori ${o}`);
+    const full = C.exportPixelSize(rawW, rawH, o, { x: 0, y: 0, w: 1, h: 1 });
+    assert.equal(full.width, d.w);
+    assert.equal(full.height, d.h);
+    const raw = C.displayedRectToRaw(0, 0, d.w, d.h, rawW, rawH, o);
+    assert.ok(Math.abs(raw.w - rawW) < 1e-6 && Math.abs(raw.h - rawH) < 1e-6, `raw ori ${o}`);
+  }
+});
+
+test('aspect presets lock the displayed crop for every EXIF orientation', () => {
+  const frames = [];
+  for (let o = 1; o <= 8; o++) frames.push([4000, 3000, o]);
+  for (const [rawW, rawH, o] of frames) {
+    const d = C.orientedSize(rawW, rawH, o);
+    for (const aspect of ASPECTS) {
+      const crop = C.applyAspect({ x: 0, y: 0, w: 1, h: 1 }, aspect, d.w, d.h);
+      assert.ok(crop.x >= -1e-9 && crop.y >= -1e-9);
+      assert.ok(crop.x + crop.w <= 1 + 1e-6 && crop.y + crop.h <= 1 + 1e-6);
+      assert.equal(crop.aspect, aspect);
+      if (aspect === 'free') continue;
+      const px = C.displayedCropPixels(rawW, rawH, o, crop);
+      const got = px.w / px.h;
+      const want = C.ASPECTS[aspect];
+      assert.ok(Math.abs(got - want) / want < 0.02, `${aspect} ori ${o} got ${got}`);
+      const size = C.exportPixelSize(rawW, rawH, o, crop);
+      assert.ok(Math.abs(size.width - px.w) < 1);
+      assert.ok(Math.abs(size.height - px.h) < 1);
+    }
+  }
+});
+
+test('portrait orientation 6 maps a displayed top crop onto the stored pixels', () => {
+  // 4000x3000 stored, orientation 6 displays as 3000x4000.
+  const crop = { x: 0, y: 0, w: 1, h: 0.5, aspect: 'free' };
+  const size = C.exportPixelSize(4000, 3000, 6, crop);
+  assert.equal(size.width, 3000);
+  assert.equal(size.height, 2000);
+  const src = C.exportSourceRect(4000, 3000, 6, crop);
+  assert.ok(Math.abs(src.sw - 2000) < 1);
+  assert.ok(Math.abs(src.sh - 3000) < 1);
+});
+
+test('unique export names add (2) and never reuse the original', () => {
+  assert.equal(C.cropDownloadName('Vacation.jpg', 'jpg'), 'Vacation_crop.jpg');
+  assert.equal(C.cropDownloadName('shot.PNG', 'png'), 'shot_crop.png');
+  assert.equal(C.uniqueExportName('Vacation_crop.jpg', []), 'Vacation_crop.jpg');
+  assert.equal(C.uniqueExportName('Vacation_crop.jpg', ['Vacation_crop.jpg']), 'Vacation_crop (2).jpg');
+  assert.equal(
+    C.uniqueExportName('Vacation_crop.jpg', ['Vacation_crop.jpg', 'Vacation_crop (2).jpg']),
+    'Vacation_crop (3).jpg'
+  );
+  assert.equal(C.uniqueExportName('Vacation_crop.jpg', ['vacation_crop.jpg']), 'Vacation_crop (2).jpg');
+  assert.notEqual(C.cropDownloadName('Vacation.jpg', 'jpg'), 'Vacation.jpg');
+  assert.equal(C.sidecarFileName('Vacation.jpg'), 'Vacation.jpg.sspcrop.json');
+  assert.equal(C.samePath('G:\\Photos\\a.jpg', 'g:/photos/a.jpg'), true);
+  assert.equal(C.samePath('G:\\Photos\\a.jpg', 'G:\\Photos\\a_crop.jpg'), false);
+});
+
+test('HEIC and JPEG export as JPEG, PNG stays PNG', () => {
+  assert.equal(C.exportFormatForSource('a.heic', '').ext, 'jpg');
+  assert.equal(C.exportFormatForSource('a.HEIC', 'image/heic').quality, 0.95);
+  assert.equal(C.exportFormatForSource('a.jpg', 'image/jpeg').ext, 'jpg');
+  assert.equal(C.exportFormatForSource('a.png', 'image/png').ext, 'png');
+});
+
+test('broken crop sidecars are ignored', () => {
+  assert.equal(C.parseCropSidecar('not json'), null);
+  assert.equal(C.parseCropSidecar('{"sspCropVersion":1}'), null);
+  assert.equal(C.parseCropSidecar('{"sspCropVersion":2,"crop":{"x":0,"y":0,"w":1,"h":1}}'), null);
+  const ok = C.parseCropSidecar('{"sspCropVersion":1,"crop":{"x":0.1,"y":0.2,"w":0.5,"h":0.4,"aspect":"16:9"}}');
+  assert.equal(ok.aspect, '16:9');
+  assert.ok(Math.abs(ok.w - 0.5) < 1e-9);
+});
+
+test('playlist round trip keeps order, crop, grade, timing, and Ken Burns', () => {
+  const doc = C.buildPlaylistDocument({
+    name: 'Weekend',
+    savedAt: 1700000000000,
+    kb: { enabled: true, zoomInt: 4, panInt: 4, direction: 'mix', easing: 'ease' },
+    items: [
+      { type: 'folder', id: 'f1', name: 'Day', open: true },
+      {
+        id: 'a', type: 'image', name: 'portrait.jpg', path: 'G:\\Photos\\portrait.jpg',
+        clr: { b: 110, c: 100, s: 120, h: 5, hl: 0, sh: 0, g: 100, shp: 110 },
+        customDur: 8000, kbPreset: 2, zoom: 1.05, panX: 0, panY: 0, rotation: 0,
+        crop: { x: 0.1, y: 0.05, w: 0.8, h: 0.9, aspect: '4:3' }
+      },
+      {
+        id: 'b', type: 'video', name: 'clip.mp4', path: 'G:\\Photos\\clip.mp4',
+        clr: C.CLR_DEF, customDur: undefined, kbPreset: -1, crop: null
+      }
+    ]
+  });
+  assert.equal(doc.sspVersion, 1);
+  const back = C.normalizePlaylist(JSON.parse(JSON.stringify(doc)));
+  assert.equal(back.name, 'Weekend');
+  assert.equal(back.items[0].type, 'folder');
+  assert.deepEqual(back.items.map(it => it.path || it.name), ['Day', 'G:\\Photos\\portrait.jpg', 'G:\\Photos\\clip.mp4']);
+  const a = C.restoreItemFields(back.items[1]);
+  assert.equal(a.customDur, 8000);
+  assert.equal(a.kbPreset, 2);
+  assert.equal(a.clr.b, 110);
+  assert.equal(a.clr.shp, 110);
+  assert.ok(Math.abs(a.crop.w - 0.8) < 1e-9);
+  assert.equal(a.crop.aspect, '4:3');
+  const b = C.restoreItemFields(back.items[2]);
+  assert.equal(b.kbPreset, -1);
+  assert.equal(b.crop, null);
+});
+
+test('legacy SlideX and SlideShowX playlist JSON loads', () => {
+  const slideshowx = {
+    version: 2,
+    items: [{
+      id: 'old', type: 'image', name: 'lake.jpg', path: 'D:\\lake.jpg',
+      imageUpdates: { clr: { b: 90 }, customDur: 3000, kbPreset: 0 }
+    }]
+  };
+  const legacy = C.normalizePlaylist(slideshowx);
+  assert.equal(legacy.sspVersion, 1);
+  const item = C.restoreItemFields(legacy.items[0]);
+  assert.equal(item.path, 'D:\\lake.jpg');
+  assert.equal(item.customDur, 3000);
+  assert.equal(item.kbPreset, 0);
+  assert.equal(item.clr.b, 90);
+
+  const slidex = {
+    sspVersion: 1, version: 2, name: 'Trip',
+    items: [{ type: 'image', name: 'a.jpg', path: 'G:\\a.jpg', imageUpdates: { crop: { x: 0, y: 0, w: 0.5, h: 1, aspect: 'free' } } }]
+  };
+  const cur = C.normalizePlaylist(slidex);
+  assert.equal(cur.sspVersion, 1);
+  assert.equal(C.restoreItemFields(cur.items[0]).crop.w, 0.5);
+  assert.throws(() => C.normalizePlaylist({ name: 'nope' }));
+});
+
+test('missing items are marked and skipped without dropping the playlist', () => {
+  const items = [
+    { type: 'folder', name: 'F' },
+    { type: 'image', name: 'keep.jpg', path: 'G:\\keep.jpg' },
+    { type: 'image', name: 'gone.jpg', path: 'G:\\gone.jpg' },
+    { type: 'video', name: 'gone.mp4', path: 'G:\\gone.mp4' }
+  ];
+  const marked = C.markMissing(items, (p) => p === 'G:\\keep.jpg');
+  assert.equal(marked.missing, 2);
+  assert.equal(marked.items.length, 4);
+  assert.equal(marked.items[0].type, 'folder');
+  assert.equal(marked.items[1].missing, false);
+  assert.equal(marked.items[2].missing, true);
+  assert.equal(marked.items[2].unavailable, true);
+  assert.deepEqual(C.slideshowItems(marked.items).map(it => it.name), ['keep.jpg']);
+});
+
+test('prefix rewrite: drive to UNC, UNC to UNC, case, and segment boundaries', () => {
+  const ci = { caseInsensitive: true };
+  assert.equal(
+    C.rewritePathPrefix('G:\\Photos\\Vacation\\a.jpg', 'G:\\', '\\\\AX03\\Archive01', ci),
+    '\\\\AX03\\Archive01\\Photos\\Vacation\\a.jpg'
+  );
+  assert.equal(
+    C.rewritePathPrefix('\\\\AX03\\G\\Photos\\a.jpg', '\\\\AX03\\G', '\\\\AX03\\Archive01', ci),
+    '\\\\AX03\\Archive01\\Photos\\a.jpg'
+  );
+  assert.equal(
+    C.rewritePathPrefix('\\\\old\\share\\b.jpg', '\\\\old\\share', '\\\\AX03\\Archive01', ci),
+    '\\\\AX03\\Archive01\\b.jpg'
+  );
+  assert.equal(
+    C.rewritePathPrefix('g:\\photos\\A.JPG', 'G:\\Photos', '\\\\AX03\\Archive01', ci),
+    '\\\\AX03\\Archive01\\A.JPG'
+  );
+  assert.equal(C.rewritePathPrefix('G:\\Photos2\\a.jpg', 'G:\\Photos', '\\\\AX03\\Archive01', ci), null);
+  assert.equal(C.rewritePathPrefix('G:\\Photos\\a.jpg', 'G:\\Photo', 'D:\\X', ci), null);
+  assert.equal(C.rewritePathPrefix('D:\\Other\\b.jpg', 'G:\\', '\\\\AX03\\Archive01', ci), null);
+});
+
+test('playlist name keys ignore case while the saved display name stays as typed', () => {
+  assert.equal(C.playlistNameKey('Beach'), C.playlistNameKey('beach'));
+  assert.equal(C.playlistNameKey(' Beach '), C.playlistNameKey('BEACH'));
+  assert.equal(C.playlistNamesMatch('Beach', 'beach'), true);
+  assert.equal(C.playlistNamesMatch('Beach', 'Shore'), false);
+  const doc = C.buildPlaylistDocument({ name: 'Beach', items: [{ id: '1', type: 'image', name: 'a.jpg', path: 'G:\\a.jpg' }] });
+  assert.equal(doc.name, 'Beach');
+});
+
+test('locate probing stops at the first matching parent', () => {
+  const n = 40;
+  const files = [];
+  for (let i = 0; i < n; i++) files.push('\\\\AX03\\Archive01\\Show\\Reel\\Take\\Clip' + i + '.mp4');
+  const ancestors = C.ancestorPrefixes(files[0]).length;
+  assert.ok(ancestors > 1);
+  let probes = 0;
+  const exists = (p) => {
+    probes++;
+    return /\\zb23\\media\\clip\d+\.mp4$/i.test(String(p));
+  };
+  const plan = C.planLocate(files, '\\\\ZB23\\Media', exists, { caseInsensitive: true });
+  assert.equal(plan.found, n);
+  assert.equal(probes, n);
+  assert.ok(n * ancestors > probes);
+});
+
+test('locate plan only rewrites paths that exist and leaves outsiders', () => {
+  const missing = [
+    'G:\\Photos\\a.jpg',
+    'G:\\Photos\\b.jpg',
+    'D:\\Other\\c.jpg',
+    'G:\\Photos2\\d.jpg'
+  ];
+  const have = new Set([
+    '\\\\ax03\\archive01\\photos\\a.jpg',
+    '\\\\ax03\\archive01\\photos\\b.jpg'
+  ]);
+  const exists = (p) => have.has(String(p).toLowerCase());
+  const plan = C.planLocate(missing, '\\\\AX03\\Archive01', exists, { caseInsensitive: true });
+  assert.equal(plan.found, 2);
+  assert.ok(plan.eligible >= 2);
+  const byPath = Object.fromEntries(plan.rows.map(r => [r.path, r]));
+  assert.equal(byPath['G:\\Photos\\a.jpg'].exists, true);
+  assert.equal(byPath['G:\\Photos\\b.jpg'].exists, true);
+  assert.equal(byPath['G:\\Photos\\a.jpg'].rewritten, '\\\\AX03\\Archive01\\Photos\\a.jpg');
+  assert.equal(byPath['D:\\Other\\c.jpg'].outside, true);
+  assert.equal(byPath['G:\\Photos2\\d.jpg'].exists, false);
+  assert.equal(
+    C.rewritePathPrefix('G:\\Photos2\\d.jpg', 'G:\\Photos', '\\\\AX03\\Archive01', { caseInsensitive: true }),
+    null
+  );
+});
+
+test('contain and clamp: portrait, landscape, panorama, and a crop', () => {
+  const vp = { w: 1920, h: 1080 };
+  const portrait = C.containRect(vp.w, vp.h, 1080, 1920);
+  assert.ok(Math.abs(portrait.h - 1080) < 1e-6);
+  assert.ok(portrait.w < vp.w - 10);
+  assert.ok(portrait.x > 0);
+
+  const landscape = C.containRect(vp.w, vp.h, 4000, 3000);
+  assert.ok(Math.abs(landscape.w - 1440) < 1e-6 || Math.abs(landscape.h - 1080) < 1e-6);
+  assert.ok(landscape.w <= vp.w + 1e-6 && landscape.h <= vp.h + 1e-6);
+
+  const pano = C.containRect(vp.w, vp.h, 6000, 800);
+  assert.ok(Math.abs(pano.w - 1920) < 1e-6);
+  assert.ok(pano.h < vp.h - 10);
+
+  const square = C.containRect(vp.w, vp.h, 1000, 1000);
+  assert.ok(Math.abs(square.w - square.h) < 1e-6);
+  assert.ok(square.h <= vp.h + 1e-6);
+
+  const floored = C.clampView({ zoom: 0.2, panX: 400, panY: 400 }, vp.w, vp.h, 1080, 1920);
+  assert.equal(floored.zoom, 1);
+  assert.ok(Math.abs(floored.panX) < 1e-6 && Math.abs(floored.panY) < 1e-6);
+
+  const dragged = C.clampView({ zoom: 3, panX: 99999, panY: -99999 }, vp.w, vp.h, 6000, 800);
+  const rect = C.placedRect(dragged, vp.w, vp.h, 6000, 800);
+  assert.ok(rect.x <= 0.01);
+  assert.ok(rect.x + rect.w >= vp.w - 0.01);
+  assert.equal(dragged.zoom, 3);
+
+  const portraitZoom = C.clampView({ zoom: 2, panX: 5000, panY: 5000 }, vp.w, vp.h, 1080, 1920);
+  const prect = C.placedRect(portraitZoom, vp.w, vp.h, 1080, 1920);
+  assert.ok(prect.y <= 0.01 && prect.y + prect.h >= vp.h - 0.01);
+  // Still pillarboxed horizontally, so it stays centered on X.
+  assert.ok(Math.abs(prect.x - (vp.w - prect.w) / 2) < 1e-4);
+});
+
+test('zoom toward the pointer does not go below the whole image', () => {
+  const before = { zoom: 1, panX: 0, panY: 0 };
+  const zoomed = C.zoomToward(before, 2, 100, 540, 1920, 1080, 1080, 1920);
+  assert.ok(zoomed.zoom >= 1.9 && zoomed.zoom <= 2);
+  const back = C.zoomToward(zoomed, 0.01, 100, 540, 1920, 1080, 1080, 1920);
+  assert.equal(back.zoom, 1);
+  assert.ok(Math.abs(back.panX) < 1e-6 && Math.abs(back.panY) < 1e-6);
+});
+
+test('Ken Burns wide end is the whole image and the other end only zooms in', () => {
+  for (const preset of KB) {
+    const ends = C.wholeImageEndpoints(preset, 4, 4);
+    const wide = ends.from.s <= ends.to.s ? ends.from : ends.to;
+    const close = ends.from.s <= ends.to.s ? ends.to : ends.from;
+    assert.equal(wide.s, 1);
+    assert.equal(wide.x, 0);
+    assert.equal(wide.y, 0);
+    assert.ok(close.s >= 1);
+  }
+});
+
+test('Alt+Backspace resets and does not change the playlist count; 0 is not reset', () => {
+  const alt = { key: 'Backspace', altKey: true, ctrlKey: false, metaKey: false, shiftKey: false };
+  const plain = { key: 'Backspace', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+  assert.equal(C.isAltBackspaceReset(alt), true);
+  assert.equal(C.willRemovePlaylistItem(alt), false);
+  assert.equal(C.playlistCountAfterKey(5, alt), 5);
+  assert.equal(C.willRemovePlaylistItem(plain), true);
+  assert.equal(C.playlistCountAfterKey(5, plain), 4);
+  assert.equal(C.isHueUpKey('0'), true);
+  assert.equal(C.isResetPanKey('0'), false);
+  assert.equal(C.isZoomInKey('+'), true);
+  assert.equal(C.isZoomInKey('='), true);
+  assert.equal(C.isZoomOutKey('-'), true);
+  assert.equal(C.isResetPanKey('p'), true);
+});
+
+test('date-taken survives a JPEG and PNG rewrite and a loose HEIC scan', () => {
+  const date = '2019:07:04 12:30:45';
+  const jpeg = C.injectJpegExif(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), date);
+  assert.equal(C.readJpegDate(jpeg), date);
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const iend = new Uint8Array([0, 0, 0, 0, 73, 69, 78, 68, 0xae, 0x42, 0x60, 0x82]);
+  const pngIn = new Uint8Array(sig.length + iend.length);
+  pngIn.set(sig, 0); pngIn.set(iend, sig.length);
+  const png = C.injectPngDate(pngIn, date);
+  assert.equal(C.readPngDate(png), date);
+  const heic = new Uint8Array(32);
+  const stamp = '2020:01:02 03:04:05';
+  for (let i = 0; i < stamp.length; i++) heic[4 + i] = stamp.charCodeAt(i);
+  const copied = C.copyDateTaken(heic, new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+  assert.equal(C.readJpegDate(copied), stamp);
+});
+
+test('cast hook crops stills on the fly and refuses cropped video on TV', () => {
+  const still = C.castMediaHook({ type: 'image', path: 'G:\\a.jpg', crop: { x: 0, y: 0, w: 0.5, h: 0.5, aspect: '1:1' } });
+  assert.equal(still.kind, 'still');
+  assert.equal(still.cropOnTv, true);
+  assert.ok(still.crop && still.crop.w === 0.5);
+  const video = C.castMediaHook({ type: 'video', path: 'G:\\a.mp4', crop: { x: 0, y: 0, w: 0.5, h: 1, aspect: 'free' } });
+  assert.equal(video.cropOnTv, false);
+  assert.match(video.message, /can't be cropped on the TV/);
+});
+
+test('the slideshow wires Alt+Backspace before Backspace removal and keeps Hue + on 0', () => {
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  const resetAt = html.indexOf('isAltBackspaceReset');
+  const backAt = html.indexOf("if (e.key === 'Backspace')");
+  assert.ok(resetAt !== -1 && backAt !== -1 && resetAt < backAt);
+  assert.match(html, /id:'hueUp',\s+label:'Hue \+',\s+def:'0'/);
+  assert.match(html, /k === '=' && keysEqual\(keyMap\.zoomIn, '\+'\)/);
+  assert.match(html, /id:'zoomIn',\s+label:'Zoom In',\s+def:'\+'/);
+  assert.match(html, /id:'zoomOut',\s+label:'Zoom Out',\s+def:'-'/);
+  assert.match(html, /id:'panRst',\s+label:'Reset Pan\/Zoom',\s+def:'p'/);
+});
+
+test('background load status names the current file and never blocks clicks', () => {
+  const mid = C.backgroundLoadStep(3, 12);
+  assert.equal(mid.text, 'Loading 3 of 12…');
+  assert.equal(mid.visible, true);
+  assert.equal(mid.blocksClicks, false);
+  assert.equal(C.loadingStatusText(3, 12), 'Loading 3 of 12…');
+  const done = C.backgroundLoadStep(13, 12);
+  assert.equal(done.visible, false);
+  assert.equal(done.text, '');
+  assert.equal(done.blocksClicks, false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id="loadstatus"/);
+  assert.match(html, /#loadstatus\{[^}]*pointer-events:none/);
+  assert.doesNotMatch(html, /id="loadstatus"[^>]*aria-modal/);
+  assert.match(html, /showLoadStatus\(i \+ 1, total\)/);
+  assert.match(html, /await yieldToMain\(\)/);
+});
+
+test('default image duration is 10 seconds and a saved per-item duration wins', () => {
+  assert.equal(C.DEFAULT_IMAGE_DURATION_MS, 10000);
+  assert.ok(C.IMAGE_DURATION_CHOICES_MS.includes(10000));
+  assert.equal(C.savedImageDuration(null), 10000);
+  assert.equal(C.savedImageDuration('8000'), 8000);
+  assert.equal(C.savedImageDuration('999'), 10000);
+  assert.equal(C.resolveImageDuration(undefined, 10000), 10000);
+  assert.equal(C.resolveImageDuration(4000, 10000), 4000);
+  assert.equal(C.resolveImageDuration(20000, 10000), 20000);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /value="10000" selected>10s/);
+  assert.match(html, /ssp_default_dur/);
+  assert.match(html, /\[10000,'10s'\]/);
+});
+
+test('0.1.8 versions match and the welcome screen reads getVersion()', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+  const tauri = JSON.parse(fs.readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const cargo = fs.readFileSync(new URL('./src-tauri/Cargo.toml', import.meta.url), 'utf8');
+  const lock = fs.readFileSync(new URL('./package-lock.json', import.meta.url), 'utf8');
+  const lib = fs.readFileSync(new URL('./src-tauri/src/lib.rs', import.meta.url), 'utf8');
+  assert.equal(pkg.version, '0.1.8');
+  assert.equal(tauri.version, '0.1.8');
+  assert.equal(tauri.identifier, 'com.johnalindogan.slideshowpro');
+  assert.match(cargo, /^version = "0\.1\.8"/m);
+  assert.match(lock, /"version": "0\.1\.8"/);
+  assert.equal(
+    tauri.app.windows[0].additionalBrowserArgs,
+    '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force_high_performance_gpu'
+  );
+  assert.match(lib, /HIGH_PERF_BROWSER_ARGS/);
+  assert.match(lib, /additional_browser_args\(HIGH_PERF_BROWSER_ARGS\)/);
+  assert.match(lib, /tauri_plugin_single_instance::init/);
+  assert.match(lib, /api\.prevent_close\(\)/);
+  assert.match(lib, /slidex:\/\/save-before-exit/);
+  assert.match(lib, /fn slidex_save_done/);
+  assert.doesNotMatch(lib, /window\.app_handle\(\)\.exit\(0\)/);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id="lver"/);
+  assert.match(html, /const getVersion = window\.__TAURI__ && window\.__TAURI__\.app && window\.__TAURI__\.app\.getVersion/);
+  assert.match(html, /el\.textContent = String\(version\)/);
+});
+
+test('installer asks SlideX to close and never deletes app data on update', () => {
+  const nsi = fs.readFileSync(new URL('./src-tauri/windows/installer.nsi', import.meta.url), 'utf8');
+  assert.match(nsi, /SlideX will close to finish the update\./);
+  assert.doesNotMatch(nsi, /Click OK to kill it/);
+  assert.match(nsi, /taskkill\.exe" \/IM/);
+  assert.match(nsi, /taskkill\.exe" \/F \/T \/IM/);
+  assert.match(nsi, /\$R0 = 1/);
+  assert.match(nsi, /StrCpy \$R1 "\$R1 \/UPDATE"/);
+  assert.match(nsi, /EBWebView/);
+  assert.match(nsi, /UPGRADEPRODUCTNAME "SlideShowX"/);
+  const deleteAt = nsi.indexOf('RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"');
+  const guardAt = nsi.lastIndexOf('$UpdateMode <> 1', deleteAt);
+  assert.ok(deleteAt !== -1 && guardAt !== -1 && deleteAt - guardAt < 500);
+  assert.match(nsi, /SlideX will close to finish uninstalling\./);
+  assert.ok(nsi.indexOf('!macro CloseSlideXForUpdate') < nsi.indexOf('reinst_uninstall:'));
+  const macroStart = nsi.indexOf('!macro CloseSlideXForUpdate');
+  const macroEnd = nsi.indexOf('!macroend', macroStart);
+  const macro = nsi.slice(macroStart, macroEnd);
+  assert.ok(macro.indexOf('Push $R0') < macro.indexOf('FindProcess'));
+  assert.match(macro, /Pop \$R0/);
+  assert.match(macro, /!define UniqueID \$\{__COUNTER__\}/);
+  assert.doesNotMatch(macro, /__LINE__/);
+  assert.ok(macro.indexOf('BringToFront') < macro.indexOf('Abort'));
+  const labelUses = macro.match(/slidex_(?:close|wait|done|cancel)_\$\{UniqueID\}/g) || [];
+  assert.ok(labelUses.length >= 4);
+  const start = nsi.indexOf('reinst_uninstall:');
+  const end = nsi.indexOf('reinst_done:', start);
+  const block = nsi.slice(start, end);
+  const closes = block.match(/!insertmacro CloseSlideXForUpdate/g) || [];
+  const execs = block.match(/ExecWait '\$R1'/g) || [];
+  assert.equal(closes.length, 2);
+  assert.equal(execs.length, 2);
+  assert.ok(block.indexOf('!insertmacro CloseSlideXForUpdate') < block.indexOf("ExecWait '$R1'"));
+  const updateAt = block.indexOf('StrCpy $R1 "$R1 /UPDATE"');
+  const secondClose = block.lastIndexOf('!insertmacro CloseSlideXForUpdate');
+  const secondExec = block.lastIndexOf("ExecWait '$R1'");
+  assert.ok(updateAt !== -1 && updateAt < secondClose && secondClose < secondExec);
+  const firstClose = block.indexOf('!insertmacro CloseSlideXForUpdate');
+  const firstHide = block.indexOf('HideWindow');
+  const firstExec = block.indexOf("ExecWait '$R1'");
+  const secondHide = block.lastIndexOf('HideWindow');
+  assert.equal((block.match(/^\s*HideWindow/gm) || []).length, 2);
+  assert.ok(firstClose < firstHide && firstHide < firstExec);
+  assert.ok(secondClose < secondHide && secondHide < secondExec);
+  const insertions = nsi.match(/!insertmacro CloseSlideXForUpdate/g) || [];
+  assert.ok(insertions.length >= 2);
+});
+
+test('save before exit writes the duration and the session, then acks', () => {
+  const order = [];
+  const storage = {
+    setItem(k, v) { order.push(k + '=' + v); }
+  };
+  C.saveBeforeExitThenAck(storage, 12000, { items: [{ id: 'a' }] }, () => { order.push('ack'); });
+  assert.deepEqual(order, [
+    'ssp_default_dur=12000',
+    'ssp_autosave={"items":[{"id":"a"}]}',
+    'ack'
+  ]);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /function saveSessionBeforeExit/);
+  assert.match(html, /slidex:\/\/save-before-exit/);
+  assert.match(html, /slidex_save_done/);
+  const caps = fs.readFileSync(new URL('./src-tauri/capabilities/default.json', import.meta.url), 'utf8');
+  assert.match(caps, /allow-slidex-save-done/);
+});
+
+test('More tools toggles on plain d, ignores typing and modifier chords, and yields a colliding key', () => {
+  const actions = [
+    { id: 'mirrorH', def: 'h' },
+    { id: 'moreTools', def: 'd' },
+    { id: 'playlist', def: 'l' }
+  ];
+  assert.equal(C.resolveKeyMap(actions, null).moreTools, 'd');
+  assert.equal(C.resolveKeyMap(actions, { mirrorH: 'd' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: '' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: 'd', playlist: 'd' }).moreTools, '');
+  assert.equal(C.resolveKeyMap(actions, { moreTools: 'k' }).moreTools, 'k');
+  assert.equal(C.nextMoreToolsOpen(false), true);
+  assert.equal(C.nextMoreToolsOpen(true), false);
+  const plain = { key: 'd', ctrlKey: false, altKey: false, metaKey: false, target: { tagName: 'DIV' } };
+  assert.equal(C.moreToolsKeyFires(plain, 'd'), true);
+  assert.equal(C.moreToolsKeyFires({ ...plain, key: 'D' }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, ctrlKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, altKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, metaKey: true }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: { tagName: 'INPUT' } }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: { tagName: 'TEXTAREA' } }, 'd'), false);
+  assert.equal(C.isTextEditingTarget({ tagName: 'DIV', className: 'ssp-handle', closest: () => null }), false);
+  const cropInput = {
+    tagName: 'INPUT',
+    closest: (sel) => String(sel).includes('#cropbox') || String(sel).includes('input') ? {} : null
+  };
+  const renameInput = { tagName: 'INPUT', className: 'pl-rename', closest: () => null };
+  assert.equal(C.isTextEditingTarget(cropInput), true);
+  assert.equal(C.isTextEditingTarget(renameInput), true);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: cropInput }, 'd'), false);
+  assert.equal(C.moreToolsKeyFires({ ...plain, target: renameInput }, 'd'), false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /id:'moreTools'/);
+  assert.match(html, /def:'d'/);
+  assert.match(html, /className = 'pl-rename'/);
+  assert.match(html, /More tools \(/);
+});
+
+function close(a, b, eps = 1e-6) {
+  assert.ok(Math.abs(a - b) < eps, a + ' vs ' + b);
+}
+
+test('pan delta keeps the content under the pointer for every flip and rotation', () => {
+  const content = { x: 80, y: 40 };
+  const dx = 12, dy = -7;
+  const flips = [false, true];
+  const rots = [0, 90, 180, 270];
+  const cases = [];
+  flips.forEach(flipH => flips.forEach(flipV => rots.forEach(rotation => {
+    cases.push({ flipH, flipV, rotation, scale: 1 });
+  })));
+  cases.push({ flipH: true, flipV: true, rotation: 90, scale: 2.5 });
+  cases.forEach(spec => {
+    const base = Object.assign({ panX: 5, panY: -3, w: 200, h: 120 }, spec);
+    const beforeM = C.paneContentMatrix(base);
+    const before = C.applyMatrix(beforeM, content.x, content.y);
+    const d = C.mapPanDelta(beforeM, dx, dy);
+    const afterM = C.paneContentMatrix(Object.assign({}, base, { panX: base.panX + d.x, panY: base.panY + d.y }));
+    const after = C.applyMatrix(afterM, content.x, content.y);
+    close(after.x, before.x + dx);
+    close(after.y, before.y + dy);
+  });
+});
+
+test('zoom focus maps back to the content point on a mirrored rotated pane', () => {
+  const spec = { flipH: true, flipV: false, rotation: 90, scale: 1.4, panX: 15, panY: -8, w: 300, h: 180 };
+  const M = C.paneContentMatrix(spec);
+  const local = { x: 70, y: 40 };
+  const screen = C.applyMatrix(M, local.x, local.y);
+  const back = C.mapFocusPoint(M, screen.x, screen.y);
+  close(back.x, local.x);
+  close(back.y, local.y);
+  const main = C.paneContentMatrix({ flipH: false, flipV: false, rotation: 0, scale: 1, panX: 0, panY: 0, w: 200, h: 100 });
+  const copy = C.paneContentMatrix({ flipH: true, flipV: false, rotation: 0, scale: 1, panX: 0, panY: 0, w: 200, h: 100 });
+  const c = { x: 40, y: 50 };
+  const fMain = C.mapFocusPoint(main, C.applyMatrix(main, c.x, c.y).x, C.applyMatrix(main, c.x, c.y).y);
+  const fCopy = C.mapFocusPoint(copy, C.applyMatrix(copy, c.x, c.y).x, C.applyMatrix(copy, c.x, c.y).y);
+  close(fMain.x, c.x); close(fMain.y, c.y);
+  close(fCopy.x, c.x); close(fCopy.y, c.y);
+  const mirror = C.paneContentMatrix({ flipH: true, w: 200, h: 100, scale: 1, rotation: 0 });
+  const left = C.mapFocusPoint(mirror, 10, 50);
+  close(left.x, 190);
+  close(left.y, 50);
+  const focus = C.zoomFocusInView(mirror, 10, 50, 200, 100, 800, 400);
+  close(focus.x, 190 / 200 * 800);
+  close(focus.y, 50 / 100 * 400);
+});
+
+test('arrow keys use the pane under the pointer and clamp after the inverse map', () => {
+  const panes = [
+    { id: 'main', x: 0, y: 0, w: 100, h: 100 },
+    { id: 'maxcomp', x: 100, y: 0, w: 100, h: 100 },
+    { id: 'maxcomp2', x: 200, y: 0, w: 100, h: 100 }
+  ];
+  const mats = {
+    main: C.matIdent(),
+    maxcomp: C.matScale(-1, 1),
+    maxcomp2: C.matRotate(90)
+  };
+  assert.equal(C.paneForArrow({ x: 150, y: 10, insideWindow: true }, panes, 'main'), 'maxcomp');
+  assert.equal(C.paneForArrow({ x: 250, y: 10, insideWindow: true }, panes, 'main'), 'maxcomp2');
+  assert.equal(C.paneForArrow({ x: 10, y: 10, insideWindow: true }, panes, 'main'), 'main');
+  assert.equal(C.paneForArrow({ x: 150, y: 400, insideWindow: true }, panes, 'main'), 'main');
+  assert.equal(C.paneForArrow({ x: 150, y: 10, insideWindow: false }, panes, 'main'), 'main');
+  const over = C.arrowGestureMatrix({ x: 150, y: 10, insideWindow: true }, panes, mats, 'main');
+  const left = C.arrowGestureMatrix({ x: 150, y: 10, insideWindow: false }, panes, mats, 'main');
+  const away = C.arrowGestureMatrix({ x: 10, y: 400, insideWindow: true }, panes, mats, 'main');
+  assert.equal(over.a, -1);
+  assert.equal(left.a, 1);
+  assert.equal(away.a, 1);
+  const view = { zoom: 2, panX: 0, panY: 0 };
+  const vp = [1000, 800, 2000, 1600];
+  const identNudge = C.arrowNudgeThenClamp(view, mats.main, 1, 0, ...vp);
+  close(identNudge.panX, 4);
+  const flipNudge = C.arrowNudgeThenClamp(view, mats.maxcomp, 1, 0, ...vp);
+  close(flipNudge.panX, -4);
+  const fallen = C.arrowNudgeThenClamp(view, left, 1, 0, ...vp);
+  close(fallen.panX, identNudge.panX);
+  const hit = C.clampedPanAfterDelta(view, C.matIdent(), 5000, 0, ...vp);
+  const hitMirror = C.clampedPanAfterDelta(view, C.matScale(-1, 1), -5000, 0, ...vp);
+  const hitRot = C.clampedPanAfterDelta(view, C.matRotate(90), 0, 5000, ...vp);
+  close(hit.panX, hitMirror.panX);
+  close(hit.panY, hitMirror.panY);
+  close(hit.panX, hitRot.panX);
+  close(hit.panY, hitRot.panY);
+  assert.ok(hit.panX < 5000);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /new DOMMatrix\(/);
+  assert.match(html, /getComputedStyle\(node\)\.transform/);
+  assert.match(html, /mapPanDelta|clampedPanAfterDelta|arrowNudgeThenClamp/);
+  assert.match(html, /paneForArrow/);
+  assert.match(html, /insideWindow/);
+  assert.doesNotMatch(html, /isMirror && !isVmax/);
+  const panAt = html.indexOf('function doPan');
+  const panBody = html.slice(panAt, html.indexOf('function resetPan', panAt));
+  assert.ok(panBody.indexOf('arrowNudgeThenClamp') !== -1 || panBody.indexOf('mapPanDelta') !== -1);
+  assert.ok(panBody.indexOf('clampManualView') > panBody.indexOf('mapPanDelta') || panBody.includes('arrowNudgeThenClamp'));
+});
+
+function coverGap(panX, panY, vpW, vpH, contentW, contentH, rotation) {
+  const zoomed = C.placedRect({ zoom: 3.2, panX: 0, panY: 0 }, vpW, vpH, contentW, contentH, rotation);
+  const boxW = zoomed.w;
+  const boxH = zoomed.h;
+  const rot = ((rotation % 360) + 360) % 360;
+  const quarter = rot === 90 || rot === 270;
+  const visW = quarter ? boxH : boxW;
+  const visH = quarter ? boxW : boxH;
+  let ox = panX;
+  let oy = panY;
+  if (rot === 90) { ox = -panY; oy = panX; }
+  else if (rot === 270) { ox = panY; oy = -panX; }
+  else if (rot === 180) { ox = -panX; oy = -panY; }
+  const left = vpW / 2 + ox - visW / 2;
+  const top = vpH / 2 + oy - visH / 2;
+  const right = left + visW;
+  const bottom = top + visH;
+  return {
+    gapX: visW + 0.5 >= vpW ? Math.max(0, left, vpW - right) : 0,
+    gapY: visH + 0.5 >= vpH ? Math.max(0, top, vpH - bottom) : 0
+  };
+}
+
+test('rotated pan limits cover the viewport in every layout, flip, and quarter turn', () => {
+  const stage = { w: 1600, h: 1000 };
+  const content = { w: 1080, h: 1920 };
+  const layouts = ['single', 'hmax3', 'vmax', 'vmax3'];
+  const flips = [false, true];
+  const turns = [0, 90];
+  const corners = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+  layouts.forEach(layout => {
+    const vp = C.layoutViewport(layout, stage.w, stage.h);
+    flips.forEach(flipH => flips.forEach(flipV => turns.forEach(rotation => {
+      corners.forEach(sign => {
+        const view = { zoom: 3.2, panX: sign[0] * 1e9, panY: sign[1] * 1e9 };
+        const orient = { flipH, flipV, rotation };
+        const clamped = C.clampOrientedView(view, vp.w, vp.h, content.w, content.h, orient);
+        const plain = C.clampOrientedView(view, vp.w, vp.h, content.w, content.h, { rotation });
+        close(clamped.panX, plain.panX);
+        close(clamped.panY, plain.panY);
+        const gap = coverGap(clamped.panX, clamped.panY, vp.w, vp.h, content.w, content.h, rotation);
+        assert.ok(gap.gapX < 1 && gap.gapY < 1, layout + ' H' + flipH + ' V' + flipV + ' r' + rotation + ' ' + sign);
+      });
+    })));
+  });
+  const raw = C.clampView({ zoom: 3.2, panX: 1e9, panY: 1e9 }, stage.w, stage.h, content.w, content.h, 0);
+  const black = coverGap(raw.panX, raw.panY, stage.w, stage.h, content.w, content.h, 90);
+  assert.ok(Math.max(black.gapX, black.gapY) > 250);
+  const fixed = C.clampOrientedView(
+    { zoom: 3.2, panX: 1e9, panY: 1e9 }, stage.w, stage.h, content.w, content.h, { rotation: 90, flipH: true, flipV: true }
+  );
+  const flush = coverGap(fixed.panX, fixed.panY, stage.w, stage.h, content.w, content.h, 90);
+  assert.ok(flush.gapX < 1 && flush.gapY < 1);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /clampOrientedView/);
+});
+
+function screenOfContent(view, relX, relY, vpW, vpH, contentW, contentH, orient) {
+  const rect = C.placedRect(view, vpW, vpH, contentW, contentH, orient.rotation || 0);
+  const M = C.orientationMatrix(vpW, vpH, orient);
+  return C.applyMatrix(M, rect.x + relX * rect.w, rect.y + relY * rect.h);
+}
+
+test('scroll zoom keeps the point under the pointer within 1px for H, V, and 90', () => {
+  const vpW = 1600, vpH = 1000, cw = 1080, ch = 1920;
+  const orients = [
+    { flipH: true, flipV: false, rotation: 0 },
+    { flipH: false, flipV: true, rotation: 0 },
+    { flipH: false, flipV: false, rotation: 90 },
+    { flipH: true, flipV: false, rotation: 90 }
+  ];
+  orients.forEach(orient => {
+    const view = C.clampOrientedView({ zoom: 4, panX: 30, panY: -20 }, vpW, vpH, cw, ch, orient);
+    const relX = 0.37, relY = 0.58;
+    const before = screenOfContent(view, relX, relY, vpW, vpH, cw, ch, orient);
+    const next = C.zoomAtPointer(view, 1.15, before.x, before.y, vpW, vpH, cw, ch, orient);
+    const after = screenOfContent(next, relX, relY, vpW, vpH, cw, ch, orient);
+    close(after.x, before.x, 1);
+    close(after.y, before.y, 1);
+  });
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  const focusAt = html.indexOf('function focusForZoom');
+  const focus = html.slice(focusAt, html.indexOf('function stopCompanionMotion', focusAt));
+  assert.match(focus, /mapFocusPoint/);
+  const zoomAt = html.indexOf('function changeZoom');
+  const zoom = html.slice(zoomAt, html.indexOf('let pointerOver', zoomAt));
+  assert.match(zoom, /zoomToward\(/);
+});
+
+test('closing the start screen leaves the saved session byte-identical', () => {
+  const saved = '{"sspVersion":1,"savedAt":1,"items":[{"id":"a","type":"image","name":"a.jpg"}]}';
+  const data = { ssp_autosave: saved };
+  const storage = {
+    getItem(k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+    setItem(k, v) { data[k] = String(v); }
+  };
+  C.saveBeforeExitThenAck(storage, 10000, { items: [] }, () => {}, { loaded: false, dirty: false });
+  assert.equal(storage.getItem('ssp_autosave'), saved);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: false, session: { items: [] } }), false);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: true, dirty: false, session: { items: [] } }), false);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: true, dirty: false, session: { items: [{ id: 'a' }] } }), true);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: true, session: { items: [{ id: 'a' }] } }), true);
+  assert.equal(C.shouldSaveSessionOnClose({ loaded: false, dirty: false, session: { items: [{ id: 'a' }] } }), false);
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /shouldSaveSessionOnClose/);
+  assert.match(html, /sessionLoaded/);
+});
+
+test('cancel leaves shortcuts, playlists, and locate paths unchanged', () => {
+  const pending = Promise.resolve(true);
+  assert.equal(C.confirmMeansYes(pending), false);
+  assert.equal(C.confirmMeansYes(false), false);
+  assert.equal(C.confirmMeansYes(true), true);
+  const map = { rotCW: 'x', moreTools: 'q' };
+  const defaults = { rotCW: 'r', moreTools: 'd' };
+  assert.equal(C.resetShortcutsIfConfirmed(false, map, defaults), map);
+  assert.equal(C.resetShortcutsIfConfirmed(pending, map, defaults), map);
+  const reset = C.resetShortcutsIfConfirmed(true, map, defaults);
+  assert.equal(reset.rotCW, 'r');
+  assert.equal(reset.moreTools, 'd');
+  assert.notEqual(reset, map);
+
+  const store = [{ name: 'Trip', json: '{"items":[1]}' }];
+  const kept = C.namedPlaylistsAfterReplace(store, 'Trip', '{"items":[2]}', false, true);
+  assert.equal(kept[0].json, '{"items":[1]}');
+  assert.equal(kept.length, 1);
+  const replaced = C.namedPlaylistsAfterReplace(store, 'Trip', '{"items":[2]}', true, true);
+  assert.equal(replaced[0].json, '{"items":[2]}');
+  assert.equal(store[0].json, '{"items":[1]}');
+
+  const names = ['Trip', 'Home'];
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', false), names);
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', pending), names);
+  assert.deepEqual(C.namedPlaylistsAfterDelete(names, 'Trip', true), ['Home']);
+
+  const items = [{ path: 'C:\\old\\a.jpg', missing: true }, { path: 'C:\\keep\\b.jpg', missing: false }];
+  const rewrites = { 'C:\\old\\a.jpg': 'D:\\new\\a.jpg' };
+  const cancelled = C.itemsAfterLocateConfirm(items, rewrites, false);
+  assert.equal(cancelled[0].path, items[0].path);
+  assert.equal(cancelled[0].missing, true);
+  assert.equal(cancelled[1].path, items[1].path);
+  const applied = C.itemsAfterLocateConfirm(items, rewrites, true);
+  assert.equal(applied[0].path, 'D:\\new\\a.jpg');
+  assert.equal(applied[0].missing, false);
+  assert.equal(applied[1].path, items[1].path);
+  assert.equal(items[0].path, 'C:\\old\\a.jpg');
+
+  assert.equal(C.missingFilesNotice(3), "3 files couldn't be found");
+  assert.equal(C.missingFilesNotice(1), "1 file couldn't be found");
+  assert.equal(C.missingFilesNotice(0), '');
+});
+
+test('HTML and JS have no bare confirm() and the four prompts await a dialog', () => {
+  const bare = /(?<![\w$.])confirm\s*\(/;
+  ['./SlideShowPro.html', './slidex-core.js', './demo/SlideShowPro.html'].forEach(rel => {
+    const text = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.equal(bare.test(text), false, rel);
+  });
+  const html = fs.readFileSync(new URL('./SlideShowPro.html', import.meta.url), 'utf8');
+  assert.match(html, /async function sspConfirm/);
+  assert.match(html, /dialog\.confirm\(/);
+  assert.match(html, /window\.confirm\(message\)/);
+  const resetAt = html.indexOf("g('kedresetall').onclick");
+  const reset = html.slice(resetAt, html.indexOf("g('kedsearch')", resetAt));
+  assert.match(reset, /await sspConfirm\(/);
+  assert.ok(reset.indexOf('await sspConfirm') < reset.indexOf('keyMap[f.id]'));
+  const save = html.slice(html.indexOf('async function saveNamedPlaylistFlow'), html.indexOf('function closePlaylistLibrary'));
+  assert.match(save, /await sspConfirm\(/);
+  assert.ok(save.indexOf('await sspConfirm') < save.indexOf('save_named_playlist'));
+  const delAt = html.indexOf('del.onclick = async');
+  const del = html.slice(delAt, html.indexOf('btns.appendChild(load)', delAt));
+  assert.match(del, /await sspConfirm\(/);
+  assert.ok(del.indexOf('await sspConfirm') < del.indexOf('delete_named_playlist'));
+  const locate = html.slice(html.indexOf('async function locateMissingFolder'), html.indexOf('function bindFramingExtras'));
+  assert.match(locate, /await sspConfirm\(/);
+  assert.ok(locate.indexOf('await sspConfirm') < locate.indexOf('register_allowed_paths'));
+  const caps = fs.readFileSync(new URL('./src-tauri/capabilities/default.json', import.meta.url), 'utf8');
+  assert.match(caps, /dialog:allow-ask/);
+  assert.match(caps, /dialog:allow-confirm/);
+  assert.match(html, /missingFilesNotice/);
+  assert.match(html, /toggleTimer/);
+});

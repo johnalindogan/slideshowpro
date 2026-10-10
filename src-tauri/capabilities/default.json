@@ -14,6 +14,8 @@
     "core:path:default",
     "core:app:default",
     "dialog:default",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
     "allow-get-launch-paths",
     "allow-read-media-file",
     "allow-media-file-size",
@@ -24,6 +26,15 @@
     "allow-close-playlist-window",
     "allow-focus-playlist-window",
     "allow-write-export-file",
+    "allow-read-crop-sidecar",
+    "allow-write-crop-sidecar",
+    "allow-delete-crop-sidecar",
+    "allow-save-named-playlist",
+    "allow-list-named-playlists",
+    "allow-read-named-playlist",
+    "allow-rename-named-playlist",
+    "allow-delete-named-playlist",
+    "allow-paths-exist",
     "allow-cast-discover",
     "allow-cast-load-still",
     "allow-cast-load-video",
@@ -31,6 +42,7 @@
     "allow-cast-play",
     "allow-cast-next",
     "allow-cast-disconnect",
-    "allow-cast-session"
+    "allow-cast-session",
+    "allow-slidex-save-done"
   ]
 }

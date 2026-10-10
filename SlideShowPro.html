@@ -41,6 +41,25 @@ html,body{background:#000;height:100%;overflow:hidden;font-family: var(--font-ma
 .sl{position:absolute;inset:0;opacity:0;}
 .sl img,.sl video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:center center;}
 .sl.on{opacity:1;}
+.ssp-orient{position:absolute;inset:0;transform-origin:center center;}
+.ssp-view{position:absolute;inset:0;transform-origin:center center;will-change:transform;}
+.ssp-crop{position:absolute;inset:0;overflow:hidden;}
+.ssp-crop img,.ssp-crop video{position:absolute;max-width:none;}
+#cropbar{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:6;display:none;gap:6px;align-items:center;background:rgba(0,0,0,.78);padding:6px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.16);}
+#cropbar.show{display:flex;}
+#cropbar button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:5px;padding:4px 8px;font:500 11px var(--font-main);cursor:pointer;}
+#cropbar button.on{background:rgba(255,255,255,.18);border-color:#fff;}
+#cropbox{display:none;position:absolute;border:1.5px solid #fff;box-shadow:0 0 0 9999px rgba(0,0,0,.45);z-index:5;cursor:move;touch-action:none;}
+#cropbox.show{display:block;}
+.ssp-handle{position:absolute;width:10px;height:10px;background:#fff;border:1px solid #111;border-radius:2px;}
+#cropnotice{position:absolute;left:12px;bottom:12px;z-index:6;display:none;max-width:46%;background:rgba(0,0,0,.72);color:#fff;font:500 12px var(--font-main);padding:6px 10px;border-radius:6px;}
+#cropnotice.show{display:block;}
+#plib{position:fixed;inset:0;z-index:40;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
+#plib.show{display:flex;}
+#plib .panel{width:min(560px,92vw);max-height:80vh;overflow:auto;background:#141414;color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:16px;font-family:var(--font-main);}
+#plib h3{font-size:16px;margin-bottom:8px;}
+#plib .row{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.08);font-size:13px;}
+#plib button{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:5px;padding:4px 8px;cursor:pointer;font:500 12px var(--font-main);}
 
 /* Transition animations */
 @keyframes fdi{from{opacity:0}to{opacity:1}}
@@ -729,6 +748,7 @@ body.ssp-playlist-window #dock-toggle-btn {
 
 /* Watch mode badge */
 #watchbadge{display:none;position:fixed;top:12px;right:12px;background:rgba(0,0,0,.55);color:rgba(255,255,255,.5);font-size:10px;padding:3px 10px;border-radius:10px;z-index:4;font-family:system-ui,sans-serif;letter-spacing:.05em;}
+#loadstatus{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(20,20,20,.92);color:rgba(255,255,255,.9);font:12px/1.4 system-ui,sans-serif;padding:6px 12px;border-radius:999px;pointer-events:none;border:.5px solid rgba(255,255,255,.16);}
 #toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,.97);border:.5px solid rgba(255,255,255,.18);color:rgba(255,255,255,.85);font-size:12px;font-family:system-ui,sans-serif;padding:10px 18px;border-radius:8px;z-index:600;pointer-events:none;opacity:0;transition:opacity .25s;max-width:80vw;text-align:center;line-height:1.5;}
 #toast.show{opacity:1;}
 #toast button{display:inline-block;margin-top:8px;background:rgba(220,60,60,.25);border:.5px solid rgba(220,60,60,.6);color:rgba(255,110,110,1);font-size:11px;padding:5px 14px;border-radius:5px;cursor:pointer;font-family:system-ui,sans-serif;pointer-events:auto;}
@@ -793,6 +813,7 @@ body.ssp-playlist-window #dock-toggle-btn {
 <feConvolveMatrix id="gfSharp" order="3" kernelMatrix="0 0 0 0 1 0 0 0 0" preserveAlpha="true"/>
 </filter></defs></svg>
 
+<div id="loadstatus" role="status" hidden></div>
 <div id="app">
 <div id="dz">
   <div id="landing">
@@ -838,6 +859,17 @@ body.ssp-playlist-window #dock-toggle-btn {
   <div id="stage">
     <div id="fnov"></div>
     <div id="watchbadge">WATCH MODE · F5 or Esc to exit</div>
+    <div id="cropbar" role="toolbar" aria-label="Crop">
+      <button type="button" data-aspect="free">Free</button>
+      <button type="button" data-aspect="16:9">16:9</button>
+      <button type="button" data-aspect="4:3">4:3</button>
+      <button type="button" data-aspect="1:1">1:1</button>
+      <button type="button" data-aspect="9:16">9:16</button>
+      <button type="button" id="cropreset">Reset</button>
+      <button type="button" id="cropdone">Done</button>
+    </div>
+    <div id="cropbox" aria-hidden="true"></div>
+    <div id="cropnotice" role="status"></div>
     <div id="maxcomp"></div>
     <div id="maxcomp2"></div>
   </div>
@@ -955,8 +987,9 @@ body.ssp-playlist-window #dock-toggle-btn {
       <select class="cs" id="dsel" title="Default photo duration">
         <option value="3000">3s</option>
         <option value="4000">4s</option>
-        <option value="6000" selected>6s</option>
+        <option value="6000">6s</option>
         <option value="8000">8s</option>
+        <option value="10000" selected>10s</option>
         <option value="12000">12s</option>
       </select>
       <select class="cs" id="tsel" title="Transition effect">
@@ -976,6 +1009,12 @@ body.ssp-playlist-window #dock-toggle-btn {
       </button>
       <button class="cb" id="bexport" title="Export graded image / video (E)">
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <button class="cb" id="bcrop" title="Crop (non-destructive)">
+        <svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+      </button>
+      <button class="cb" id="bexportcrop" title="Export cropped still">
+        <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 13h7v7h-7z"/><path d="M14 4h6v6"/><path d="M4 14v6h6"/></svg>
       </button>
       <button class="cb" id="btheme" title="Themes (T) — cycle 10 color presets; Shift=random; Alt=all">
         <svg viewBox="0 0 24 24"><path d="M12 2l1.6 4.9H19l-4 2.9 1.5 4.8-4.5-3.2-4.5 3.2L9 9.8 5 6.9h5.4L12 2z"/></svg>
@@ -1008,8 +1047,9 @@ body.ssp-playlist-window #dock-toggle-btn {
         <button id="plopenfolder" title="Open folder">Folder</button>
         <button id="plshuffle" title="Shuffle">&#x1F500;</button>
         <button id="plnewfolder" title="New Folder">&#128193;</button>
-        <button id="plsave" title="Save Playlist">&#128190;</button>
-        <button id="plload" title="Load Playlist">&#128194;</button>
+        <button id="plsave" title="Save playlist as…">&#128190;</button>
+        <button id="plload" title="Load playlist">&#128194;</button>
+        <button id="pllocate" title="Locate folder for missing items" hidden>Locate folder…</button>
         <button id="plundock" title="Undock Media Manager">Undock</button>
         <button id="pldockback" title="Dock back to main window">Dock</button>
       </div>
@@ -1108,6 +1148,7 @@ body.ssp-playlist-window #dock-toggle-btn {
 <!-- Floating restore button -->
 <button id="showctrl">Show Controls</button>
 
+<script src="slidex-core.js"></script>
 <script>
 const g = id => document.getElementById(id);
 const dz = g('dz'), fi = g('fi'), viewer = g('viewer'), stage = g('stage'), app = g('app');
@@ -1247,6 +1288,21 @@ function tauriDialogSave(opts) {
     return Promise.reject(new Error('Tauri dialog save unavailable'));
   }
   return window.__TAURI__.dialog.save(opts);
+}
+async function sspConfirm(message) {
+  if (sspIsTauri()) {
+    const dialog = window.__TAURI__ && window.__TAURI__.dialog;
+    if (dialog && typeof dialog.confirm === 'function') {
+      return (await dialog.confirm(message, { title: 'SlideX', kind: 'warning' })) === true;
+    }
+    if (dialog && typeof dialog.ask === 'function') {
+      return (await dialog.ask(message, { title: 'SlideX', kind: 'warning' })) === true;
+    }
+    return false;
+  }
+  const result = window.confirm(message);
+  if (result && typeof result.then === 'function') return (await result) === true;
+  return result === true;
 }
 
 /* ── P3: undocked playlist window role + live sync ── */
@@ -2177,6 +2233,7 @@ g('fiupd').onchange = function() {
 
 /* ── State ── */
 let items = [], sls = [], slByIdx = Object.create(null), cur = 0, playing = true,
+    sessionLoaded = false, sessionDirty = false,
     stagePruneTmr = null, thumbIO = null,
     stripMounted = new Map(), stripRaf = 0, plMounted = new Map(), plRaf = 0, plRows = [], plTotalH = 0, folderIngestGen = 0,
     tmr = null, ptmr = null, ps = null, kbId = null,
@@ -2318,6 +2375,7 @@ const KB_LABELS = [
   'Drift Across · Pan ↔'
 ];
 let kbEnabled = true, kbZoomInt = 4.0, kbPanInt = 4.0, kbDirection = 'mix', kbEasing = 'ease';
+let kbManualHold = false, kbVisual = null;
 
 /* ── Media helpers ── */
 function getMediaItems() { return items.filter(it => it.type !== 'folder' && !it.unavailable); }
@@ -2388,6 +2446,7 @@ function loadItemLS(item) {
       if (d.panY !== undefined) item.panY = d.panY;
       if (d.customDur !== undefined) item.customDur = d.customDur;
       if (d.kbPreset !== undefined) item.kbPreset = d.kbPreset;
+      if (d.crop) item.crop = d.crop;
       if (d.thumbnailUrl !== undefined) item.thumbnailUrl = d.thumbnailUrl;
       break;
     }
@@ -2403,6 +2462,7 @@ function saveItemLS(item) {
       zoom: item.zoom, panX: item.panX, panY: item.panY,
       customDur: item.customDur,
       kbPreset: item.kbPreset,
+      crop: item.crop || null,
       thumbnailUrl: item.thumbnailUrl
     }));
   } catch(e) {}
@@ -2420,6 +2480,7 @@ function applyImageUpdates(item, data) {
   if (updates.panY !== undefined) item.panY = updates.panY;
   if (updates.customDur !== undefined) item.customDur = updates.customDur;
   if (updates.kbPreset !== undefined) item.kbPreset = updates.kbPreset;
+  if (updates.crop) item.crop = updates.crop;
   if (updates.thumbnailUrl !== undefined) item.thumbnailUrl = updates.thumbnailUrl;
 }
 
@@ -2529,6 +2590,7 @@ const FNS = [
   {id:'mirrorV',   label:'Mirror V',          def:'v',          group:'View'},
   {id:'hidectl',   label:'Hide Controls',     def:'c',          group:'View'},
   {id:'playlist',  label:'Playlist',          def:'l',          group:'View'},
+  {id:'moreTools', label:'More tools',         def:'d',          group:'View'},
   {id:'rotCW',     label:'Rotate CW',         def:'r',          group:'View'},
   {id:'rotCCW',    label:'Rotate CCW',        def:'R',          group:'View'},
   {id:'fname',     label:'Toggle Filename',   def:'n',          group:'View'},
@@ -2553,21 +2615,38 @@ const FNS = [
 ];
 const KEYMAP_LS = 'ssp_keymap';
 let keyMap = {};
+function refreshMoreToolsTooltip() {
+  const btn = g('bmore');
+  if (!btn) return;
+  const k = keyMap.moreTools;
+  btn.title = k ? ('More tools (' + keyLabel(k) + ')') : 'More tools';
+}
 function loadKeyMap() {
-  keyMap = {};
-  FNS.forEach(f => { keyMap[f.id] = f.def; });
+  let saved = null;
   try {
     const raw = localStorage.getItem(KEYMAP_LS);
-    if (!raw) return;
-    const saved = JSON.parse(raw);
-    if (!saved || typeof saved !== 'object') return;
-    FNS.forEach(f => {
-      if (typeof saved[f.id] === 'string') keyMap[f.id] = saved[f.id];
-    });
+    if (raw) saved = JSON.parse(raw);
   } catch (_) {}
+  if (!saved || typeof saved !== 'object') saved = null;
+  if (window.SlideXCore && SlideXCore.resolveKeyMap) {
+    const next = SlideXCore.resolveKeyMap(FNS, saved);
+    const explicit = saved && typeof saved.moreTools === 'string' ? saved.moreTools : null;
+    keyMap = next;
+    if (next.moreTools === '' && explicit !== '') saveKeyMap();
+  } else {
+    keyMap = {};
+    FNS.forEach(f => { keyMap[f.id] = f.def; });
+    if (saved) {
+      FNS.forEach(f => {
+        if (typeof saved[f.id] === 'string') keyMap[f.id] = saved[f.id];
+      });
+    }
+  }
+  refreshMoreToolsTooltip();
 }
 function saveKeyMap() {
   try { localStorage.setItem(KEYMAP_LS, JSON.stringify(keyMap)); } catch (_) {}
+  if (typeof refreshMoreToolsTooltip === 'function') refreshMoreToolsTooltip();
 }
 loadKeyMap();
 
@@ -2733,7 +2812,7 @@ function renderKeyEditor() {
   }
   const note = document.createElement('p');
   note.className = 'kednote';
-  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Arrows pan; Esc exits watch mode / cancels remap / closes this editor. Speed − / + default to , / .';
+  note.textContent = 'Fixed (not remappable): Delete / Backspace remove items; Alt+Backspace resets the view and does not remove the item; Alt+Arrows pan; Esc exits watch mode / cancels remap / closes this editor. Speed − / + default to , / . Zoom + / = and − stop at the whole image. 0 stays Hue +.';
   list.appendChild(note);
   updateConflictBanner();
 }
@@ -2752,10 +2831,18 @@ function toggleKeyEditor(force) {
 g('bked').onclick = () => toggleKeyEditor();
 g('kedclose').onclick = () => toggleKeyEditor(false);
 g('keditor').addEventListener('click', e => { if (e.target === g('keditor')) toggleKeyEditor(false); });
-g('kedresetall').onclick = () => {
+g('kedresetall').onclick = async () => {
   cancelKeyListen();
-  if (!confirm('Reset all keyboard shortcuts to defaults?')) return;
-  resetAllKeys();
+  const ok = await sspConfirm('Reset all keyboard shortcuts to defaults?');
+  const defaults = {};
+  FNS.forEach(f => { defaults[f.id] = f.def; });
+  const next = (window.SlideXCore && SlideXCore.resetShortcutsIfConfirmed)
+    ? SlideXCore.resetShortcutsIfConfirmed(ok, keyMap, defaults)
+    : (ok ? defaults : keyMap);
+  if (next === keyMap) return;
+  FNS.forEach(f => { keyMap[f.id] = next[f.id]; });
+  saveKeyMap();
+  if (typeof showToast === 'function') showToast('Keyboard shortcuts restored to defaults');
   renderKeyEditor();
 };
 g('kedsearch').addEventListener('input', () => {
@@ -2894,19 +2981,26 @@ function needsSharpenBake(clr) {
 /** Draw media into a canvas with full color suite baked (B/C/H/S + LUT + sharpness). */
 function renderGradedCanvas(med, item, opts) {
   const clr = {...CLR_DEF, ...(item && item.clr)};
-  let w = (opts && opts.width) || item.w || med.videoWidth || med.naturalWidth || 0;
-  let h = (opts && opts.height) || item.h || med.videoHeight || med.naturalHeight || 0;
-  if (!w || !h) throw new Error('Unknown media dimensions');
-  const maxW = (opts && opts.maxWidth) || 0;
-  if (maxW && w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+  const natW = med.naturalWidth || med.videoWidth || (item && item.w) || 0;
+  const natH = med.naturalHeight || med.videoHeight || (item && item.h) || 0;
+  let sx = 0, sy = 0, sw = natW, sh = natH, outW = natW, outH = natH;
+  if (window.SlideXCore && natW && natH) {
+    const rect = SlideXCore.exportSourceRect(natW, natH, 1, opts && opts.ignoreCrop ? null : (item && item.crop));
+    sx = rect.sx; sy = rect.sy; sw = rect.sw; sh = rect.sh; outW = rect.outW; outH = rect.outH;
+  }
+  if (!outW || !outH) throw new Error('Unknown media dimensions');
+  if (opts && opts.width && opts.height) { outW = opts.width; outH = opts.height; }
+  else if (opts && opts.maxWidth && outW > opts.maxWidth) {
+    outH = Math.round(outH * (opts.maxWidth / outW)); outW = opts.maxWidth;
+  }
   const can = document.createElement('canvas');
-  can.width = w; can.height = h;
+  can.width = outW; can.height = outH;
   const ctx = can.getContext('2d', { willReadFrequently: true });
   ctx.filter = cssFiltersFromClr(clr);
-  ctx.drawImage(med, 0, 0, w, h);
+  ctx.drawImage(med, sx, sy, sw, sh, 0, 0, outW, outH);
   ctx.filter = 'none';
   if (needsLutBake(clr) || needsSharpenBake(clr)) {
-    const id = ctx.getImageData(0, 0, w, h);
+    const id = ctx.getImageData(0, 0, outW, outH);
     if (needsLutBake(clr)) {
       applyByteLUTToImageData(id, buildByteLUT(clr.g / 100, clr.hl / 100, clr.sh / 100));
     }
@@ -3037,24 +3131,175 @@ g('slb').onclick = () => { spd = 100; updSpd(); showToast('Speed: 100%', 1200); 
 
 const isV = i => getMediaItems()[i]?.type === 'video';
 const getDur = () => parseInt(g('dsel').value);
-const getItemDur = i => getMediaItems()[i != null ? i : cur]?.customDur ?? getDur();
+const getItemDur = i => {
+  const item = getMediaItems()[i != null ? i : cur];
+  if (window.SlideXCore) return SlideXCore.resolveImageDuration(item && item.customDur, getDur());
+  return (item && item.customDur) || getDur();
+};
 const getEDur = i => getItemDur(i != null ? i : cur) / getSpd();
 
 /* ── Zoom / Pan ── */
 function updZoom() { g('zlb').textContent = Math.round(zoom * 100) + '%'; }
-function changeZoom(d) {
-  zoom = Math.max(0.1, Math.min(10, zoom + d)); updZoom();
+function changeZoom(d, pointer) {
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  if (pointer && pointer.factor && window.SlideXCore) {
+    const f = (typeof frameMetrics === 'function' && frameMetrics()) || (typeof gestureMetrics === 'function' && gestureMetrics());
+    if (f) {
+      const v = SlideXCore.zoomToward({ zoom, panX, panY }, pointer.factor, pointer.x, pointer.y, f.vpW, f.vpH, f.cw, f.ch, f.rotation || 0);
+      zoom = v.zoom; panX = v.panX; panY = v.panY;
+    } else zoom = Math.max(1, Math.min(10, zoom * pointer.factor));
+  } else {
+    zoom += d;
+    if (typeof clampManualView === 'function') clampManualView();
+    else zoom = Math.max(1, Math.min(10, zoom));
+  }
+  updZoom();
   const item = getMediaItems()[cur];
-  if (item) { item.zoom = zoom; saveItemLS(item); }
+  if (item) { item.zoom = zoom; item.panX = panX; item.panY = panY; saveItemLS(item); }
   staticT();
+  if (typeof updCompT === 'function') updCompT();
+}
+let pointerOver = { x: 0, y: 0, insideWindow: false };
+let gestureMatrix = null;
+function identityPanMatrix() {
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+}
+function rememberPointer(e) {
+  if (!e) return;
+  pointerOver = { x: e.clientX, y: e.clientY, insideWindow: true };
+}
+document.addEventListener('mousemove', rememberPointer);
+document.addEventListener('mouseleave', () => { pointerOver.insideWindow = false; });
+function readOrientationMatrix(startEl) {
+  if (!startEl || typeof DOMMatrix === 'undefined') return identityPanMatrix();
+  let m = new DOMMatrix();
+  let node = startEl;
+  const stop = stage.parentElement;
+  while (node && node !== stop) {
+    if (!(node.dataset && node.dataset.panLayer === '1')) {
+      const t = getComputedStyle(node).transform;
+      if (t && t !== 'none') {
+        const ox = (node.clientWidth || 0) / 2;
+        const oy = (node.clientHeight || 0) / 2;
+        const local = new DOMMatrix().translate(ox, oy).multiply(new DOMMatrix(t)).translate(-ox, -oy);
+        m = local.multiply(m);
+      }
+    }
+    node = node.parentElement;
+  }
+  return { a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f };
+}
+function paneEntries() {
+  const panes = [];
+  const main = getSl(cur);
+  if (main) {
+    const r = main.getBoundingClientRect();
+    panes.push({ id: 'main', x: r.left, y: r.top, w: r.width, h: r.height, el: main });
+  }
+  ['maxcomp', 'maxcomp2'].forEach(id => {
+    const el = g(id);
+    if (!el) return;
+    const shown = getComputedStyle(el).display !== 'none';
+    if (!shown) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    panes.push({ id: id, x: r.left, y: r.top, w: r.width, h: r.height, el: el });
+  });
+  return panes;
+}
+function matrixForPane(pane) {
+  if (!pane || !pane.el) return identityPanMatrix();
+  const start = pane.el.querySelector ? (pane.el.querySelector('img,video') || pane.el) : pane.el;
+  return readOrientationMatrix(start);
+}
+function paneUnderPointer(p) {
+  const panes = paneEntries();
+  const id = (window.SlideXCore && SlideXCore.paneForArrow)
+    ? SlideXCore.paneForArrow(p || pointerOver, panes, 'main')
+    : 'main';
+  return panes.find(pane => pane.id === id) || panes.find(pane => pane.id === 'main') || null;
+}
+function layoutPointInPane(pane, clientX, clientY) {
+  const el = (pane && pane.id !== 'main') ? pane.el : (getSl(cur) || (pane && pane.el) || stage);
+  const r = el.getBoundingClientRect();
+  return { x: clientX - r.left, y: clientY - r.top, w: r.width || 1, h: r.height || 1 };
+}
+function focusForZoom(clientX, clientY) {
+  const pane = paneUnderPointer({ x: clientX, y: clientY, insideWindow: true });
+  const m = matrixForPane(pane);
+  const pt = layoutPointInPane(pane, clientX, clientY);
+  const sl = getSl(cur) || stage;
+  const vr = sl.getBoundingClientRect();
+  if (window.SlideXCore && SlideXCore.mapFocusPoint) {
+    const local = SlideXCore.mapFocusPoint(m, pt.x, pt.y);
+    const pw = pt.w > 0 ? pt.w : 1;
+    const ph = pt.h > 0 ? pt.h : 1;
+    return { x: local.x / pw * (vr.width || pw), y: local.y / ph * (vr.height || ph) };
+  }
+  return { x: clientX - vr.left, y: clientY - vr.top };
+}
+function stopCompanionMotion() {
+  if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
+}
+function gestureMetrics() {
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!item || !sl || !window.SlideXCore) return null;
+  const med = sl.querySelector('img,video');
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || (med && (med.naturalWidth || med.videoWidth)) || vpW;
+  const natH = item.h || (med && (med.naturalHeight || med.videoHeight)) || vpH;
+  const crop = (!cropEditing && SlideXCore.isActiveCrop(item.crop)) ? SlideXCore.normalizeCrop(item.crop) : null;
+  return {
+    vpW: vpW, vpH: vpH,
+    cw: Math.max(1, crop ? natW * crop.w : natW),
+    ch: Math.max(1, crop ? natH * crop.h : natH),
+    rotation: rotation || 0,
+    flipH: !!mirrorX,
+    flipV: !!mirrorY
+  };
+}
+function applySharedPan(baseX, baseY, matrix, dx, dy) {
+  const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
+  if (f && window.SlideXCore && SlideXCore.clampedPanAfterDelta) {
+    const v = SlideXCore.clampedPanAfterDelta(
+      { zoom: zoom, panX: baseX, panY: baseY }, matrix, dx, dy, f.vpW, f.vpH, f.cw, f.ch,
+      { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV }
+    );
+    zoom = v.zoom; panX = v.panX; panY = v.panY;
+    return;
+  }
+  const d = (window.SlideXCore && SlideXCore.mapPanDelta) ? SlideXCore.mapPanDelta(matrix, dx, dy) : { x: dx, y: dy };
+  panX = baseX + d.x;
+  panY = baseY + d.y;
+  if (typeof clampManualView === 'function') clampManualView();
 }
 function doPan(dx, dy) {
-  const s = 8 / zoom; panX += dx * s; panY += dy * s;
-  const item = getMediaItems()[cur];
-  if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  stopCompanionMotion();
   staticT();
+  const m = matrixForPane(paneUnderPointer(pointerOver));
+  const f = (typeof gestureMetrics === 'function') ? gestureMetrics() : null;
+  if (f && window.SlideXCore && SlideXCore.arrowNudgeThenClamp) {
+    const v = SlideXCore.arrowNudgeThenClamp(
+      { zoom: zoom, panX: panX, panY: panY }, m, dx, dy, f.vpW, f.vpH, f.cw, f.ch,
+      { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV }
+    );
+    zoom = v.zoom; panX = v.panX; panY = v.panY;
+  } else {
+    const d = (window.SlideXCore && SlideXCore.mapPanDelta) ? SlideXCore.mapPanDelta(m, dx, dy) : { x: dx, y: dy };
+    const s = 8 / Math.max(zoom, 1);
+    panX += d.x * s; panY += d.y * s;
+    if (typeof clampManualView === 'function') clampManualView();
+  }
+  const item = getMediaItems()[cur];
+  if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
+  staticT();
+  updCompT();
 }
 function resetPan() {
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
   zoom = 1; panX = 0; panY = 0; updZoom();
   const item = getMediaItems()[cur];
   if (item) { item.zoom = 1; item.panX = 0; item.panY = 0; saveItemLS(item); }
@@ -3068,57 +3313,69 @@ g('zlb').onclick = () => resetPan();
 /* ── Mouse: scroll = zoom, left drag = pan, middle drag = pan, right = context menu ── */
 stage.addEventListener('wheel', e => {
   e.preventDefault();
-  const d = e.deltaY < 0 ? 0.15 : -0.15;
-  if (isInCompanion(e.clientX, e.clientY)) {
-    compZoom = Math.max(0.1, Math.min(10, compZoom + d)); updCompT();
-  } else { changeZoom(d); }
+  rememberPointer(e);
+  if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+  stopCompanionMotion();
+  const focus = focusForZoom(e.clientX, e.clientY);
+  changeZoom(0, {
+    x: focus.x,
+    y: focus.y,
+    factor: Math.exp(-e.deltaY * 0.0016)
+  });
 }, {passive: false});
 
 stage.addEventListener('mousedown', e => {
   if (e.button === 0) {
-    if (e.target.closest('button,a,select,input')) return;
-    lDragOnComp = isInCompanion(e.clientX, e.clientY);
+    if (e.target.closest('button,a,select,input,#cropbar,#cropbox')) return;
+    rememberPointer(e);
+    if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+    stopCompanionMotion();
+    staticT();
+    gestureMatrix = matrixForPane(paneUnderPointer(pointerOver));
+    lDragOnComp = false;
     lDrag = true; lDragMoved = false;
     lDragStartX = e.clientX; lDragStartY = e.clientY;
-    lDragPX = lDragOnComp ? compPanX : panX;
-    lDragPY = lDragOnComp ? compPanY : panY;
+    lDragPX = panX;
+    lDragPY = panY;
   } else if (e.button === 1) {
     e.preventDefault();
+    rememberPointer(e);
+    if (typeof pauseKenBurnsForManual === 'function') pauseKenBurnsForManual();
+    stopCompanionMotion();
+    staticT();
+    gestureMatrix = matrixForPane(paneUnderPointer(pointerOver));
     midDrag = true;
     midStartX = e.clientX; midStartY = e.clientY;
     midStartPX = panX; midStartPY = panY;
   }
 });
 document.addEventListener('mousemove', e => {
+  rememberPointer(e);
   if (lDrag) {
     const dx = e.clientX - lDragStartX, dy = e.clientY - lDragStartY;
     if (!lDragMoved && Math.hypot(dx,dy) < 4) return;
     lDragMoved = true; stage.classList.add('ldrag');
-    if (lDragOnComp) {
-      const isVmax = stage.classList.contains('vmax');
-      const isMirror = maxPreset === 1 || maxPreset === 4;
-      const mdx = (isMirror && !isVmax) ? -dx : dx;
-      const mdy = (isMirror && isVmax) ? -dy : dy;
-      compPanX = lDragPX + mdx / compZoom; compPanY = lDragPY + mdy / compZoom; updCompT();
-    } else { panX = lDragPX + dx / zoom; panY = lDragPY + dy / zoom; staticT(); }
-  } else if (midDrag) {
-    panX = midStartPX + (e.clientX - midStartX) / zoom;
-    panY = midStartPY + (e.clientY - midStartY) / zoom;
+    applySharedPan(lDragPX, lDragPY, gestureMatrix || identityPanMatrix(), dx, dy);
     staticT();
+    updCompT();
+  } else if (midDrag) {
+    applySharedPan(midStartPX, midStartPY, gestureMatrix || identityPanMatrix(), e.clientX - midStartX, e.clientY - midStartY);
+    staticT();
+    updCompT();
   }
 });
 document.addEventListener('mouseup', e => {
   if (e.button === 0 && lDrag) {
     lDrag = false; stage.classList.remove('ldrag');
-    if (lDragMoved && !lDragOnComp) {
+    if (lDragMoved) {
       const item = getMediaItems()[cur];
-      if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+      if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
     }
     lDragMoved = false;
   } else if (e.button === 1 && midDrag) {
     midDrag = false;
     const item = getMediaItems()[cur];
-    if (item) { item.panX = panX; item.panY = panY; saveItemLS(item); }
+    if (item) { item.panX = panX; item.panY = panY; item.zoom = zoom; saveItemLS(item); }
   }
 });
 
@@ -3130,14 +3387,27 @@ function mediaPrefix() {
   if (mx !== 1 || my !== 1) parts.push(`scale(${mx},${my})`);
   return parts.length ? parts.join(' ') + ' ' : '';
 }
+function applyOrient(sl) {
+  const orient = sl && sl.querySelector('.ssp-orient');
+  if (orient) orient.style.transform = mediaPrefix().trim();
+}
 function staticT() {
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
-  const m = getSl(cur)?.querySelector('img,video'); if (!m) return;
-  /* Videos: full frame (contain) + zoom/pan only — no Ken Burns end-frame offsets. */
-  const p = isV(cur) ? null : getKBPreset(cur);
-  const tx = p ? p.tx : 0, ty = p ? p.ty : 0;
-  if (m.tagName === 'VIDEO') m.style.objectFit = 'contain';
-  m.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${tx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ty.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  const m = sl?.querySelector('img,video'); if (!m || !item) return;
+  if (getActiveMaxMode(cur)) {
+    resetMaxFrame(sl);
+    applyOrient(sl);
+    const view = sl.querySelector('.ssp-view');
+    if (view) {
+      view.dataset.panLayer = '1';
+      view.style.transform = 'translate(' + panX.toFixed(2) + 'px,' + panY.toFixed(2) + 'px) scale(' + Math.max(1, zoom).toFixed(4) + ')';
+    }
+    m.style.transform = '';
+    return;
+  }
+  applyFrameTransform(sl, item, zoom, panX, panY);
 }
 
 /* ── Mirror ── */
@@ -3267,17 +3537,25 @@ function getActiveMaxMode(i) {
   return null;
 }
 
+function layoutMirrorCSS() {
+  if (maxPreset !== 1 && maxPreset !== 4) return '';
+  const vertical = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
+  return vertical ? 'scaleY(-1)' : 'scaleX(-1)';
+}
 function updCompT() {
   if (compKbId) return; // KB Right is managing its own transform
-  const m = g('maxcomp').querySelector('img,video'); if (!m) return;
-  const isVmax = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
-  const isMirror = maxPreset === 1 || maxPreset === 4;
-  const mirror = isMirror ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
-  const t = `${mirror}scale(${compZoom.toFixed(4)}) translate(${compPanX.toFixed(1)}px,${compPanY.toFixed(1)}px)`;
-  m.style.transform = t;
-  if (maxPreset === 4) {
-    const m2 = g('maxcomp2')?.querySelector('img,video'); if (m2) m2.style.transform = t;
-  }
+  const mirror = layoutMirrorCSS();
+  const panT = 'translate(' + panX.toFixed(2) + 'px,' + panY.toFixed(2) + 'px) scale(' + Math.max(zoom, 0.1).toFixed(4) + ')';
+  ['maxcomp', 'maxcomp2'].forEach(id => {
+    const pane = g(id);
+    if (!pane) return;
+    pane.style.transformOrigin = 'center center';
+    pane.style.transform = mirror;
+    const med = pane.querySelector('img,video');
+    if (!med) return;
+    med.dataset.panLayer = '1';
+    med.style.transform = panT;
+  });
 }
 function isInCompanion(cx, cy) {
   const cl = stage.classList;
@@ -3295,16 +3573,15 @@ function startCompKB(i) {
   const p = getKBPreset(i);
   if (!p) { updCompT(); return; }
   const dur = getEDur(i); let st = null;
-  const isVmax = stage.classList.contains('vmax') || stage.classList.contains('vmax3');
-  const mirrorPfx = (maxPreset === 1 || maxPreset === 4) ? (isVmax ? 'scaleY(-1) ' : 'scaleX(-1) ') : '';
   function step(ts) {
     if (!st) st = ts;
     const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
-    const sc = (p.fs + (p.ts - p.fs) * ev) * compZoom;
+    const sc = (p.fs + (p.ts - p.fs) * ev) * Math.max(zoom, 0.1);
     const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
-    const tf = `${mirrorPfx}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${compPanX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${compPanY.toFixed(1)}px))`;
+    const tf = `scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+    med.dataset.panLayer = '1';
     med.style.transform = tf;
-    if (med2) med2.style.transform = tf;
+    if (med2) { med2.dataset.panLayer = '1'; med2.style.transform = tf; }
     if (t < 1) compKbId = requestAnimationFrame(step);
   }
   compKbId = requestAnimationFrame(step);
@@ -3320,28 +3597,28 @@ function makeCompMed(item) {
   }
   const fit = item.type === 'video' ? 'contain' : 'cover';
   med.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:' + fit + ';transform-origin:center center;';
+  med.dataset.panLayer = '1';
   return med;
 }
 function showMaxCompanion(curIdx) {
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
-  const mc = g('maxcomp'); mc.innerHTML = '';
-  const mc2 = g('maxcomp2'); if (mc2) mc2.innerHTML = '';
+  const mc = g('maxcomp'); mc.innerHTML = ''; mc.style.transform = '';
+  const mc2 = g('maxcomp2'); if (mc2) { mc2.innerHTML = ''; mc2.style.transform = ''; }
   const mode = getActiveMaxMode(curIdx);
   if (!mode) return;
   const mi = getMediaItems(), item = mi[curIdx]; if (!item) return;
   compZoom = 1; compPanX = 0; compPanY = 0;
-  const isMirrorMode = mode === 'vmax' || mode === 'vmax3';
-  const mirrorTransform = isMirrorMode ? 'scaleY(-1)' : 'scaleX(-1)';
   const med = makeCompMed(item);
-  if (maxPreset === 1 || maxPreset === 4) med.style.transform = mirrorTransform;
   mc.appendChild(med);
-  if (maxPreset === 4 && mc2) {
-    const med2 = makeCompMed(item);
-    med2.style.transform = mirrorTransform;
-    mc2.appendChild(med2);
-  }
+  if (maxPreset === 4 && mc2) mc2.appendChild(makeCompMed(item));
   stage.classList.add(mode);
+  const mirror = (maxPreset === 1 || maxPreset === 4)
+    ? ((mode === 'vmax' || mode === 'vmax3') ? 'scaleY(-1)' : 'scaleX(-1)')
+    : '';
+  mc.style.transformOrigin = 'center center';
+  mc.style.transform = mirror;
+  if (mc2) { mc2.style.transformOrigin = 'center center'; mc2.style.transform = mirror; }
   // Run KB on companion(s) for SameSide2, KBRight, SameSide3
   if ((maxPreset === 1 || maxPreset === 3 || maxPreset === 4) && item.type !== 'video') startCompKB(curIdx);
 }
@@ -3517,6 +3794,7 @@ function getPlaylistSnapshot() {
           panY: it.panY,
           customDur: it.customDur,
           kbPreset: it.kbPreset,
+          crop: it.crop || null,
           thumbnailUrl: it.thumbnailUrl
         }
       };
@@ -3524,18 +3802,34 @@ function getPlaylistSnapshot() {
   };
 }
 let autoSaveTimer = null;
-function schedAutoSave() { clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
-function autoSave() {
+function schedAutoSave() { sessionDirty = true; clearTimeout(autoSaveTimer); autoSaveTimer = setTimeout(autoSave, 1500); }
+function saveSessionBeforeExit(ack) {
   clearTimeout(autoSaveTimer);
-  try { localStorage.setItem('ssp_autosave', JSON.stringify(getPlaylistSnapshot())); } catch(e) {}
+  const sel = g('dsel');
+  const parsed = sel ? parseInt(sel.value, 10) : NaN;
+  const ms = Number.isFinite(parsed) ? parsed : (window.SlideXCore ? SlideXCore.DEFAULT_IMAGE_DURATION_MS : 10000);
+  const session = getPlaylistSnapshot();
+  const saveSession = window.SlideXCore && SlideXCore.shouldSaveSessionOnClose
+    ? SlideXCore.shouldSaveSessionOnClose({ loaded: sessionLoaded, dirty: sessionDirty, session: session })
+    : !!(session.items && session.items.length && (sessionLoaded || sessionDirty));
+  if (window.SlideXCore && SlideXCore.saveBeforeExitThenAck) {
+    SlideXCore.saveBeforeExitThenAck(localStorage, ms, session, null, { loaded: sessionLoaded, dirty: sessionDirty });
+  } else {
+    try { localStorage.setItem('ssp_default_dur', String(ms)); } catch (_) {}
+    if (saveSession) {
+      try { localStorage.setItem('ssp_autosave', JSON.stringify(session)); } catch (_) {}
+    }
+  }
   try { notifyPlaylistSync(); } catch (_) {}
   getMediaItems().forEach(it => {
     if (!it.fileHandle) return;
     saveHandleIDB(it.id || it.name, it.fileHandle).catch(() => {});
     if (it.name && it.name !== it.id) saveHandleIDB(it.name, it.fileHandle).catch(() => {});
   });
+  if (typeof ack === 'function') ack();
 }
-window.addEventListener('beforeunload', autoSave);
+function autoSave() { saveSessionBeforeExit(null); }
+window.addEventListener('beforeunload', () => saveSessionBeforeExit(null));
 
 /* ── Landing screen info ── */
 function formatRelTime(ts) {
@@ -3646,7 +3940,10 @@ async function restoreFromSnapshot(snap) {
     } catch (_) {}
     const missing = mediaEntries.length - pathEntries.length;
     if (missing > 0) {
-      showToast(`${missing} file${missing>1?'s':''} unavailable — no path to restore.`, 5000);
+      const note = window.SlideXCore && SlideXCore.missingFilesNotice
+        ? SlideXCore.missingFilesNotice(missing)
+        : (missing + " files couldn't be found");
+      showToast(note, 5000);
     }
     return;
   }
@@ -3712,7 +4009,12 @@ async function restoreFromSnapshot(snap) {
         done++;
         if (done === total) {
           build(finalItems.filter(Boolean));
-          if (unavailCount > 0) showToast(`${unavailCount} file${unavailCount>1?'s':''} unavailable — handles lost or permission denied.`, 5000);
+          if (unavailCount > 0) {
+            const note = window.SlideXCore && SlideXCore.missingFilesNotice
+              ? SlideXCore.missingFilesNotice(unavailCount)
+              : (unavailCount + " files couldn't be found");
+            showToast(note, 5000);
+          }
         }
       };
       if (type === 'image') {
@@ -3759,6 +4061,8 @@ g('plopenfolder').onclick = () => openFolderPicker(true);
 g('plshuffle').onclick = shufflePlaylist;
 
 g('bru').onclick = function() {
+  sessionLoaded = false;
+  sessionDirty = false;
   clearTimeout(tmr); clearInterval(ptmr);
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   if (compKbId) { cancelAnimationFrame(compKbId); compKbId = null; }
@@ -3772,6 +4076,7 @@ g('bru').onclick = function() {
   g('pllist').innerHTML = '';
   stage.classList.remove('hmax','vmax','hmax3','vmax3');
   viewer.style.display = 'none'; dz.style.display = 'flex'; fi.value = '';
+  clearLoadStatus();
   if (!ctrlsVisible) toggleControls();
   if (watchMode) toggleWatchMode();
   closePL();
@@ -3779,7 +4084,6 @@ g('bru').onclick = function() {
 };
 
 function load(files) {
-  bumpFolderIngestGen();
   const list = Array.from(files || []);
   const acc = list.filter(isAcceptedMediaFile);
   if (!acc.length) {
@@ -3788,27 +4092,10 @@ function load(files) {
   }
   const skipped = list.length - acc.length;
   if (skipped > 0) showToast('Skipped ' + skipped + ' unsupported file' + (skipped>1?'s':'') + '.', 3000);
-  const tmp = []; let done = 0;
-  acc.forEach((f, i) => {
-    const url = URL.createObjectURL(f), type = mediaKindFromFile(f);
-    if (type === 'image') {
-      const p = new Image();
-      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.onerror = () => { showToast('Could not read image: ' + (f.name||''), 4000); if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.src = url;
-    } else {
-      const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin;
-      p.onerror = () => { showToast('Could not read video: ' + (f.name||''), 4000); fin(); };
-      p.src = url;
-    }
-  });
-  dz.style.display = 'none'; viewer.style.display = 'flex';
+  ingestDecodedFiles(acc.map(file => ({ file })), { append: false });
 }
 
 function addMoreFiles(files) {
-  bumpFolderIngestGen();
   const list = Array.from(files || []);
   const acc = list.filter(isAcceptedMediaFile);
   if (!acc.length) {
@@ -3817,62 +4104,20 @@ function addMoreFiles(files) {
   }
   const skipped = list.length - acc.length;
   if (skipped > 0) showToast('Skipped ' + skipped + ' unsupported file' + (skipped>1?'s':'') + '.', 3000);
-  const tmp = []; let done = 0;
-  acc.forEach((f, i) => {
-    const url = URL.createObjectURL(f), type = mediaKindFromFile(f);
-    if (type === 'image') {
-      const p = new Image();
-      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.onerror = () => { showToast('Could not read image: ' + (f.name||''), 4000); if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.src = url;
-    } else {
-      const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin;
-      p.onerror = () => { showToast('Could not read video: ' + (f.name||''), 4000); fin(); };
-      p.src = url;
-    }
-  });
+  ingestDecodedFiles(acc.map(file => ({ file })), { append: true });
 }
 
 async function processHandles(handles) {
-  bumpFolderIngestGen();
   const acc = [];
-  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
+  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({ file: f, handle: h }); }
   if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
-  const tmp = []; let done = 0;
-  acc.forEach(({h, f}, i) => {
-    const url = URL.createObjectURL(f), type = mediaKindFromFile(f) || 'image';
-    if (type === 'image') {
-      const p = new Image();
-      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.src = url;
-    } else {
-      const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name,fileHandle:h}; if (++done===acc.length) build(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
-    }
-  });
-  dz.style.display = 'none'; viewer.style.display = 'flex';
+  await ingestDecodedFiles(acc, { append: false });
 }
 async function addHandles(handles) {
-  bumpFolderIngestGen();
   const acc = [];
-  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({h, f}); }
+  for (const h of handles) { const f = await h.getFile(); if (isAcceptedMediaFile(f)) acc.push({ file: f, handle: h }); }
   if (!acc.length) { showToast('No supported images/videos in selection.', 4000); return; }
-  const tmp = []; let done = 0;
-  acc.forEach(({h, f}, i) => {
-    const url = URL.createObjectURL(f), type = mediaKindFromFile(f) || 'image';
-    if (type === 'image') {
-      const p = new Image();
-      p.onload = () => { tmp[i] = {url,type,w:p.naturalWidth,h:p.naturalHeight,name:f.name,fileHandle:h}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.src = url;
-    } else {
-      const p = document.createElement('video'); p.preload = 'metadata';
-      const fin = () => { tmp[i] = {url,type,w:p.videoWidth||1920,h:p.videoHeight||1080,name:f.name,fileHandle:h}; if (++done===acc.length) finishAdd(tmp.filter(Boolean)); };
-      p.onloadedmetadata = fin; p.onerror = fin; p.src = url;
-    }
-  });
+  await ingestDecodedFiles(acc, { append: true });
 }
 
 async function collectBrowserFolderMedia(dirHandle, acc, truncatedRef) {
@@ -3923,6 +4168,69 @@ function yieldToMain() {
   });
 }
 
+function showLoadStatus(index, total) {
+  const el = g('loadstatus');
+  if (!el || !window.SlideXCore) return;
+  const step = SlideXCore.backgroundLoadStep(index, total);
+  el.textContent = step.text;
+  el.hidden = !step.visible;
+  el.style.pointerEvents = 'none';
+}
+function clearLoadStatus() {
+  const el = g('loadstatus');
+  if (!el) return;
+  el.textContent = '';
+  el.hidden = true;
+}
+
+function decodeLocalFile(f, handle) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(f);
+    const type = mediaKindFromFile(f) || 'image';
+    if (type === 'image') {
+      const p = new Image();
+      p.onload = () => resolve({ url, type, w: p.naturalWidth, h: p.naturalHeight, name: f.name, fileHandle: handle });
+      p.onerror = () => { showToast('Could not read image: ' + (f.name || ''), 4000); resolve(null); };
+      p.src = url;
+    } else {
+      const p = document.createElement('video');
+      p.preload = 'metadata';
+      const fin = (ok) => {
+        if (!ok) showToast('Could not read video: ' + (f.name || ''), 4000);
+        resolve(ok ? { url, type, w: p.videoWidth || 1920, h: p.videoHeight || 1080, name: f.name, fileHandle: handle } : null);
+      };
+      p.onloadedmetadata = () => fin(true);
+      p.onerror = () => fin(false);
+      p.src = url;
+    }
+  });
+}
+
+/* One file at a time, yielding so menus stay clickable. Status never covers the page. */
+async function ingestDecodedFiles(entries, opts) {
+  const append = !!(opts && opts.append);
+  const gen = (opts && opts.gen) || bumpFolderIngestGen();
+  const total = entries.length;
+  let shown = append && items.length > 0;
+  for (let i = 0; i < entries.length; i++) {
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    showLoadStatus(i + 1, total);
+    const item = await decodeLocalFile(entries[i].file, entries[i].handle);
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    if (item) {
+      if (!shown) {
+        dz.style.display = 'none';
+        viewer.style.display = 'flex';
+        build([item]);
+        shown = true;
+      } else finishAdd([item], { light: true });
+    }
+    await yieldToMain();
+  }
+  if (gen === folderIngestGen) clearLoadStatus();
+  if (!shown) showToast('No supported images/videos in selection.', 4000);
+}
+
 /** Browser Open Folder: full recursive walk with media MIME filter (cap 10k). */
 async function openBrowserFolder(dirHandle, opts) {
   const append = !!(opts && opts.append);
@@ -3938,20 +4246,14 @@ async function openBrowserFolder(dirHandle, opts) {
   }
   if (gen !== folderIngestGen) return;
   if (!acc.length) { showToast('No images or videos found in that folder.', 3500); return; }
-  // First media visible ASAP; remainder ingested in batches.
-  const first = await handlesToItems([acc[0]]);
-  if (gen !== folderIngestGen) return;
-  if (!first.length) return;
-  if (append && items.length) finishAdd(first);
-  else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
   if (truncatedRef.truncated) showToast('Folder truncated at ' + FOLDER_BROWSER_CAP + ' media files.', 4500);
-  for (let i = 1; i < acc.length; i += FOLDER_INGEST_BATCH) {
-    if (gen !== folderIngestGen) return;
-    const chunk = await handlesToItems(acc.slice(i, i + FOLDER_INGEST_BATCH));
-    if (gen !== folderIngestGen) return;
-    if (chunk.length) finishAdd(chunk, { light: true });
-    await yieldToMain();
+  const entries = [];
+  for (const pair of acc) {
+    const f = pair.f || (pair.h && pair.h.getFile ? await pair.h.getFile() : null);
+    if (!f) continue;
+    entries.push({ file: f, handle: pair.h });
   }
+  await ingestDecodedFiles(entries, { append, gen });
 }
 
 /** Shared Tauri/Android path → item loader (images + videos). Used by Open Files / Folder.
@@ -4050,24 +4352,30 @@ async function openMediaPaths(paths, opts) {
   const append = !!(opts && opts.append);
   if (!paths || !paths.length) return;
   const gen = bumpFolderIngestGen();
+  const total = paths.length;
+  let shown = append && items.length > 0;
   try {
     if (sspIsTauri()) await tauriInvoke('register_allowed_paths', { paths: mediaPathStrings(paths) });
-    if (gen !== folderIngestGen) return;
-    const first = await itemsFromMediaPaths([paths[0]]);
-    if (gen !== folderIngestGen) return;
-    if (!first.length) { showToast('No supported media in selection.', 3500); return; }
-    if (append && items.length) finishAdd(first);
-    else { dz.style.display = 'none'; viewer.style.display = 'flex'; build(first); }
-    for (let i = 1; i < paths.length; i += FOLDER_INGEST_BATCH) {
-      if (gen !== folderIngestGen) return;
-      const chunk = await itemsFromMediaPaths(paths.slice(i, i + FOLDER_INGEST_BATCH));
-      if (gen !== folderIngestGen) return;
-      if (chunk.length) finishAdd(chunk, { light: true });
+    for (let i = 0; i < paths.length; i++) {
+      if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+      showLoadStatus(i + 1, total);
+      const chunk = await itemsFromMediaPaths([paths[i]]);
+      if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+      if (chunk.length) {
+        if (!shown) {
+          dz.style.display = 'none'; viewer.style.display = 'flex';
+          build(chunk);
+          shown = true;
+        } else finishAdd(chunk, { light: true });
+      }
       await yieldToMain();
     }
+    if (!shown) showToast('No supported media in selection.', 3500);
   } catch (e) {
     console.error(e);
     showToast('Could not open files: ' + (e && e.message ? e.message : e), 5000);
+  } finally {
+    if (gen === folderIngestGen) clearLoadStatus();
   }
 }
 
@@ -4139,6 +4447,7 @@ window.__sspDebugInjectSeed = openAndroidDebugInject;
 
 function finishAdd(newItems, opts) {
   newItems.forEach(it => { initItem(it); items.push(it); });
+  if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(newItems);
   if (opts && opts.light) {
     syncStripTrackSize();
     remountStripWindow();
@@ -4166,7 +4475,7 @@ function shufflePlaylist() {
 }
 
 /* ── Slide DOM (virtualized: stage mounts current ±1 only) ── */
-const STAGE_KEEP_IDS = new Set(['fnov', 'watchbadge', 'maxcomp', 'maxcomp2']);
+const STAGE_KEEP_IDS = new Set(['fnov', 'watchbadge', 'maxcomp', 'maxcomp2', 'cropbar', 'cropbox', 'cropnotice']);
 const THUMB_PLACEHOLDER = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40"><rect width="64" height="40" fill="%23222222"/></svg>';
 const TRANS_MS = { fade: 500, slide: 600, zoom: 600, none: 0 };
 
@@ -4209,7 +4518,17 @@ function createSlideEl(item, i) {
   sl.className = 'sl';
   sl.dataset.mi = String(i);
   const med = item.type === 'video' ? makeVid(item) : makeImg(item);
-  sl.appendChild(med);
+  const view = document.createElement('div');
+  view.className = 'ssp-view';
+  view.dataset.panLayer = '1';
+  const orient = document.createElement('div');
+  orient.className = 'ssp-orient';
+  const cropWin = document.createElement('div');
+  cropWin.className = 'ssp-crop';
+  cropWin.appendChild(med);
+  view.appendChild(cropWin);
+  orient.appendChild(view);
+  sl.appendChild(orient);
   if (item.type === 'video') {
     const b = document.createElement('div'); b.className = 'vb'; b.textContent = '▶ video'; sl.appendChild(b);
     med.onended = () => {
@@ -4435,12 +4754,24 @@ function buildSlideDOM() {
 
 function build(its) {
   items = its; items.forEach(it => initItem(it));
+  sessionLoaded = !!(its && its.length);
   buildSlideDOM();
   cur = 0; playing = true; spd = 100; selectedItems.clear(); lastClickedMI = -1;
   updSpd(); updPlayBtn();
+  if (!getMediaItems().length) {
+    playing = false; updPlayBtn();
+    try { g('sc').textContent = '0/0'; } catch (_) {}
+    if (playlistChromeOpen()) renderPlaylist();
+    autoSave();
+    if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(its);
+    if (typeof updateLocateButton === 'function') updateLocateButton();
+    return;
+  }
   applySlideSettings(0);
   showSlide(0); schedNext();
   autoSave();
+  if (typeof scheduleCropHydrate === 'function') scheduleCropHydrate(its);
+  if (typeof updateLocateButton === 'function') updateLocateButton();
 }
 
 function rebuildSlides(newCur) {
@@ -4587,7 +4918,7 @@ function buildPlRows() {
 
   items.forEach((item, itemsIdx) => {
     if (query && !visibleItems.has(itemsIdx)) {
-      if (item.type !== 'folder') miIdx++;
+      if (item.type !== 'folder' && !item.unavailable && !item.missing) miIdx++;
       return;
     }
     if (item.type === 'folder') {
@@ -4601,7 +4932,13 @@ function buildPlRows() {
     const folderIdx = items.indexOf(currentFolder);
     const isFolderOpen = currentFolder ? (forceOpenFolders.has(folderIdx) || currentFolder.open !== false) : true;
     if (currentFolder && !isFolderOpen) {
-      miIdx++;
+      if (!item.unavailable && !item.missing) miIdx++;
+      return;
+    }
+    if (item.unavailable || item.missing) {
+      const h = plRowHeight(item);
+      rows.push({ kind: 'media', itemsIdx, mi: -1, top, height: h, indent: !!currentFolder });
+      top += h;
       return;
     }
     const thisMI = miIdx++;
@@ -4639,22 +4976,46 @@ function createPlFolderRow(row) {
   div.draggable = true;
   div.dataset.plIdx = String(row.itemsIdx);
   div.style.height = (PL_FOLDER_H - 4) + 'px';
+  let toggleTimer = null;
 
   const arr = document.createElement('span'); arr.className = 'pf-arr' + (isOpen ? '' : ' closed'); arr.textContent = '▾';
   const icon = document.createElement('span'); icon.className = 'pf-icon'; icon.textContent = '📁';
   const name = document.createElement('span'); name.className = 'pf-name'; name.textContent = item.name;
   name.ondblclick = e => {
     e.stopPropagation();
+    e.preventDefault();
+    if (toggleTimer) { clearTimeout(toggleTimer); toggleTimer = null; }
     const inp = document.createElement('input');
     inp.value = item.name;
+    inp.className = 'pl-rename';
     inp.style.cssText = 'background:transparent;border:none;border-bottom:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;width:100%;outline:none;font-family:var(--font-main);';
     name.replaceWith(inp); inp.focus(); inp.select();
-    const done = () => { item.name = inp.value.trim() || item.name; renderPlaylist(); autoSave(); };
-    inp.onblur = done; inp.onkeydown = e2 => { if (e2.key === 'Enter') done(); else if (e2.key === 'Escape') renderPlaylist(); };
+    let closed = false;
+    const finish = (commit) => {
+      if (closed) return;
+      closed = true;
+      if (commit) item.name = inp.value.trim() || item.name;
+      renderPlaylist();
+      if (commit) autoSave();
+    };
+    inp.onblur = () => finish(true);
+    inp.onkeydown = e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); finish(true); }
+      else if (e2.key === 'Escape') { e2.preventDefault(); finish(false); }
+    };
   };
   const del = document.createElement('button'); del.className = 'pf-del'; del.textContent = '✕';
   del.onclick = e => { e.stopPropagation(); items.splice(itemsIdx, 1); renderPlaylist(); autoSave(); };
-  div.onclick = () => { item.open = item.open === false ? true : false; renderPlaylist(); notifyPlaylistSync(); };
+  div.onclick = (e) => {
+    if (e.target.closest && e.target.closest('button,input,.pl-rename')) return;
+    if (toggleTimer) clearTimeout(toggleTimer);
+    toggleTimer = setTimeout(() => {
+      toggleTimer = null;
+      item.open = item.open === false ? true : false;
+      renderPlaylist();
+      notifyPlaylistSync();
+    }, 250);
+  };
   div.appendChild(arr); div.appendChild(icon); div.appendChild(name); div.appendChild(del);
 
   div.addEventListener('dragstart', e => { plDragStart(e, itemsIdx, div); });
@@ -4682,20 +5043,20 @@ function createPlMediaRow(row) {
     thumb.src = item.thumbnailUrl || VIDEO_PLACEHOLDER;
     if (!item.thumbnailUrl) getVideoThumbnail(item);
   } else {
-    thumb.src = item.url;
+    thumb.src = item.url || THUMB_PLACEHOLDER;
   }
 
-  if (item.unavailable) div.style.opacity = '0.38';
+  if (item.unavailable || item.missing) div.style.opacity = '0.38';
   const info = document.createElement('div'); info.className = 'plinfo';
   const name = document.createElement('span'); name.className = 'plname';
-  name.textContent = (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1)));
+  name.textContent = (item.missing ? '⚠ ' + (item.name || 'Item') + ' missing' : (item.unavailable ? '⚠ ' : '') + (item.name || ('Slide '+(thisMI+1))));
   info.appendChild(name);
 
   if (item.type === 'image') {
     const durRow = document.createElement('div'); durRow.className = 'pldurrow';
     const lbl = document.createElement('span'); lbl.className = 'pldlbl'; lbl.textContent = 'Duration:';
     const sel = document.createElement('select'); sel.className = 'pldsel';
-    [[3000,'3s'],[4000,'4s'],[6000,'6s'],[8000,'8s'],[12000,'12s'],[20000,'20s']].forEach(([v,t]) => {
+    [[3000,'3s'],[4000,'4s'],[6000,'6s'],[8000,'8s'],[10000,'10s'],[12000,'12s'],[20000,'20s']].forEach(([v,t]) => {
       const opt = document.createElement('option'); opt.value = v; opt.textContent = t;
       if ((item.customDur ?? getDur()) === v) opt.selected = true;
       sel.appendChild(opt);
@@ -4722,6 +5083,10 @@ function createPlMediaRow(row) {
   del.onclick = e => { e.stopPropagation(); removeItem(itemsIdx, false); };
 
   div.onclick = e => {
+    if (item.missing || item.unavailable) {
+      showToast((item.name || 'Item') + ' is missing.', 2500);
+      return;
+    }
     if (e.shiftKey && lastClickedMI >= 0) {
       const lo = Math.min(lastClickedMI, thisMI), hi = Math.max(lastClickedMI, thisMI);
       for (let k = lo; k <= hi; k++) selectedItems.add(k);
@@ -5013,7 +5378,8 @@ function savePlaylist() {
         panX: it.panX,
         panY: it.panY,
         customDur: it.customDur,
-        kbPreset: it.kbPreset
+        kbPreset: it.kbPreset,
+        crop: it.crop || null
       }
     };
   });
@@ -5097,24 +5463,59 @@ function showSlide(i) {
 }
 
 function startKB(i) {
-  if (isV(i)) return;
-  const img = getSl(i)?.querySelector('img'); if (!img) return;
+  if (isV(i)) { staticT(); return; }
+  if (kbManualHold) { staticT(); return; }
+  const sl = getSl(i);
+  const item = getMediaItems()[i];
+  const img = sl?.querySelector('img'); if (!img || !item) return;
   if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
   const p = getKBPreset(i);
-  // KBRight (preset 3): companion does KB, main slide is static
-  if (getActiveMaxMode(i) && maxPreset === 3) {
-    const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
-    img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+  if (getActiveMaxMode(i)) {
+    resetMaxFrame(sl);
+    applyOrient(sl);
+    const view = sl.querySelector('.ssp-view');
+    const writeMax = (sc, px, py) => {
+      if (!view) return;
+      view.dataset.panLayer = '1';
+      view.style.transform = 'scale(' + sc + ') translate(' + px + 'px,' + py + 'px)';
+    };
+    img.style.transform = '';
+    if (maxPreset === 3) {
+      const kx = p ? p.tx : 0, ky = p ? p.ty : 0;
+      const baseW = sl.clientWidth || 1, baseH = sl.clientHeight || 1;
+      writeMax(Math.max(1, zoom).toFixed(4), ((kx / 100) * baseW + panX).toFixed(1), ((ky / 100) * baseH + panY).toFixed(1));
+      return;
+    }
+    if (!p) { writeMax(Math.max(1, zoom).toFixed(4), panX.toFixed(1), panY.toFixed(1)); return; }
+    const dur = getEDur(i); let st = null;
+    function stepMax(ts) {
+      if (!st) st = ts;
+      const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
+      const sc = ((p.fs + (p.ts - p.fs) * ev) * zoom).toFixed(4);
+      const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
+      const baseW = sl.clientWidth || 1, baseH = sl.clientHeight || 1;
+      writeMax(sc, ((kx / 100) * baseW + panX).toFixed(1), ((ky / 100) * baseH + panY).toFixed(1));
+      if (t < 1) kbId = requestAnimationFrame(stepMax);
+    }
+    kbId = requestAnimationFrame(stepMax);
     return;
   }
-  if (!p) { img.style.transform = `${mediaPrefix()}scale(${zoom.toFixed(4)}) translate(${panX.toFixed(1)}px,${panY.toFixed(1)}px)`; return; }
+  if (!p || !window.SlideXCore) { staticT(); return; }
+  const ends = SlideXCore.wholeImageEndpoints(
+    { fs: p.fs, ts: p.ts, fx: p.fx, fy: p.fy, tx: p.tx, ty: p.ty }, 1, 1
+  );
   const dur = getEDur(i); let st = null;
+  const box = layoutFrame(sl, item);
   function step(ts) {
     if (!st) st = ts;
     const t = Math.min((ts - st) / dur, 1), ev = kbEase(t);
-    const sc = (p.fs + (p.ts - p.fs) * ev) * zoom;
-    const kx = p.fx + (p.tx - p.fx) * ev, ky = p.fy + (p.ty - p.fy) * ev;
-    img.style.transform = `${mediaPrefix()}scale(${sc.toFixed(4)}) translate(calc(${kx.toFixed(2)}% + ${panX.toFixed(1)}px),calc(${ky.toFixed(2)}% + ${panY.toFixed(1)}px))`;
+    const sc = ends.from.s + (ends.to.s - ends.from.s) * ev;
+    const kx = ends.from.x + (ends.to.x - ends.from.x) * ev;
+    const ky = ends.from.y + (ends.to.y - ends.from.y) * ev;
+    const baseW = box && box.base ? box.base.w : (sl.clientWidth || 1);
+    const baseH = box && box.base ? box.base.h : (sl.clientHeight || 1);
+    const v = applyFrameTransform(sl, item, sc, (kx / 100) * baseW, (ky / 100) * baseH);
+    if (v) kbVisual = v;
     if (t < 1) kbId = requestAnimationFrame(step);
   }
   kbId = requestAnimationFrame(step);
@@ -5241,6 +5642,7 @@ function goTo(i) {
 
   const prevCur = cur;
   const next = ((i % len) + len) % len;
+  if (next !== prevCur) kbManualHold = false;
 
   // Remount ±1 around destination. Adjacent advance keeps outgoing in-window
   // (as prev); far jumps skip leave node so stage stays ≤3.
@@ -5361,7 +5763,7 @@ async function blobToBase64(blob) {
   return btoa(binary);
 }
 /** Save blob via Tauri dialog+write_export_file, showSaveFilePicker, or <a download>. */
-async function saveExportBlob(defaultName, blob, filters) {
+async function saveExportBlob(defaultName, blob, filters, extra) {
   if (!blob) return { ok: false, reason: 'empty' };
   if (sspIsTauri()) {
     try {
@@ -5371,8 +5773,12 @@ async function saveExportBlob(defaultName, blob, filters) {
         filters: filters || [{ name: 'Files', extensions: [defaultName.split('.').pop() || 'bin'] }]
       });
       if (path == null) return { ok: false, reason: 'cancel' };
+      if (extra && extra.refusePath && window.SlideXCore && SlideXCore.samePath(path, extra.refusePath)) {
+        showToast('That path is the original. Choose a new file.', 4000);
+        return { ok: false, reason: 'original' };
+      }
       const b64 = await blobToBase64(blob);
-      await tauriInvoke('write_export_file', { path, dataB64: b64 });
+      await tauriInvoke('write_export_file', { path, dataB64: b64, exclusive: !!(extra && extra.exclusive) });
       return { ok: true, path, via: 'tauri' };
     } catch (e) {
       console.warn('Tauri export failed', e);
@@ -5558,7 +5964,18 @@ g('bpl').onclick = togglePlay;
 g('bpr').onclick = () => goTo(cur - 1);
 g('bne').onclick = () => goTo(cur + 1);
 g('btheme').onclick = e => { if (e.shiftKey) applyThemeToCurrent(true); else if (e.altKey) applyThemeToAll(true); else applyThemeToCurrent(false); };
-g('dsel').onchange = () => { clearTimeout(tmr); clearInterval(ptmr); if (!isV(cur)) { startKB(cur); startProg(); if (playing) schedNext(); } };
+g('dsel').onchange = () => {
+  try { localStorage.setItem('ssp_default_dur', g('dsel').value); } catch (_) {}
+  clearTimeout(tmr); clearInterval(ptmr); if (!isV(cur)) { startKB(cur); startProg(); if (playing) schedNext(); }
+};
+(function initDefaultImageDuration() {
+  const sel = g('dsel');
+  if (!sel || !window.SlideXCore) return;
+  try {
+    const ms = SlideXCore.savedImageDuration(localStorage.getItem('ssp_default_dur'));
+    sel.value = String(ms);
+  } catch (_) {}
+})();
 g('tsel').value = transitionType;
 g('tsel').onchange = function() {
   transitionType = this.value;
@@ -5682,6 +6099,12 @@ function runMappedKey(e) {
     case 'mirrorV': toggleMirrorV(); break;
     case 'hidectl': toggleControls(); break;
     case 'playlist': e.preventDefault(); togglePL(); break;
+    case 'moreTools':
+      if (window.SlideXCore && !SlideXCore.moreToolsKeyFires(e, keyMap.moreTools)) return false;
+      if (e.ctrlKey || e.altKey || e.metaKey) return false;
+      e.preventDefault();
+      setOverflowOpen(window.SlideXCore ? SlideXCore.nextMoreToolsOpen(g('ctrls-overflow').classList.contains('open')) : !g('ctrls-overflow').classList.contains('open'));
+      break;
     case 'rotCW': rotateClockwise(); break;
     case 'rotCCW': rotateCounter(); break;
     case 'fname': toggleFilename(); break;
@@ -5736,8 +6159,17 @@ document.addEventListener('keydown', e => {
   /* Prevent browser refresh when watch is bound to F5 even with empty playlist */
   if (keysEqual(keyMap.watch, e.key)) e.preventDefault();
 
+  const editing = (window.SlideXCore && SlideXCore.isTextEditingTarget(e.target))
+    || (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'));
+  if (editing) return;
+
   if (!getMediaItems().length) {
     if (keysEqual(keyMap.watch, e.key)) return;
+    if (window.SlideXCore && SlideXCore.moreToolsKeyFires(e, keyMap.moreTools)) {
+      e.preventDefault();
+      setOverflowOpen(SlideXCore.nextMoreToolsOpen(!!g('ctrls-overflow')?.classList.contains('open')));
+      return;
+    }
     // Undocked Media Manager: still allow Add / playlist focus with empty list.
     if (SSP_IS_PLAYLIST_WINDOW || playlistUndocked) {
       const idEmpty = findMappedId(e.key);
@@ -5746,8 +6178,13 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
-  const t = e.target.tagName;
-  if (t === 'SELECT' || t === 'INPUT' || t === 'TEXTAREA') return;
+
+  /* Alt+Backspace resets the view. It is handled before Backspace removal. */
+  if (window.SlideXCore && SlideXCore.isAltBackspaceReset(e)) {
+    e.preventDefault();
+    resetPan();
+    return;
+  }
 
   /* Delete / Backspace fixed (not remappable) */
   if (e.key === 'Delete') {
@@ -5766,6 +6203,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Backspace') {
+    if (window.SlideXCore && !SlideXCore.willRemovePlaylistItem(e)) return;
     e.preventDefault();
     const mi = getMediaItems(), item = mi[cur]; if (!item) return;
     removeItem(items.indexOf(item), false);
@@ -5950,6 +6388,17 @@ window.confirmDeleteFile = async function() {
           console.warn('SSP ssp-launch-paths listen failed', e);
         }
         bindNativeDragDrop();
+        try {
+          if (window.__TAURI__.event && window.__TAURI__.event.listen) {
+            window.__TAURI__.event.listen('slidex://save-before-exit', function () {
+              const ack = function () { tauriInvoke('slidex_save_done').catch(function () {}); };
+              if (typeof saveSessionBeforeExit === 'function') saveSessionBeforeExit(ack);
+              else ack();
+            });
+          }
+        } catch (e) {
+          console.warn('SSP save-before-exit listen failed', e);
+        }
         return;
       }
       if (++tries < maxTries) setTimeout(tick, 50);
@@ -5958,6 +6407,726 @@ window.confirmDeleteFile = async function() {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
+
+/* Inserted into the main SlideShowPro script. Depends on lets in that script. */
+let cropEditing = false;
+let cropDraft = null;
+let namedPlaylistName = null;
+
+function resetMaxFrame(sl) {
+  if (!sl) return;
+  const view = sl.querySelector('.ssp-view');
+  const cropEl = sl.querySelector('.ssp-crop');
+  const med = sl.querySelector('img,video');
+  if (view) view.style.transform = '';
+  if (cropEl) {
+    cropEl.style.left = '0px';
+    cropEl.style.top = '0px';
+    cropEl.style.width = '100%';
+    cropEl.style.height = '100%';
+    delete cropEl.dataset.key;
+  }
+  if (med) {
+    med.style.left = '0';
+    med.style.top = '0';
+    med.style.width = '100%';
+    med.style.height = '100%';
+    med.style.objectFit = '';
+  }
+}
+
+function frameMetrics() {
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!item || !sl || getActiveMaxMode(cur)) return null;
+  const med = sl.querySelector('img,video');
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || (med && (med.naturalWidth || med.videoWidth)) || vpW;
+  const natH = item.h || (med && (med.naturalHeight || med.videoHeight)) || vpH;
+  const crop = (!cropEditing && window.SlideXCore && SlideXCore.isActiveCrop(item.crop)) ? SlideXCore.normalizeCrop(item.crop) : null;
+  return {
+    item, sl, vpW, vpH, natW, natH, crop,
+    cw: Math.max(1, crop ? natW * crop.w : natW),
+    ch: Math.max(1, crop ? natH * crop.h : natH),
+    rotation: rotation || 0,
+    flipH: !!mirrorX,
+    flipV: !!mirrorY
+  };
+}
+
+function layoutFrame(sl, item) {
+  if (!sl || !item || !window.SlideXCore) return null;
+  const view = sl.querySelector('.ssp-view');
+  const cropEl = sl.querySelector('.ssp-crop');
+  const med = sl.querySelector('img,video');
+  if (!view || !cropEl || !med) return null;
+  const maxOn = !!getActiveMaxMode(+sl.dataset.mi);
+  const vpW = sl.clientWidth || stage.clientWidth || 1;
+  const vpH = sl.clientHeight || stage.clientHeight || 1;
+  const natW = item.w || med.naturalWidth || med.videoWidth || vpW;
+  const natH = item.h || med.naturalHeight || med.videoHeight || vpH;
+  const useCrop = !maxOn && !cropEditing && SlideXCore.isActiveCrop(item.crop);
+  const crop = useCrop ? SlideXCore.normalizeCrop(item.crop) : { x: 0, y: 0, w: 1, h: 1, aspect: 'free' };
+  const contentW = Math.max(1, natW * crop.w);
+  const contentH = Math.max(1, natH * crop.h);
+  const base = SlideXCore.containRect(vpW, vpH, contentW, contentH);
+  const key = [Math.round(vpW), Math.round(vpH), natW, natH, crop.x, crop.y, crop.w, crop.h, maxOn ? 1 : 0].join('|');
+  if (cropEl.dataset.key !== key) {
+    cropEl.dataset.key = key;
+    if (maxOn) {
+      cropEl.style.left = '0px'; cropEl.style.top = '0px';
+      cropEl.style.width = '100%'; cropEl.style.height = '100%';
+      med.style.left = '0'; med.style.top = '0';
+      med.style.width = '100%'; med.style.height = '100%';
+    } else {
+      cropEl.style.left = base.x + 'px';
+      cropEl.style.top = base.y + 'px';
+      cropEl.style.width = base.w + 'px';
+      cropEl.style.height = base.h + 'px';
+      med.style.width = (100 / crop.w) + '%';
+      med.style.height = (100 / crop.h) + '%';
+      med.style.left = (-crop.x / crop.w * 100) + '%';
+      med.style.top = (-crop.y / crop.h * 100) + '%';
+      med.style.objectFit = 'fill';
+      med.style.transform = '';
+    }
+  }
+  return { view, cropEl, med, vpW, vpH, contentW, contentH, base, maxOn, natW, natH };
+}
+
+function applyFrameTransform(sl, item, z, px, py) {
+  const box = layoutFrame(sl, item);
+  if (!box) return null;
+  let v = { zoom: z, panX: px, panY: py };
+  if (!box.maxOn) {
+    const orient = { rotation: (item && item.rotation) || rotation || 0, flipH: !!(item && item.mirrorX) || !!mirrorX, flipV: !!(item && item.mirrorY) || !!mirrorY };
+    v = SlideXCore.clampOrientedView
+      ? SlideXCore.clampOrientedView(v, box.vpW, box.vpH, box.contentW, box.contentH, orient)
+      : SlideXCore.clampView(v, box.vpW, box.vpH, box.contentW, box.contentH, orient.rotation);
+  }
+  applyOrient(sl);
+  box.view.dataset.panLayer = '1';
+  box.view.style.transform = 'translate(' + v.panX.toFixed(2) + 'px,' + v.panY.toFixed(2) + 'px) scale(' + v.zoom.toFixed(4) + ')';
+  return v;
+}
+
+function clampManualView() {
+  if (!window.SlideXCore) { zoom = Math.max(1, Math.min(10, zoom)); return; }
+  const f = frameMetrics() || (typeof gestureMetrics === 'function' && gestureMetrics());
+  if (!f) { zoom = Math.max(1, Math.min(10, zoom)); return; }
+  const orient = { rotation: f.rotation || 0, flipH: !!f.flipH, flipV: !!f.flipV };
+  const v = SlideXCore.clampOrientedView
+    ? SlideXCore.clampOrientedView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch, orient)
+    : SlideXCore.clampView({ zoom: zoom, panX: panX, panY: panY }, f.vpW, f.vpH, f.cw, f.ch, orient.rotation);
+  zoom = v.zoom; panX = v.panX; panY = v.panY;
+}
+
+function pauseKenBurnsForManual() {
+  if (kbId) { cancelAnimationFrame(kbId); kbId = null; }
+  if (kbVisual) {
+    zoom = kbVisual.zoom; panX = kbVisual.panX; panY = kbVisual.panY;
+    kbVisual = null;
+    updZoom();
+  }
+  kbManualHold = true;
+}
+
+function scheduleCropHydrate(list) {
+  if (!sspIsTauri() || !window.SlideXCore) return;
+  (list || []).forEach(item => {
+    if (!item || !item.path || item.type === 'folder' || item.crop) return;
+    tauriInvoke('read_crop_sidecar', { path: item.path, name: item.name || '' }).then(res => {
+      if (!res || !res.crop || item.crop) return;
+      item.crop = SlideXCore.normalizeCrop(res.crop) || res.crop;
+      saveItemLS(item);
+      if (getMediaItems()[cur] === item && !cropEditing) {
+        const sl = getSl(cur);
+        const el = sl && sl.querySelector('.ssp-crop');
+        if (el) delete el.dataset.key;
+        if (!kbManualHold && !isV(cur)) startKB(cur); else staticT();
+      }
+    }).catch(() => {});
+  });
+}
+
+function updateLocateButton() {
+  const btn = g('pllocate');
+  if (!btn) return;
+  btn.hidden = !items.some(it => it && it.missing);
+}
+
+function syncCropOverlay() {
+  const box = g('cropbox');
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  if (!cropEditing || !box || !item || !sl || !window.SlideXCore) {
+    if (box) box.classList.remove('show');
+    return;
+  }
+  const laid = layoutFrame(sl, Object.assign({}, item, { crop: null }));
+  if (!laid) return;
+  const c = cropDraft || { x: 0, y: 0, w: 1, h: 1 };
+  const stageRect = stage.getBoundingClientRect();
+  const slRect = sl.getBoundingClientRect();
+  box.style.left = (slRect.left - stageRect.left + laid.base.x + c.x * laid.base.w) + 'px';
+  box.style.top = (slRect.top - stageRect.top + laid.base.y + c.y * laid.base.h) + 'px';
+  box.style.width = Math.max(8, c.w * laid.base.w) + 'px';
+  box.style.height = Math.max(8, c.h * laid.base.h) + 'px';
+  box.classList.add('show');
+  box.querySelectorAll('.ssp-handle').forEach(h => {
+    const map = { nw: ['0', '0'], n: ['50%', '0'], ne: ['100%', '0'], e: ['100%', '50%'], se: ['100%', '100%'], s: ['50%', '100%'], sw: ['0', '100%'], w: ['0', '50%'] };
+    const p = map[h.dataset.dir];
+    h.style.left = p[0]; h.style.top = p[1]; h.style.transform = 'translate(-50%,-50%)';
+  });
+}
+
+async function commitCrop(crop) {
+  const item = getMediaItems()[cur];
+  if (!item || !window.SlideXCore) return;
+  item.crop = SlideXCore.normalizeCrop(crop);
+  saveItemLS(item);
+  schedAutoSave();
+  if (sspIsTauri() && item.path) {
+    try {
+      const doc = SlideXCore.cropSidecarDocument(item, item.crop);
+      const res = await tauriInvoke('write_crop_sidecar', {
+        path: item.path, name: item.name || '', documentJson: JSON.stringify(doc)
+      });
+      const note = g('cropnotice');
+      if (note && res && res.location === 'appdata') {
+        note.textContent = res.message || "The folder isn't writable. Crop saved in app data.";
+        note.classList.add('show');
+      } else if (note) note.classList.remove('show');
+    } catch (e) { console.warn('crop sidecar', e); }
+  }
+}
+
+function setCropAspect(aspect) {
+  const item = getMediaItems()[cur];
+  if (!item || !window.SlideXCore) return;
+  cropDraft = SlideXCore.applyAspect(cropDraft || { x: 0, y: 0, w: 1, h: 1 }, aspect, item.w || 1, item.h || 1);
+  g('cropbar').querySelectorAll('button[data-aspect]').forEach(b => b.classList.toggle('on', b.dataset.aspect === aspect));
+  syncCropOverlay();
+}
+
+async function resetCrop() {
+  const item = getMediaItems()[cur];
+  cropDraft = { x: 0, y: 0, w: 1, h: 1, aspect: 'free' };
+  if (item) {
+    item.crop = null;
+    saveItemLS(item);
+    schedAutoSave();
+    if (sspIsTauri() && item.path) {
+      try { await tauriInvoke('delete_crop_sidecar', { path: item.path, name: item.name || '' }); } catch (_) {}
+    }
+  }
+  const note = g('cropnotice'); if (note) note.classList.remove('show');
+  g('cropbar')?.querySelectorAll('button[data-aspect]').forEach(b => b.classList.toggle('on', b.dataset.aspect === 'free'));
+  syncCropOverlay();
+  const sl = getSl(cur);
+  const el = sl && sl.querySelector('.ssp-crop');
+  if (el) delete el.dataset.key;
+}
+
+function toggleCropEditor(force) {
+  cropEditing = typeof force === 'boolean' ? force : !cropEditing;
+  g('bcrop')?.classList.toggle('on', cropEditing);
+  g('cropbar')?.classList.toggle('show', cropEditing);
+  const item = getMediaItems()[cur];
+  const sl = getSl(cur);
+  const el = sl && sl.querySelector('.ssp-crop');
+  if (el) delete el.dataset.key;
+  if (cropEditing) {
+    const existing = item && window.SlideXCore && SlideXCore.normalizeCrop(item.crop);
+    cropDraft = existing || { x: 0.08, y: 0.08, w: 0.84, h: 0.84, aspect: 'free' };
+    pauseKenBurnsForManual();
+    if (sl && item) applyFrameTransform(sl, item, 1, 0, 0);
+    syncCropOverlay();
+  } else {
+    g('cropbox')?.classList.remove('show');
+    if (cropDraft && item && window.SlideXCore && SlideXCore.isActiveCrop(cropDraft)) commitCrop(cropDraft);
+    kbManualHold = false;
+    if (!isV(cur)) startKB(cur); else staticT();
+  }
+}
+
+function bindCropUi() {
+  const box = g('cropbox');
+  if (!box || box.dataset.ready) return;
+  ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(dir => {
+    const h = document.createElement('div');
+    h.className = 'ssp-handle';
+    h.dataset.dir = dir;
+    box.appendChild(h);
+  });
+  box.dataset.ready = '1';
+  let drag = null;
+  box.addEventListener('pointerdown', e => {
+    if (!cropEditing || !cropDraft) return;
+    e.preventDefault(); e.stopPropagation();
+    const item = getMediaItems()[cur];
+    const sl = getSl(cur);
+    const laid = sl && item ? layoutFrame(sl, Object.assign({}, item, { crop: null })) : null;
+    if (!laid) return;
+    drag = {
+      dir: (e.target.dataset && e.target.dataset.dir) || 'move',
+      x: e.clientX, y: e.clientY,
+      crop: Object.assign({}, cropDraft),
+      base: laid.base
+    };
+    try { box.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  box.addEventListener('pointermove', e => {
+    if (!drag || !window.SlideXCore) return;
+    const dx = (e.clientX - drag.x) / Math.max(1, drag.base.w);
+    const dy = (e.clientY - drag.y) / Math.max(1, drag.base.h);
+    const c = Object.assign({}, drag.crop);
+    const dir = drag.dir;
+    if (dir === 'move') { c.x += dx; c.y += dy; }
+    else {
+      if (dir.indexOf('w') !== -1) { c.x += dx; c.w -= dx; }
+      if (dir.indexOf('e') !== -1) c.w += dx;
+      if (dir.indexOf('n') !== -1) { c.y += dy; c.h -= dy; }
+      if (dir.indexOf('s') !== -1) c.h += dy;
+    }
+    const item = getMediaItems()[cur];
+    cropDraft = (c.aspect && c.aspect !== 'free' && item)
+      ? SlideXCore.applyAspect(c, c.aspect, item.w || 1, item.h || 1)
+      : SlideXCore.normalizeCrop(c);
+    syncCropOverlay();
+  });
+  const finish = () => {
+    if (!drag) return;
+    drag = null;
+    if (cropDraft) commitCrop(cropDraft);
+  };
+  box.addEventListener('pointerup', finish);
+  box.addEventListener('pointercancel', finish);
+  g('cropbar')?.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('button[data-aspect]');
+    if (!b) return;
+    setCropAspect(b.dataset.aspect);
+    if (cropDraft) commitCrop(cropDraft);
+  });
+  if (g('cropreset')) g('cropreset').onclick = () => resetCrop();
+  if (g('cropdone')) g('cropdone').onclick = () => toggleCropEditor(false);
+  if (g('bcrop')) g('bcrop').onclick = () => toggleCropEditor();
+  if (g('bexportcrop')) g('bexportcrop').onclick = () => exportCroppedCurrent();
+}
+
+async function readItemBytes(item) {
+  if (!item) return null;
+  try {
+    if (sspIsTauri() && item.path) {
+      const b64 = await tauriInvoke('read_media_file', { path: item.path });
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    if (item.url && /^(blob:|data:)/i.test(item.url)) {
+      const res = await fetch(item.url);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+  } catch (e) { console.warn('date source unread', e); }
+  return null;
+}
+
+async function exportCroppedCurrent() {
+  const core = window.SlideXCore;
+  const item = getMediaItems()[cur];
+  const med = getSl(cur)?.querySelector('img,video');
+  if (!core || !item || !med) { showToast('Nothing to export.', 2500); return; }
+  if (med.tagName === 'VIDEO') await waitForVideoFrame(med);
+  const graded = item.type !== 'video' && !core.isDefaultGrade(item.clr);
+  const fmt = item.type === 'video' ? { ext: 'jpg', mime: 'image/jpeg', quality: 0.95 } : core.exportFormatForSource(item.name, '');
+  const usePng = fmt.ext === 'png' && !graded && item.type !== 'video';
+  let can;
+  try { can = renderGradedCanvas(med, item); }
+  catch (e) { showToast('Cropped export failed: ' + ((e && e.message) || e), 4000); return; }
+  const mime = usePng ? 'image/png' : 'image/jpeg';
+  let blob = await new Promise(resolve => can.toBlob(resolve, mime, usePng ? undefined : 0.95));
+  if (!blob) { showToast('Cropped export failed.', 3000); return; }
+  if (item.type !== 'video' && med.tagName !== 'VIDEO') {
+    try {
+      const src = await readItemBytes(item);
+      if (src) {
+        const dest = new Uint8Array(await blob.arrayBuffer());
+        const copied = core.copyDateTaken(src, dest);
+        blob = new Blob([copied], { type: mime });
+      }
+    } catch (e) { console.warn('date-taken copy skipped', e); }
+  }
+  const desired = core.cropDownloadName(item.name, usePng ? 'png' : 'jpg');
+  let unique = desired;
+  let defaultPath = desired;
+  if (item.path) {
+    const sep = item.path.indexOf('\\') !== -1 ? '\\' : '/';
+    const dir = item.path.replace(/[\\/][^\\/]+$/, '');
+    const candidates = [desired];
+    for (let n = 2; n < 30; n++) candidates.push(desired.replace(/(\.[^.]+)$/, ' (' + n + ')$1'));
+    if (sspIsTauri()) {
+      try {
+        const full = candidates.map(n => dir + sep + n);
+        const flags = await tauriInvoke('paths_exist', { paths: full });
+        const existing = candidates.filter((_, i) => flags[i]);
+        unique = core.uniqueExportName(desired, existing);
+      } catch (_) {}
+    }
+    defaultPath = dir + sep + unique;
+    if (core.samePath(defaultPath, item.path)) {
+      showToast('Refusing to overwrite the original.', 4000);
+      return;
+    }
+  }
+  const filters = usePng ? [{ name: 'PNG Image', extensions: ['png'] }] : [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }];
+  const res = await saveExportBlob(defaultPath, blob, filters, { exclusive: true, refusePath: item.path });
+  if (res.ok) showToast('Exported ' + unique + ' (' + can.width + '×' + can.height + '). Original unchanged.', 4000);
+  else if (res.reason !== 'cancel' && res.reason !== 'original') showToast('Cropped export failed.', 3500);
+}
+
+function playlistKbState() {
+  return { kbEnabled: kbEnabled, kbZoomInt: kbZoomInt, kbPanInt: kbPanInt, kbDirection: kbDirection, kbEasing: kbEasing };
+}
+function applyPlaylistKb(kb) {
+  if (!kb) return;
+  if (kb.kbEnabled != null) kbEnabled = !!kb.kbEnabled;
+  if (kb.kbZoomInt != null) kbZoomInt = +kb.kbZoomInt;
+  if (kb.kbPanInt != null) kbPanInt = +kb.kbPanInt;
+  if (kb.kbDirection) kbDirection = kb.kbDirection;
+  if (kb.kbEasing) kbEasing = kb.kbEasing;
+}
+
+function updatesBag(fields) {
+  return {
+    clr: fields.clr, rotation: fields.rotation, mirrorX: fields.mirrorX, mirrorY: fields.mirrorY,
+    zoom: fields.zoom, panX: fields.panX, panY: fields.panY, customDur: fields.customDur,
+    kbPreset: fields.kbPreset, crop: fields.crop || null
+  };
+}
+
+async function installPlaylistDocument(doc) {
+  const core = window.SlideXCore;
+  applyPlaylistKb(doc.kb);
+  const entries = doc.items || [];
+  const paths = entries.filter(it => it && it.type !== 'folder' && it.path).map(it => it.path);
+  let flags = [];
+  if (sspIsTauri() && paths.length) {
+    try { flags = await tauriInvoke('paths_exist', { paths: paths }); }
+    catch (_) { flags = paths.map(() => false); }
+  }
+  const exists = new Map();
+  paths.forEach((p, i) => exists.set(p, !!flags[i]));
+  const foundPaths = paths.filter(p => exists.get(p));
+  const gen = bumpFolderIngestGen();
+  if (sspIsTauri() && foundPaths.length) {
+    try { await tauriInvoke('register_allowed_paths', { paths: foundPaths }); } catch (_) {}
+  }
+  const byPath = new Map();
+  const total = foundPaths.length;
+  let shown = false;
+  for (let i = 0; i < foundPaths.length; i++) {
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    showLoadStatus(i + 1, total);
+    let loaded = [];
+    try { loaded = await itemsFromMediaPaths([foundPaths[i]]); }
+    catch (e) { console.warn(e); }
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    const hit = loaded[0];
+    if (hit && hit.path && !byPath.has(hit.path)) {
+      const entry = entries.find(e => e && e.path === hit.path);
+      if (entry) {
+        const fields = core.restoreItemFields(entry);
+        Object.assign(hit, {
+          id: fields.id || hit.id || makeItemId(),
+          missing: false, unavailable: false,
+          imageUpdates: updatesBag(fields)
+        });
+      }
+      byPath.set(hit.path, hit);
+      if (!shown) {
+        dz.style.display = 'none'; viewer.style.display = 'flex';
+        build([hit]);
+        shown = true;
+      } else finishAdd([hit], { light: true });
+    }
+    await yieldToMain();
+  }
+  if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+  let missing = 0;
+  const next = entries.map(entry => {
+    if (!entry || entry.type === 'folder') {
+      return { type: 'folder', id: (entry && entry.id) || makeItemId(), name: (entry && entry.name) || 'Folder', open: !entry || entry.open !== false };
+    }
+    const fields = core.restoreItemFields(entry);
+    const hit = entry.path && byPath.get(entry.path);
+    if (!hit) {
+      missing++;
+      return {
+        id: fields.id || makeItemId(), type: fields.type || 'image', name: fields.name || 'missing',
+        url: '', path: entry.path, missing: true, unavailable: true, imageUpdates: updatesBag(fields)
+      };
+    }
+    Object.assign(hit, {
+      id: fields.id || hit.id || makeItemId(),
+      missing: false, unavailable: false,
+      imageUpdates: updatesBag(fields)
+    });
+    return hit;
+  });
+  dz.style.display = 'none'; viewer.style.display = 'flex';
+  build(next);
+  clearLoadStatus();
+  updateLocateButton();
+  if (missing > 0) {
+    const note = window.SlideXCore && SlideXCore.missingFilesNotice
+      ? SlideXCore.missingFilesNotice(missing)
+      : (missing + " files couldn't be found");
+    showToast(note, 6000);
+  }
+}
+
+async function saveNamedPlaylistFlow() {
+  const core = window.SlideXCore;
+  if (!core) return;
+  const name = prompt('Save playlist as…', namedPlaylistName || '');
+  if (!name || !String(name).trim()) return;
+  const trimmed = String(name).trim();
+  const doc = core.buildPlaylistDocument({ items: items, name: trimmed, savedAt: Date.now(), kb: playlistKbState() });
+  if (!sspIsTauri()) {
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.download = 'SlideX_playlist.json';
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    namedPlaylistName = trimmed;
+    return;
+  }
+  let replace = false;
+  try {
+    const list = await tauriInvoke('list_named_playlists');
+    const exists = (list || []).some(p => core.playlistNamesMatch(p.name, trimmed));
+    if (exists) {
+      const ok = await sspConfirm('Replace playlist "' + trimmed + '"?');
+      const before = (list || []).map(p => ({ name: p.name, json: null }));
+      const after = core.namedPlaylistsAfterReplace
+        ? core.namedPlaylistsAfterReplace(before, trimmed, JSON.stringify(doc), ok, true)
+        : (ok ? before : before);
+      if (!ok || after.every(row => row.json == null)) return;
+      replace = true;
+    }
+  } catch (_) {}
+  try {
+    await tauriInvoke('save_named_playlist', { name: trimmed, json: JSON.stringify(doc), replace: replace });
+    namedPlaylistName = trimmed;
+    showToast('Saved playlist ' + trimmed, 2500);
+  } catch (e) {
+    showToast('Could not save playlist: ' + ((e && e.message) || e), 4000);
+  }
+}
+
+function closePlaylistLibrary() { const el = g('plib'); if (el) el.remove(); }
+
+async function openPlaylistLibrary() {
+  if (!sspIsTauri()) { openPlaylistPicker(); return; }
+  closePlaylistLibrary();
+  const wrap = document.createElement('div');
+  wrap.id = 'plib'; wrap.className = 'show';
+  const panel = document.createElement('div'); panel.className = 'panel';
+  const h = document.createElement('h3'); h.textContent = 'Load playlist';
+  const listEl = document.createElement('div');
+  const actions = document.createElement('div');
+  actions.style.cssText = 'margin-top:12px;display:flex;gap:8px;';
+  const openFile = document.createElement('button'); openFile.type = 'button'; openFile.textContent = 'Open file…';
+  openFile.onclick = () => { closePlaylistLibrary(); openPlaylistPicker(); };
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Close';
+  cancel.onclick = () => closePlaylistLibrary();
+  actions.appendChild(openFile); actions.appendChild(cancel);
+  panel.appendChild(h); panel.appendChild(listEl); panel.appendChild(actions);
+  wrap.appendChild(panel);
+  wrap.addEventListener('click', e => { if (e.target === wrap) closePlaylistLibrary(); });
+  document.body.appendChild(wrap);
+  let rows = [];
+  try { rows = await tauriInvoke('list_named_playlists') || []; } catch (_) { rows = []; }
+  if (!rows.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No saved playlists yet.';
+    empty.style.opacity = '0.7';
+    listEl.appendChild(empty);
+  }
+  rows.forEach(row => {
+    const line = document.createElement('div'); line.className = 'row';
+    const when = row.savedAt ? new Date(row.savedAt).toLocaleString() : '';
+    const label = document.createElement('div');
+    label.textContent = row.name + ' · ' + row.count + ' item' + (row.count === 1 ? '' : 's') + (when ? ' · ' + when : '');
+    const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;';
+    const load = document.createElement('button'); load.type = 'button'; load.textContent = 'Load';
+    load.onclick = async () => {
+      closePlaylistLibrary();
+      try {
+        const text = await tauriInvoke('read_named_playlist', { name: row.name });
+        const doc = SlideXCore.normalizePlaylist(JSON.parse(text));
+        await installPlaylistDocument(doc);
+        namedPlaylistName = doc.name || row.name;
+      } catch (e) { showToast('Could not load playlist.', 4000); }
+    };
+    const ren = document.createElement('button'); ren.type = 'button'; ren.textContent = 'Rename';
+    ren.onclick = async () => {
+      const next = prompt('Rename playlist', row.name);
+      if (!next || !next.trim() || next.trim() === row.name) return;
+      try {
+        await tauriInvoke('rename_named_playlist', { from: row.name, to: next.trim() });
+        if (namedPlaylistName === row.name) namedPlaylistName = next.trim();
+        openPlaylistLibrary();
+      } catch (e) { showToast('Rename failed: ' + ((e && e.message) || e), 4000); }
+    };
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = 'Delete';
+    del.onclick = async () => {
+      const ok = await sspConfirm('Delete playlist "' + row.name + '"?');
+      const names = rows.map(r => r.name);
+      const next = (window.SlideXCore && SlideXCore.namedPlaylistsAfterDelete)
+        ? SlideXCore.namedPlaylistsAfterDelete(names, row.name, ok)
+        : (ok ? names.filter(n => n !== row.name) : names);
+      if (next.length === names.length) return;
+      try {
+        await tauriInvoke('delete_named_playlist', { name: row.name });
+        if (namedPlaylistName === row.name) namedPlaylistName = null;
+        openPlaylistLibrary();
+      } catch (e) { showToast('Delete failed: ' + ((e && e.message) || e), 4000); }
+    };
+    btns.appendChild(load); btns.appendChild(ren); btns.appendChild(del);
+    line.appendChild(label); line.appendChild(btns);
+    listEl.appendChild(line);
+  });
+}
+
+async function locateMissingFolder() {
+  const core = window.SlideXCore;
+  const missing = items.filter(it => it && it.missing && it.path);
+  if (!core || !missing.length) { showToast('No missing items.', 2500); return; }
+  const picked = await pickOpenFolder(false);
+  if (!picked || picked.kind === 'cancel') return;
+  const dir = picked.path || picked.root;
+  if (!dir) { showToast('Locate folder needs a folder path.', 3500); return; }
+  const paths = missing.map(it => it.path);
+  const opts = { caseInsensitive: true };
+  const found = [];
+  const have = new Set();
+  let depth = 0;
+  while (depth < 64) {
+    const step = core.nextLocateProbes(paths, dir, found, depth, opts);
+    if (!step.probes.length) {
+      if (!step.more) break;
+      depth++;
+      continue;
+    }
+    let flags = [];
+    try { flags = await tauriInvoke('paths_exist', { paths: step.probes.map(p => p.rewritten) }); }
+    catch (_) { flags = []; }
+    step.probes.forEach((probe, i) => {
+      if (!flags[i]) return;
+      have.add(String(probe.rewritten).toLowerCase());
+      found.push(probe.path);
+    });
+    if (!step.more) break;
+    depth++;
+  }
+  const plan = core.planLocate(paths, dir, function (p) { return have.has(String(p).toLowerCase()); }, opts);
+  if (!plan || !plan.found) { showToast('No files found under that folder.', 4000); return; }
+  const rewrite = new Map();
+  plan.rows.forEach(row => { if (row.exists && row.rewritten) rewrite.set(row.path, row.rewritten); });
+  const ok = await sspConfirm(plan.found + ' of ' + plan.eligible + ' found. Update these paths?');
+  const rewrites = {};
+  rewrite.forEach((next, prev) => { rewrites[prev] = next; });
+  const preview = core.itemsAfterLocateConfirm
+    ? core.itemsAfterLocateConfirm(items, rewrites, ok)
+    : items.map(it => ({ path: it && it.path, missing: !!(it && it.missing) }));
+  const changed = preview.some((it, i) => it.path !== (items[i] && items[i].path));
+  if (!changed) return;
+  const newPaths = Array.from(rewrite.values());
+  try { await tauriInvoke('register_allowed_paths', { paths: newPaths }); } catch (_) {}
+  let loaded = [];
+  try { loaded = await itemsFromMediaPaths(newPaths); } catch (_) { loaded = []; }
+  const byPath = new Map();
+  loaded.forEach(it => { if (it && it.path) byPath.set(it.path, it); });
+  items.forEach((it, idx) => {
+    if (!it || !it.missing) return;
+    const nextPath = rewrite.get(it.path);
+    if (!nextPath) return;
+    const hit = byPath.get(nextPath);
+    if (!hit) return;
+    const kept = {
+      id: it.id, clr: it.clr, crop: it.crop, kbPreset: it.kbPreset, customDur: it.customDur,
+      rotation: it.rotation, mirrorX: it.mirrorX, mirrorY: it.mirrorY, zoom: it.zoom, panX: it.panX, panY: it.panY
+    };
+    Object.assign(hit, kept, { path: nextPath, missing: false, unavailable: false, imageUpdates: updatesBag(kept) });
+    items[idx] = hit;
+  });
+  rebuildSlides(cur);
+  updateLocateButton();
+  const still = items.filter(it => it && it.missing).length;
+  if (namedPlaylistName && sspIsTauri()) {
+    try {
+      const doc = core.buildPlaylistDocument({ items: items, name: namedPlaylistName, savedAt: Date.now(), kb: playlistKbState() });
+      await tauriInvoke('save_named_playlist', { name: namedPlaylistName, json: JSON.stringify(doc), replace: true });
+    } catch (e) { console.warn('playlist rewrite save failed', e); }
+  }
+  showToast(plan.found + ' of ' + plan.eligible + ' found.' + (still ? ' ' + still + ' still missing.' : ''), 5000);
+}
+
+function bindFramingExtras() {
+  stage.addEventListener('dblclick', e => {
+    if (e.target.closest('button,a,select,input,textarea,#cropbar,#cropbox')) return;
+    e.preventDefault();
+    resetPan();
+  });
+  const pinch = { pts: new Map(), last: 0 };
+  stage.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch') return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!pinch.pts.has(e.pointerId)) return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.pts.size !== 2) return;
+    const pts = Array.from(pinch.pts.values());
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    if (pinch.last) {
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      const focus = (typeof focusForZoom === 'function') ? focusForZoom(midX, midY) : { x: midX, y: midY };
+      changeZoom(0, { x: focus.x, y: focus.y, factor: dist / pinch.last });
+    }
+    pinch.last = dist;
+  });
+  const endPinch = e => {
+    pinch.pts.delete(e.pointerId);
+    if (pinch.pts.size < 2) pinch.last = 0;
+  };
+  stage.addEventListener('pointerup', endPinch);
+  stage.addEventListener('pointercancel', endPinch);
+  window.addEventListener('resize', () => {
+    const sl = getSl(cur);
+    const el = sl && sl.querySelector('.ssp-crop');
+    if (el) delete el.dataset.key;
+    if (cropEditing) syncCropOverlay();
+    else if (getMediaItems().length && !getActiveMaxMode(cur)) {
+      if (kbManualHold || isV(cur)) staticT();
+    }
+  });
+  if (g('plsave')) g('plsave').onclick = () => saveNamedPlaylistFlow();
+  if (g('plload')) g('plload').onclick = () => openPlaylistLibrary();
+  if (g('lbplist')) g('lbplist').onclick = () => openPlaylistLibrary();
+  if (g('pllocate')) g('pllocate').onclick = () => locateMissingFolder();
+  window.sspCastMediaHook = function (item) {
+    const current = item || getMediaItems()[cur];
+    return window.SlideXCore ? SlideXCore.castMediaHook(current) : { kind: 'none' };
+  };
+  bindCropUi();
+  updateLocateButton();
+}
+bindFramingExtras();
 
 try { initPlaylistWindowSync(); } catch (e) { console.warn('playlist window sync init failed', e); }
 
