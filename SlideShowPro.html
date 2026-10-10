@@ -7156,6 +7156,7 @@ async function locateMissingFolder() {
   rebuildSlides(cur);
   updateLocateButton();
   const still = items.filter(it => it && it.missing).length;
+  autoSave();
   if (namedPlaylistName && sspIsTauri()) {
     try {
       const doc = core.buildPlaylistDocument({ items: items, name: namedPlaylistName, savedAt: Date.now(), kb: playlistKbState() });

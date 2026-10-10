@@ -1,6 +1,6 @@
 // Read the Cast firewall command lines out of src-tauri/windows/installer.nsi.
-// That file is the only copy. NSIS `$\"` becomes a plain quote, then
-// ${defines}, $INSTDIR, and $SYSDIR are substituted the way the installer does.
+// That file is the only copy. NSIS `$\"` becomes a plain quote, `$$` becomes `$`,
+// then ${defines}, $INSTDIR, and $SYSDIR are substituted the way the installer does.
 //
 //   node scripts/cast-firewall-commands.mjs --check
 //   node scripts/cast-firewall-commands.mjs --apply
@@ -76,6 +76,7 @@ function nsisRuntime(raw, vars) {
   if (out.includes('${') || out.includes('$INSTDIR') || out.includes('$SYSDIR') || out.includes('$\\')) {
     fail(`unresolved NSIS token in: ${out}`);
   }
+  out = out.replaceAll('$$', '$');
   return out;
 }
 
@@ -98,8 +99,23 @@ function loadCommands(instDir, sysDir) {
     extractQuoted(functionBody(text, 'Function un.CastFirewallUninstall'), 'uninstall'),
     vars,
   );
-  const shows = [...text.matchAll(/nsExec::ExecToStack '([^']*)'/g)].map((match) => nsisRuntime(match[1], vars));
-  return { defs, binary, installParams, uninstallParams, shows, sysDir, instDir };
+  const installBody = functionBody(text, 'Function CastFirewallInstall');
+  const prechecks = [...installBody.matchAll(/nsExec::ExecToStack `([^`]*)`/g)].map((match) =>
+    nsisRuntime(match[1], vars),
+  );
+  const matchAt = installBody.indexOf('status=match');
+  const returnAt = installBody.indexOf('\n Return\n');
+  const runasAt = installBody.indexOf('ExecShell "runas"');
+  return {
+    defs,
+    binary,
+    installParams,
+    uninstallParams,
+    prechecks,
+    sysDir,
+    instDir,
+    skipsElevation: matchAt >= 0 && returnAt > matchAt && runasAt > returnAt,
+  };
 }
 
 function assertPlainQuotes(label, params, instDir, binary) {
@@ -150,6 +166,26 @@ function runCmd(sysDir, params) {
   });
   if (result.error) fail(result.error.message);
   if (result.status !== 0) fail(`cmd exited ${result.status}`);
+}
+
+function splitPrecheck(commandLine) {
+  const match = commandLine.match(/^"([^"]+)"\s+-NoProfile\s+-NonInteractive\s+-Command\s+"([\s\S]*)"$/);
+  if (!match) fail(`pre-check is not a full-path PowerShell -NoProfile -NonInteractive command: ${commandLine}`);
+  const exe = match[1];
+  if (!exe.toLowerCase().endsWith('\\system32\\windowspowershell\\v1.0\\powershell.exe')) {
+    fail(`pre-check exe is not System32 PowerShell: ${exe}`);
+  }
+  return { exe, script: match[2] };
+}
+
+function runPrecheck(commandLine) {
+  const { exe, script } = splitPrecheck(commandLine);
+  const result = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+  return {
+    status: result.status,
+    text: `${result.stdout || ''}\n${result.stderr || ''}`,
+    error: result.error,
+  };
 }
 
 function netshShow(sysDir, ruleName) {
@@ -242,15 +278,35 @@ const instDir = apply ? prepareInstallDir() : 'C:\\SlideX Cast CI';
 const loaded = loadCommands(instDir, sysDir);
 assertPlainQuotes('install', loaded.installParams, instDir, loaded.binary);
 assertPlainQuotes('uninstall', loaded.uninstallParams, instDir, loaded.binary);
-if (loaded.shows.length !== 2) fail(`expected 2 unelevated show commands, found ${loaded.shows.length}`);
-for (const show of loaded.shows) {
-  if (show.includes('\\"')) fail(`show command still has a backslash-quote: ${show}`);
-  if (!show.includes('name="SlideX Cast')) fail(`show command missing plain quotes: ${show}`);
-  console.log(`CAST_FIREWALL_SHOW_CMDLINE=${show}`);
+if (!loaded.skipsElevation) {
+  fail('CastFirewallInstall does not return before ExecShell when the pre-check reports status=match');
 }
+if (loaded.prechecks.length !== 1) fail(`expected 1 unelevated PowerShell pre-check, found ${loaded.prechecks.length}`);
+const precheck = loaded.prechecks[0];
+const psExe = `${sysDir}\\WindowsPowerShell\\v1.0\\powershell.exe`;
+if (!precheck.startsWith(`"${psExe}"`)) fail(`pre-check does not use the full PowerShell path: ${precheck}`);
+if (!precheck.includes(' -NoProfile ')) fail('pre-check missing -NoProfile');
+if (!precheck.includes(' -NonInteractive ')) fail('pre-check missing -NonInteractive');
+for (const piece of [
+  'Get-NetFirewallRule',
+  'Get-NetFirewallApplicationFilter',
+  'Get-NetFirewallAddressFilter',
+  'Get-NetFirewallPortFilter',
+  'LocalSubnet',
+  'status=match',
+]) {
+  if (!precheck.includes(piece)) fail(`pre-check missing ${piece}`);
+}
+if (/\bnetsh\b/i.test(precheck)) fail('pre-check still shells out to netsh');
+if (/(^|\s)powershell\.exe(\s|$)/i.test(precheck.replace(psExe, ''))) {
+  fail('pre-check also invokes powershell.exe from PATH');
+}
+console.log(`CAST_FIREWALL_PRECHECK_CMDLINE=${precheck}`);
 
 printCommand('INSTALL', sysDir, loaded.installParams);
 printCommand('UNINSTALL', sysDir, loaded.uninstallParams);
+
+splitPrecheck(precheck);
 
 if (!apply) {
   console.log('cast firewall command check ok');
@@ -277,6 +333,15 @@ try {
   console.log(mdns.text.trim());
   assertRule(media.text, mediaName, exePath, 'TCP', loaded.defs.CAST_FW_TCP);
   assertRule(mdns.text, mdnsName, exePath, 'UDP', loaded.defs.CAST_FW_UDP);
+
+  const second = runPrecheck(loaded.prechecks[0]);
+  console.log('--- second install pre-check (no elevation) ---');
+  console.log(second.text.trim());
+  if (second.error) fail(second.error.message);
+  if (!second.text.includes('status=match')) {
+    fail(`second install would elevate; pre-check did not report status=match:\n${second.text}`);
+  }
+  console.log('CAST_FIREWALL_SECOND_INSTALL=skip-elevation');
 
   runCmd(sysDir, loaded.uninstallParams);
   const removed = readStatus(statusFile);

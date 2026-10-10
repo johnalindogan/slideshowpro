@@ -677,10 +677,30 @@ fn delete_named_playlist(app: AppHandle, name: String) -> Result<(), String> {
 /// One offline UNC share must not stall Continue. Each root is probed once.
 const PATH_PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
 
+/// `\\?\C:\...` becomes `C:\...`. `\\?\UNC\server\share\...` becomes `\\server\share\...`.
+/// The saved session string is left unchanged; only probing uses this form.
+fn normalize_extended_path(path: &str) -> String {
+    let trimmed = path.trim().replace('/', "\\");
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with(r"\\?\unc\") {
+        return format!(r"\\{}", &trimmed[8..]);
+    }
+    if lower.starts_with(r"\\?\") {
+        let rest = &trimmed[4..];
+        let mut chars = rest.chars();
+        if let (Some(drive), Some(':')) = (chars.next(), chars.next()) {
+            if drive.is_ascii_alphabetic() {
+                return rest.to_string();
+            }
+        }
+    }
+    trimmed
+}
+
 /// UNC `\\server\share` or a drive such as `D:\`. Other paths are their own root.
+/// Extended-length prefixes are stripped before the root is chosen.
 fn share_root(path: &str) -> String {
-    let trimmed = path.trim();
-    let normalized = trimmed.replace('/', "\\");
+    let normalized = normalize_extended_path(path);
     if let Some(rest) = normalized.strip_prefix("\\\\") {
         let mut parts = rest.split('\\').filter(|s| !s.is_empty());
         let server = parts.next().unwrap_or("");
@@ -718,7 +738,8 @@ where
         if path.trim().is_empty() {
             continue;
         }
-        let root = share_root(path);
+        let probe_path = normalize_extended_path(path);
+        let root = share_root(&probe_path);
         if let Some(group) = groups.iter_mut().find(|(name, _)| name == &root) {
             group.1.push(index);
         } else {
@@ -736,7 +757,10 @@ where
         let (tx, rx) = mpsc::channel::<Vec<(usize, bool)>>();
         let root_probe = Arc::clone(&probe_root);
         let file_probe = Arc::clone(&probe_file);
-        let owned: Vec<(usize, String)> = indexes.iter().map(|i| (*i, paths[*i].clone())).collect();
+        let owned: Vec<(usize, String)> = indexes
+            .iter()
+            .map(|i| (*i, normalize_extended_path(&paths[*i])))
+            .collect();
         thread::spawn(move || {
             if !root_probe(&root) {
                 let _ = tx.send(owned.into_iter().map(|(i, _)| (i, false)).collect());
@@ -856,6 +880,54 @@ mod slidex_store_tests {
         );
         assert_eq!(share_root(r"\\AX03\Share\a.jpg"), share_root(r"//ax03/share/b.jpg"));
         assert_eq!(share_root(r"d:/photos/a.jpg"), r"D:\");
+    }
+
+    #[test]
+    fn extended_prefix_paths_probe_present_and_the_saved_strings_stay() {
+        assert_eq!(share_root(r"\\?\C:\Users\qa\Pictures\a.jpg"), r"C:\");
+        assert_eq!(share_root(r"C:\Users\qa\Pictures\a.jpg"), r"C:\");
+        assert_eq!(share_root(r"\\?\UNC\AX03\photos\b.jpg"), r"\\ax03\photos");
+        assert_eq!(share_root(r"\\AX03\photos\b.jpg"), r"\\ax03\photos");
+        assert_eq!(
+            normalize_extended_path(r"\\?\C:\Users\qa\Pictures\a.jpg"),
+            r"C:\Users\qa\Pictures\a.jpg"
+        );
+        assert_eq!(
+            normalize_extended_path(r"\\?\UNC\AX03\photos\b.jpg"),
+            r"\\AX03\photos\b.jpg"
+        );
+
+        let paths = vec![
+            r"\\?\C:\Users\qa\Pictures\lake.jpg".to_string(),
+            r"\\?\UNC\AX03\photos\dock.jpg".to_string(),
+            r"C:\Users\qa\Pictures\plain.jpg".to_string(),
+            r"\\AX03\photos\plain.jpg".to_string(),
+        ];
+        let saved = paths.clone();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_probe = Arc::clone(&seen);
+        let flags = paths_exist_grouped(
+            &paths,
+            Duration::from_millis(500),
+            |_| true,
+            move |path| {
+                seen_probe.lock().unwrap().push(path.to_string());
+                !path.starts_with(r"\\?\")
+            },
+        );
+        assert_eq!(flags, vec![true, true, true, true]);
+        assert_eq!(paths, saved);
+        let mut probed = seen.lock().unwrap().clone();
+        probed.sort();
+        assert_eq!(
+            probed,
+            vec![
+                r"C:\Users\qa\Pictures\lake.jpg".to_string(),
+                r"C:\Users\qa\Pictures\plain.jpg".to_string(),
+                r"\\AX03\photos\dock.jpg".to_string(),
+                r"\\AX03\photos\plain.jpg".to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -2276,12 +2276,48 @@ fn handle_cmd(
 const FW_MEDIA_RULE: &str = "SlideX Cast media (Private)";
 const FW_MDNS_RULE: &str = "SlideX Cast mDNS (Private)";
 
+/// `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. Never `powershell` from PATH.
+pub fn powershell_exe_under_windows_dir(windows_dir: &str) -> String {
+    let root = windows_dir.trim_end_matches(['\\', '/']);
+    format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+#[cfg(windows)]
+fn windows_dir_from_env() -> String {
+    std::env::var("SystemRoot")
+        .or_else(|_| std::env::var("WINDIR"))
+        .unwrap_or_else(|_| r"C:\Windows".to_string())
+}
+
+fn firewall_powershell_args(script: &str) -> Vec<String> {
+    vec![
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-Command".into(),
+        script.to_string(),
+    ]
+}
+
+fn firewall_query_script(exe: &str) -> String {
+    let quoted = exe.replace('\'', "''");
+    let ports = format!("{CAST_PORT_LO}-{CAST_PORT_HI}");
+    format!(
+        r#"$exe='{quoted}'; foreach($spec in @(@{{n='{media}';t='TCP';o='{ports}'}},@{{n='{mdns}';t='UDP';o='5353'}})) {{ foreach($r in @(Get-NetFirewallRule -DisplayName $spec.n -ErrorAction SilentlyContinue)) {{ $app=@($r | Get-NetFirewallApplicationFilter); $addr=@($r | Get-NetFirewallAddressFilter); $pf=@($r | Get-NetFirewallPortFilter); $program=''; if($app.Length -gt 0) {{ $program=[string]$app[0].Program }}; $remote=((@($addr) | ForEach-Object {{ @($_.RemoteAddress) }}) | ForEach-Object {{ "$_" }}) -join ','; $protocol=''; $localport=''; if($pf.Length -gt 0) {{ $protocol=$pf[0].Protocol.ToString(); $localport=((@($pf[0].LocalPort)) | ForEach-Object {{ "$_" }}) -join ',' }}; [pscustomobject]@{{name=$spec.n;enabled=($r.Enabled.ToString() -eq 'True');direction=$r.Direction.ToString();action=$r.Action.ToString();profile=$r.Profile.ToString();program=$program;remote=$remote;protocol=$protocol;localport=$localport}} | ConvertTo-Json -Compress }} }}"#,
+        quoted = quoted,
+        media = FW_MEDIA_RULE,
+        mdns = FW_MDNS_RULE,
+        ports = ports,
+    )
+}
+
 pub fn firewall_status() -> CastFirewallStatus {
     #[cfg(windows)]
     {
-        let media = netsh_show(FW_MEDIA_RULE);
-        let mdns = netsh_show(FW_MDNS_RULE);
-        return parse_firewall_pair(&media, &mdns);
+        let report = query_firewall_text();
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return parse_firewall_report(&report, &exe);
     }
     #[cfg(not(windows))]
     {
@@ -2295,19 +2331,51 @@ pub fn firewall_status() -> CastFirewallStatus {
 }
 
 #[cfg(windows)]
-fn netsh_show(name: &str) -> String {
-    match std::process::Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", &format!("name={name}")])
+fn query_firewall_text() -> String {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(e) => return format!("query failed: {e}"),
+    };
+    let program = powershell_exe_under_windows_dir(&windows_dir_from_env());
+    let script = firewall_query_script(&exe);
+    match std::process::Command::new(&program)
+        .args(firewall_powershell_args(&script))
         .output()
     {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            if !out.status.success() && stdout.trim().is_empty() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                format!("query failed: {err}")
+            } else {
+                stdout
+            }
+        }
         Err(e) => format!("query failed: {e}"),
     }
 }
 
-pub fn parse_firewall_pair(media: &str, mdns: &str) -> CastFirewallStatus {
-    let media_ok = firewall_rule_ok(media, "TCP", &format!("{CAST_PORT_LO}-{CAST_PORT_HI}"));
-    let mdns_ok = firewall_rule_ok(mdns, "UDP", "5353");
+pub fn parse_firewall_report(text: &str, exe: &str) -> CastFirewallStatus {
+    let ports = format!("{CAST_PORT_LO}-{CAST_PORT_HI}");
+    let mut media_ok = false;
+    let mut mdns_ok = false;
+    let mut saw_json = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        saw_json = true;
+        if firewall_json_matches(&value, exe, FW_MEDIA_RULE, "TCP", &ports) {
+            media_ok = true;
+        }
+        if firewall_json_matches(&value, exe, FW_MDNS_RULE, "UDP", "5353") {
+            mdns_ok = true;
+        }
+    }
     if media_ok && mdns_ok {
         CastFirewallStatus {
             state: "added".into(),
@@ -2320,7 +2388,7 @@ pub fn parse_firewall_pair(media: &str, mdns: &str) -> CastFirewallStatus {
             state: "partial".into(),
             detail: "Only part of the Cast firewall rule is installed. Re-run the SlideX installer and accept the Windows prompt.".into(),
         }
-    } else if media.to_ascii_lowercase().contains("query failed") {
+    } else if !saw_json && text.to_ascii_lowercase().contains("query failed") {
         CastFirewallStatus {
             state: "unknown".into(),
             detail: "Could not query the Windows firewall.".into(),
@@ -2335,19 +2403,103 @@ pub fn parse_firewall_pair(media: &str, mdns: &str) -> CastFirewallStatus {
     }
 }
 
-fn firewall_rule_ok(text: &str, protocol: &str, ports: &str) -> bool {
-    let l = text.to_ascii_lowercase();
-    if l.contains("no rules match") || l.contains("query failed") {
+fn json_field(value: &serde_json::Value, key: &str) -> String {
+    match value.get(key) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn field_enabled(value: &serde_json::Value) -> bool {
+    match value.get("enabled") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::String(s)) => {
+            matches!(s.to_ascii_lowercase().as_str(), "true" | "yes")
+        }
+        _ => false,
+    }
+}
+
+fn normalize_program_path(path: &str) -> String {
+    let mut p = path.trim().replace('/', "\\");
+    let lower = p.to_ascii_lowercase();
+    if lower.starts_with(r"\\?\unc\") {
+        p = format!(r"\\{}", &p[8..]);
+    } else if lower.starts_with(r"\\?\") {
+        let rest = &p[4..];
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            p = rest.to_string();
+        }
+    }
+    while p.ends_with('\\') && p.len() > 3 {
+        p.pop();
+    }
+    p.to_ascii_lowercase()
+}
+
+fn profile_includes_private(profile: &str) -> bool {
+    let p = profile.trim().to_ascii_lowercase();
+    if p == "any" {
+        return true;
+    }
+    p.split(|c: char| c == ',' || c.is_whitespace())
+        .any(|part| part == "private" || part == "2")
+}
+
+fn remote_has_local_subnet(remote: &str) -> bool {
+    remote
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .any(|part| part.eq_ignore_ascii_case("LocalSubnet"))
+}
+
+fn protocol_match(got: &str, expect: &str) -> bool {
+    let got = got.trim();
+    if got.eq_ignore_ascii_case(expect) {
+        return true;
+    }
+    (expect.eq_ignore_ascii_case("TCP") && got == "6")
+        || (expect.eq_ignore_ascii_case("UDP") && got == "17")
+}
+
+fn ports_match(got: &str, expect: &str) -> bool {
+    let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    compact(got).eq_ignore_ascii_case(&compact(expect))
+}
+
+fn firewall_json_matches(
+    value: &serde_json::Value,
+    exe: &str,
+    name: &str,
+    protocol: &str,
+    ports: &str,
+) -> bool {
+    if !json_field(value, "name").eq_ignore_ascii_case(name) {
         return false;
     }
-    let private = l.contains("private") && !l.contains("public");
-    // "Profiles: Private" is the success case. A rule that also lists Public is rejected
-    // because the line contains "public".
-    l.contains("slideshowpro.exe")
-        && l.contains(&protocol.to_ascii_lowercase())
-        && l.contains(&ports.to_ascii_lowercase())
-        && private
-        && l.contains("allow")
+    if !field_enabled(value) {
+        return false;
+    }
+    let direction = json_field(value, "direction");
+    if !direction.eq_ignore_ascii_case("Inbound") && !direction.eq_ignore_ascii_case("In") {
+        return false;
+    }
+    if !json_field(value, "action").eq_ignore_ascii_case("Allow") {
+        return false;
+    }
+    if normalize_program_path(&json_field(value, "program")) != normalize_program_path(exe) {
+        return false;
+    }
+    if !profile_includes_private(&json_field(value, "profile")) {
+        return false;
+    }
+    if !remote_has_local_subnet(&json_field(value, "remote")) {
+        return false;
+    }
+    protocol_match(&json_field(value, "protocol"), protocol)
+        && ports_match(&json_field(value, "localport"), ports)
 }
 
 #[cfg(test)]
@@ -2880,33 +3032,104 @@ mod tests {
         assert_eq!(body, jpeg_bytes());
     }
 
+    fn fw_line(
+        name: &str,
+        program: &str,
+        profile: &str,
+        remote: &str,
+        protocol: &str,
+        ports: &str,
+    ) -> String {
+        serde_json::json!({
+            "name": name,
+            "enabled": true,
+            "direction": "Inbound",
+            "action": "Allow",
+            "profile": profile,
+            "program": program,
+            "remote": remote,
+            "protocol": protocol,
+            "localport": ports
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn firewall_query_uses_system32_powershell_without_path() {
+        let exe = powershell_exe_under_windows_dir(r"C:\Windows");
+        assert_eq!(
+            exe,
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        );
+        assert!(exe.contains(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
+        assert_ne!(exe.to_ascii_lowercase(), "powershell.exe");
+        let script = firewall_query_script(r"C:\SlideX\slideshowpro.exe");
+        let args = firewall_powershell_args(&script);
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[1], "-NonInteractive");
+        assert_eq!(args[2], "-Command");
+        assert!(script.contains("Get-NetFirewallRule"));
+        assert!(script.contains("Get-NetFirewallApplicationFilter"));
+        assert!(script.contains("Get-NetFirewallAddressFilter"));
+        assert!(script.contains("Get-NetFirewallPortFilter"));
+        assert!(script.contains("ConvertTo-Json"));
+        assert!(!script.to_ascii_lowercase().contains("netsh"));
+    }
+
     #[test]
     fn firewall_parser_requires_private_profile_and_ports() {
-        let media = "\
-Rule Name: SlideX Cast media (Private)
-Enabled: Yes
-Direction: In
-Profiles: Private
-LocalPort: 47200-47215
-Protocol: TCP
-Action: Allow
-Program: C:\\Users\\qa\\AppData\\Local\\SlideShowX\\slideshowpro.exe
-";
-        let mdns = "\
-Rule Name: SlideX Cast mDNS (Private)
-Profiles: Private
-LocalPort: 5353
-Protocol: UDP
-Action: Allow
-Program: C:\\Users\\qa\\AppData\\Local\\SlideShowX\\slideshowpro.exe
-";
-        let ok = parse_firewall_pair(media, mdns);
+        let exe = r"C:\Users\qa\AppData\Local\SlideShowX\slideshowpro.exe";
+        let media = fw_line(
+            FW_MEDIA_RULE,
+            exe,
+            "Private",
+            "LocalSubnet",
+            "TCP",
+            "47200-47215",
+        );
+        let mdns = fw_line(FW_MDNS_RULE, exe, "Private", "LocalSubnet", "UDP", "5353");
+        let ok = parse_firewall_report(&format!("{media}\n{mdns}"), exe);
         assert_eq!(ok.state, "added");
-        let missing = parse_firewall_pair("No rules match the specified criteria.", "No rules match");
-        assert_eq!(missing.state, "missing");
-        let public_rule = media.replace("Profiles: Private", "Profiles: Public");
-        let bad = parse_firewall_pair(&public_rule, mdns);
-        assert_ne!(bad.state, "added");
+        let prefixed = fw_line(
+            FW_MEDIA_RULE,
+            r"\\?\C:\Users\qa\AppData\Local\SlideShowX\slideshowpro.exe",
+            "Private",
+            "LocalSubnet",
+            "TCP",
+            "47200-47215",
+        );
+        assert_eq!(
+            parse_firewall_report(&format!("{prefixed}\n{mdns}"), exe).state,
+            "added"
+        );
+
+        let wrong = fw_line(
+            FW_MEDIA_RULE,
+            r"C:\Other\slideshowpro.exe",
+            "Private",
+            "LocalSubnet",
+            "TCP",
+            "47200-47215",
+        );
+        assert_ne!(
+            parse_firewall_report(&format!("{wrong}\n{mdns}"), exe).state,
+            "added"
+        );
+        let public_only = fw_line(FW_MEDIA_RULE, exe, "Public", "LocalSubnet", "TCP", "47200-47215");
+        assert_ne!(
+            parse_firewall_report(&format!("{public_only}\n{mdns}"), exe).state,
+            "added"
+        );
+        let no_subnet = fw_line(FW_MEDIA_RULE, exe, "Private", "Any", "TCP", "47200-47215");
+        assert_ne!(
+            parse_firewall_report(&format!("{no_subnet}\n{mdns}"), exe).state,
+            "added"
+        );
+        assert_eq!(parse_firewall_report("", exe).state, "missing");
+        assert_eq!(
+            parse_firewall_report("query failed: powershell", exe).state,
+            "unknown"
+        );
     }
 
     fn url_path(url: &str) -> String {

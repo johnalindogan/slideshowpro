@@ -1,4 +1,6 @@
 Unicode true
+; The unelevated Cast firewall pre-check is a PowerShell -Command longer than 1024.
+!define NSIS_MAX_STRLEN 8192
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
 ; Currently undocumented on NSIS's website but is in the Docs folder of source tree, see
@@ -712,63 +714,29 @@ Section WebView2
  ${EndIf}
 SectionEnd
 
-Function CastFirewallRuleOk
- ; $R5 lowercased netsh text, $R8 lowercased exe path, $R4 protocol, $R3 ports. Sets $R7 to 1 when the rule matches.
- StrCpy $R7 0
- ${StrLoc} $0 $R5 "public" ">"
- StrCmp $0 "" 0 cast_fw_rule_no
- ${StrLoc} $0 $R5 "private" ">"
- StrCmp $0 "" cast_fw_rule_no
- ${StrLoc} $0 $R5 $R8 ">"
- StrCmp $0 "" cast_fw_rule_no
- ${StrLoc} $0 $R5 $R4 ">"
- StrCmp $0 "" cast_fw_rule_no
- ${StrLoc} $0 $R5 $R3 ">"
- StrCmp $0 "" cast_fw_rule_no
- ${StrLoc} $0 $R5 "allow" ">"
- StrCmp $0 "" cast_fw_rule_no
- StrCpy $R7 1
-cast_fw_rule_no:
- ClearErrors
-FunctionEnd
-
 Function CastFirewallInstall
  ; No script file. Rules are added by one elevated cmd.exe /c, or skipped when they already match this exe.
+ ; The pre-check is unelevated and calls PowerShell by its System32 path, never PATH.
  Delete "$INSTDIR\cast-firewall-add.cmd"
  Delete "$INSTDIR\cast-firewall.ok"
  Delete "$TEMP\slidex-cast-firewall-remove.cmd"
  Delete "$TEMP\slidex-cast-firewall-removed.txt"
  StrCpy $1 "$INSTDIR\cast-firewall.txt"
- StrCpy $R8 "$INSTDIR\${MAINBINARYNAME}.exe"
- ${StrCase} $R8 $R8 "L"
- nsExec::ExecToStack 'netsh advfirewall firewall show rule name=$\"${CAST_FW_MEDIA_NAME}$\"'
+ nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$e='$INSTDIR\${MAINBINARYNAME}.exe'; function N([string]$$p){ if([string]::IsNullOrWhiteSpace($$p)){ return '' }; $$p=$$p.Trim().Replace('/','\'); if($$p.StartsWith('\\?\UNC\')){ $$p='\\'+$$p.Substring(8) } elseif($$p.StartsWith('\\?\')){ $$p=$$p.Substring(4) }; return $$p.TrimEnd('\') }; function E([string]$$n,[string]$$t,[string]$$o){ foreach($$r in @(Get-NetFirewallRule -DisplayName $$n -ErrorAction SilentlyContinue)){ $$a=@($$r | Get-NetFirewallApplicationFilter); $$d=@($$r | Get-NetFirewallAddressFilter); $$f=@($$r | Get-NetFirewallPortFilter); if($$a.Length -lt 1 -or $$f.Length -lt 1){ continue }; $$pg=[string]$$a[0].Program; $$rm=@(); foreach($$x in $$d){ foreach($$y in @($$x.RemoteAddress)){ $$rm+=[string]$$y } }; $$remote=$$rm -join ','; $$pt=$$f[0].Protocol.ToString(); $$lp=@(); foreach($$y in @($$f[0].LocalPort)){ $$lp+=[string]$$y }; $$local=$$lp -join ','; $$g=$$r.Profile.ToString(); $$en=$$r.Enabled.ToString() -eq 'True'; $$di=$$r.Direction.ToString(); $$ac=$$r.Action.ToString(); if($$en -and $$di -eq 'Inbound' -and $$ac -eq 'Allow' -and ((N $$pg).ToLower() -eq (N $$e).ToLower()) -and ($$g -match 'Private' -or $$g -eq 'Any') -and $$g -ne 'Public' -and $$remote -match 'LocalSubnet' -and ($$pt -eq $$t -or ($$t -eq 'TCP' -and $$pt -eq '6') -or ($$t -eq 'UDP' -and $$pt -eq '17')) -and (($$local -replace '\s','') -eq $$o)){ return $$true } }; return $$false }; if((E '${CAST_FW_MEDIA_NAME}' 'TCP' '${CAST_FW_TCP}') -and (E '${CAST_FW_MDNS_NAME}' 'UDP' '${CAST_FW_UDP}')){ 'status=match' } else { 'status=nomatch' }"`
  Pop $0
  Pop $R5
- nsExec::ExecToStack 'netsh advfirewall firewall show rule name=$\"${CAST_FW_MDNS_NAME}$\"'
- Pop $0
- Pop $R6
- ${StrCase} $R5 $R5 "L"
- ${StrCase} $R6 $R6 "L"
- StrCpy $R4 "tcp"
- StrCpy $R3 "${CAST_FW_TCP}"
- Call CastFirewallRuleOk
- StrCpy $R9 $R7
- StrCpy $R5 $R6
- StrCpy $R4 "udp"
- StrCpy $R3 "${CAST_FW_UDP}"
- Call CastFirewallRuleOk
- ${If} $R9 = 1
- ${AndIf} $R7 = 1
-  FileOpen $2 "$1" w
-  FileWrite $2 "status=present$\r$\n"
-  FileWrite $2 "program=$INSTDIR\${MAINBINARYNAME}.exe$\r$\n"
-  FileWrite $2 "profile=private$\r$\n"
-  FileWrite $2 "tcp=${CAST_FW_TCP}$\r$\n"
-  FileWrite $2 "udp=${CAST_FW_UDP}$\r$\n"
-  FileClose $2
-  DetailPrint "Cast firewall: both Private rules already match $INSTDIR\${MAINBINARYNAME}.exe. No Windows prompt."
-  Return
- ${EndIf}
+ ${StrLoc} $0 $R5 "status=match" ">"
+ StrCmp $0 "" cast_fw_need_add
+ FileOpen $2 "$1" w
+ FileWrite $2 "status=present$\r$\n"
+ FileWrite $2 "program=$INSTDIR\${MAINBINARYNAME}.exe$\r$\n"
+ FileWrite $2 "profile=private$\r$\n"
+ FileWrite $2 "tcp=${CAST_FW_TCP}$\r$\n"
+ FileWrite $2 "udp=${CAST_FW_UDP}$\r$\n"
+ FileClose $2
+ DetailPrint "Cast firewall: both Private rules already match $INSTDIR\${MAINBINARYNAME}.exe. No Windows prompt."
+ Return
+cast_fw_need_add:
  Delete "$1"
  ; cmd /c strips only the first and last quote. Inner quotes are plain ", never \".
  StrCpy $R9 '/c $\"netsh advfirewall firewall delete rule name=$\"${CAST_FW_MEDIA_NAME}$\" >nul 2>&1 & netsh advfirewall firewall delete rule name=$\"${CAST_FW_MDNS_NAME}$\" >nul 2>&1 & (netsh advfirewall firewall add rule name=$\"${CAST_FW_MEDIA_NAME}$\" dir=in action=allow protocol=TCP localport=${CAST_FW_TCP} profile=private remoteip=localsubnet program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes && netsh advfirewall firewall add rule name=$\"${CAST_FW_MDNS_NAME}$\" dir=in action=allow protocol=UDP localport=${CAST_FW_UDP} profile=private remoteip=localsubnet program=$\"$INSTDIR\${MAINBINARYNAME}.exe$\" enable=yes && (echo status=added>$\"$INSTDIR\cast-firewall.txt$\") || (echo status=failed>$\"$INSTDIR\cast-firewall.txt$\"))$\"'

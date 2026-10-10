@@ -194,6 +194,41 @@ test('session restore counts every file missing from disk', () => {
   assert.equal(plan.items[1].missing, true);
 });
 
+test('a 0.1.8 session with \\\\?\\ paths is fully present and the saved strings stay', () => {
+  const session = {
+    sspVersion: 1,
+    savedAt: 1710000000000,
+    items: [
+      {
+        id: 'a',
+        type: 'image',
+        name: 'lake.jpg',
+        path: '\\\\?\\C:\\Users\\qa\\Pictures\\lake.jpg',
+        imageUpdates: { customDur: 10000 }
+      },
+      {
+        id: 'b',
+        type: 'image',
+        name: 'dock.jpg',
+        path: '\\\\?\\UNC\\AX03\\photos\\dock.jpg',
+        imageUpdates: { customDur: 8000 }
+      }
+    ]
+  };
+  const plan = C.planSessionRestore(session.items, () => true);
+  assert.equal(plan.missing, 0);
+  assert.equal(C.missingFilesNotice(plan.missing), '');
+  assert.equal(plan.items[0].missing, false);
+  assert.equal(plan.items[0].unavailable, undefined);
+  assert.equal(plan.items[0].path, '\\\\?\\C:\\Users\\qa\\Pictures\\lake.jpg');
+  assert.equal(plan.items[1].path, '\\\\?\\UNC\\AX03\\photos\\dock.jpg');
+  assert.equal(plan.items[1].imageUpdates.customDur, 8000);
+  const doc = C.buildPlaylistDocument({ items: plan.items, savedAt: session.savedAt });
+  assert.equal(doc.items.length, 2);
+  assert.equal(doc.items[0].path, session.items[0].path);
+  assert.equal(doc.items[1].path, session.items[1].path);
+});
+
 test('session restore keeps missing entries so the next save still has their paths', () => {
   const items = [
     { id: 'keep', type: 'image', name: 'keep.jpg', path: 'D:\\keep.jpg', imageUpdates: { customDur: 4000 } },
@@ -856,6 +891,8 @@ test('HTML and JS have no bare confirm() and the four prompts await a dialog', (
   const locate = html.slice(html.indexOf('async function locateMissingFolder'), html.indexOf('function bindFramingExtras'));
   assert.match(locate, /await sspConfirm\(/);
   assert.ok(locate.indexOf('await sspConfirm') < locate.indexOf('register_allowed_paths'));
+  assert.ok(locate.indexOf('items[idx] = hit') < locate.indexOf('autoSave()'));
+  assert.ok(locate.indexOf('autoSave()') < locate.lastIndexOf('showToast'));
   const caps = fs.readFileSync(new URL('./src-tauri/capabilities/default.json', import.meta.url), 'utf8');
   assert.match(caps, /dialog:allow-ask/);
   assert.match(caps, /dialog:allow-confirm/);
