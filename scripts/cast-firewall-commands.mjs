@@ -50,10 +50,242 @@ function extractQuoted(body, label) {
 }
 
 function mainBinaryName() {
-  const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+  const conf = parseJsonStrict(fs.readFileSync(confPath, 'utf8'));
   const name = conf.mainBinaryName;
   if (!name) fail('tauri.conf.json has no mainBinaryName');
   return name;
+}
+
+function parseJsonStrict(text, label = 'tauri.conf.json') {
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  let i = 0;
+  function line() {
+    let n = 1;
+    for (let k = 0; k < i && k < src.length; k++) if (src[k] === '\n') n++;
+    return n;
+  }
+  function failAt(message) {
+    fail(`${label}:${line()} ${message}`);
+  }
+  function skipWs() {
+    while (i < src.length && /\s/.test(src[i])) i++;
+  }
+  function parseString() {
+    if (src[i] !== '"') failAt('expected a string');
+    i++;
+    let out = '';
+    while (i < src.length) {
+      const c = src[i++];
+      if (c === '"') return out;
+      if (c !== '\\') {
+        out += c;
+        continue;
+      }
+      const e = src[i++];
+      if (e === '"' || e === '\\' || e === '/') out += e;
+      else if (e === 'b') out += '\b';
+      else if (e === 'f') out += '\f';
+      else if (e === 'n') out += '\n';
+      else if (e === 'r') out += '\r';
+      else if (e === 't') out += '\t';
+      else if (e === 'u') {
+        const hex = src.slice(i, i + 4);
+        if (!/^[0-9a-fA-F]{4}$/.test(hex)) failAt('bad unicode escape');
+        out += String.fromCharCode(Number.parseInt(hex, 16));
+        i += 4;
+      } else failAt('bad escape');
+    }
+    failAt('unterminated string');
+  }
+  function parseLiteral() {
+    const start = i;
+    if (src.startsWith('true', i)) {
+      i += 4;
+      return true;
+    }
+    if (src.startsWith('false', i)) {
+      i += 5;
+      return false;
+    }
+    if (src.startsWith('null', i)) {
+      i += 4;
+      return null;
+    }
+    if (!/[-0-9]/.test(src[i] || '')) failAt(`unexpected ${JSON.stringify(src[i])}`);
+    i++;
+    while (i < src.length && /[0-9.eE+-]/.test(src[i])) i++;
+    const num = Number(src.slice(start, i));
+    if (!Number.isFinite(num)) failAt('bad number');
+    return num;
+  }
+  function parseArray() {
+    i++;
+    const arr = [];
+    skipWs();
+    if (src[i] === ']') {
+      i++;
+      return arr;
+    }
+    while (true) {
+      arr.push(parseValue());
+      skipWs();
+      if (src[i] === ',') {
+        i++;
+        continue;
+      }
+      if (src[i] === ']') {
+        i++;
+        return arr;
+      }
+      failAt('expected comma or ]');
+    }
+  }
+  function parseObject() {
+    i++;
+    const obj = {};
+    const seen = new Set();
+    skipWs();
+    if (src[i] === '}') {
+      i++;
+      return obj;
+    }
+    while (true) {
+      skipWs();
+      if (src[i] !== '"') failAt('expected a key');
+      const key = parseString();
+      if (seen.has(key)) failAt(`duplicate key ${JSON.stringify(key)}`);
+      seen.add(key);
+      skipWs();
+      if (src[i] !== ':') failAt('expected :');
+      i++;
+      obj[key] = parseValue();
+      skipWs();
+      if (src[i] === ',') {
+        i++;
+        continue;
+      }
+      if (src[i] === '}') {
+        i++;
+        return obj;
+      }
+      failAt('expected comma or }');
+    }
+  }
+  function parseValue() {
+    skipWs();
+    if (i >= src.length) failAt('unexpected end');
+    const c = src[i];
+    if (c === '{') return parseObject();
+    if (c === '[') return parseArray();
+    if (c === '"') return parseString();
+    return parseLiteral();
+  }
+  const value = parseValue();
+  skipWs();
+  if (i !== src.length) failAt('trailing data');
+  return value;
+}
+
+function assertDuplicateDetector() {
+  let message = '';
+  try {
+    parseJsonStrict('{"resources":{"a":"b"},"resources":["c"]}', 'sample');
+  } catch (error) {
+    message = error.message;
+  }
+  if (!message.includes('duplicate key "resources"')) {
+    fail(`duplicate key detector missed a repeated key: ${message}`);
+  }
+  const nested = parseJsonStrict('{"a":{"ext":"jpg"},"b":{"ext":"png"}}', 'sample');
+  if (nested.a.ext !== 'jpg' || nested.b.ext !== 'png') fail('strict parser dropped nested keys');
+}
+
+function resourceRelpath(value) {
+  const parts = [];
+  for (const part of String(value).split(/[\\/]/)) {
+    if (!part || part === '.') continue;
+    parts.push(part === '..' ? '_up_' : part);
+  }
+  return parts.join('/');
+}
+
+function walkFiles(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(full));
+    else if (entry.isFile()) out.push(full);
+  }
+  return out;
+}
+
+function resolveBundleResources(conf, tauriDir) {
+  const resources = conf?.bundle?.resources;
+  if (!resources || Array.isArray(resources) || typeof resources !== 'object') {
+    fail('bundle.resources must be one map of source path to install target');
+  }
+  const resolved = [];
+  for (const [pattern, destRaw] of Object.entries(resources)) {
+    const dest = resourceRelpath(destRaw);
+    if (pattern.includes('*')) {
+      const matches = fs.globSync(pattern, { cwd: tauriDir });
+      const files = matches.filter((rel) => fs.statSync(path.join(tauriDir, rel)).isFile());
+      if (!files.length) fail(`resource glob matched nothing: ${pattern}`);
+      for (const rel of files) {
+        const name = path.basename(rel);
+        resolved.push({
+          source: rel.replaceAll('\\', '/'),
+          target: dest ? `${dest}/${name}` : name,
+        });
+      }
+    } else {
+      const abs = path.resolve(tauriDir, pattern);
+      if (!fs.existsSync(abs)) fail(`resource not found: ${pattern}`);
+      if (fs.statSync(abs).isDirectory()) {
+        for (const file of walkFiles(abs)) {
+          const rel = path.relative(abs, file).replaceAll('\\', '/');
+          resolved.push({
+            source: path.relative(tauriDir, file).replaceAll('\\', '/'),
+            target: dest ? `${dest}/${rel}` : rel,
+          });
+        }
+      } else {
+        resolved.push({
+          source: pattern.replaceAll('\\', '/'),
+          target: dest || path.basename(pattern),
+        });
+      }
+    }
+  }
+  return resolved;
+}
+
+function assertTauriBundle() {
+  assertDuplicateDetector();
+  const conf = parseJsonStrict(fs.readFileSync(confPath, 'utf8'));
+  const resolved = resolveBundleResources(conf, path.dirname(confPath));
+  const targets = resolved.map((item) => item.target);
+  if (!targets.includes('cast-fw-check.ps1')) {
+    fail(`resolved bundle resources do not install cast-fw-check.ps1 beside the exe: ${targets.join(', ')}`);
+  }
+  const ps1 = resolved.find((item) => item.target === 'cast-fw-check.ps1');
+  if (ps1.source !== 'windows/cast-fw-check.ps1') fail(`cast-fw-check.ps1 source is ${ps1.source}`);
+  for (const name of ['sample-still.jpg', 'sample-video.mp4']) {
+    const target = `resources/cast-spike/${name}`;
+    if (!targets.includes(target)) fail(`resolved bundle resources missing ${target}`);
+  }
+  console.log(`CAST_FIREWALL_RESOURCES=${targets.join(',')}`);
+  const nsi = fs.readFileSync(nsiPath, 'utf8');
+  const fileLoops = nsi.split('File /a "/oname={{this.[1]}}"').length - 1;
+  if (fileLoops !== 1) fail(`expected 1 resources File loop, found ${fileLoops}`);
+  if (!nsi.includes('Delete "$INSTDIR\\\\{{this.[1]}}"')) {
+    fail('uninstaller resources loop does not delete bundled files');
+  }
+  const fileAt = nsi.indexOf('File /a "/oname={{this.[1]}}"');
+  const callAt = nsi.indexOf('Call CastFirewallInstall');
+  if (fileAt < 0 || callAt < 0 || fileAt > callAt) {
+    fail('resources File loop does not run before CastFirewallInstall');
+  }
 }
 
 function nsisRuntime(raw, vars) {
@@ -458,6 +690,7 @@ if (!precheck.includes('-ExePath')) fail('pre-check does not pass -ExePath');
 if (/\bnetsh\b/i.test(precheck)) fail('pre-check still shells out to netsh');
 if (precheck.includes('-Command')) fail('pre-check still uses -Command');
 assertAppCallSite();
+assertTauriBundle();
 console.log(`CAST_FIREWALL_PRECHECK_CMDLINE=${precheck}`);
 
 printCommand('INSTALL', sysDir, loaded.installParams);

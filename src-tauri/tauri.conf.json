@@ -43,9 +43,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "windows/cast-fw-check.ps1": "cast-fw-check.ps1"
-    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
@@ -155,8 +152,9 @@
         "rank": "Alternate"
       }
     ],
-    "resources": [
-      "resources/cast-spike/*"
-    ]
+    "resources": {
+      "windows/cast-fw-check.ps1": "cast-fw-check.ps1",
+      "resources/cast-spike/*": "resources/cast-spike/"
+    }
   }
 }

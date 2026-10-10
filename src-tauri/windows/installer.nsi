@@ -915,11 +915,9 @@ Section Install
  !insertmacro NSIS_HOOK_POSTINSTALL
  !endif
 
- ; Private-only Cast firewall rules. File the check script first, then ask once
- ; via UAC (cmd.exe /c, no elevated script) unless both rules already match.
-{{#each resources}}
- File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
-{{/each}}
+ ; Private-only Cast firewall rules. The resources File loop above already
+ ; copied cast-fw-check.ps1 into $INSTDIR. Ask once via UAC (cmd.exe /c,
+ ; no elevated script) unless both rules already match.
  Call CastFirewallInstall
 
  ; Auto close this page for passive mode

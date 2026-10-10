@@ -2322,19 +2322,23 @@ pub fn firewall_powershell_file_args(script: &Path, exe: &str) -> Vec<String> {
     ]
 }
 
+const FW_SCRIPT_MISSING: &str = "The firewall check script cast-fw-check.ps1 is not installed beside the app. Re-run the SlideX installer.";
+const FW_SCRIPT_MISSING_QUERY: &str = "query failed: cast-fw-check.ps1 is not installed";
+
 #[cfg(windows)]
-fn cast_fw_check_script() -> PathBuf {
+fn cast_fw_check_script() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let beside = dir.join("cast-fw-check.ps1");
             if beside.is_file() {
-                return beside;
+                return Some(beside);
             }
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("windows")
-        .join("cast-fw-check.ps1")
+        .join("cast-fw-check.ps1");
+    dev.is_file().then_some(dev)
 }
 
 pub fn firewall_status() -> CastFirewallStatus {
@@ -2359,10 +2363,10 @@ fn query_firewall_text() -> String {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(e) => return format!("query failed: {e}"),
     };
-    let script = cast_fw_check_script();
-    if !script.is_file() {
-        return format!("query failed: {} is not installed", script.display());
-    }
+    let Some(script) = cast_fw_check_script() else {
+        eprintln!("[cast] {FW_SCRIPT_MISSING}");
+        return FW_SCRIPT_MISSING_QUERY.into();
+    };
     let program = powershell_exe_under_windows_dir(&windows_dir_from_env());
     let mut cmd = std::process::Command::new(&program);
     {
@@ -2403,7 +2407,7 @@ pub fn parse_firewall_script_output(text: &str) -> CastFirewallStatus {
     } else if lower.contains("query failed") {
         CastFirewallStatus {
             state: "unknown".into(),
-            detail: "Could not query the Windows firewall.".into(),
+            detail: firewall_query_failure_detail(text).into(),
         }
     } else {
         CastFirewallStatus {
@@ -2451,7 +2455,7 @@ pub fn parse_firewall_report(text: &str, exe: &str) -> CastFirewallStatus {
     } else if !saw_json && text.to_ascii_lowercase().contains("query failed") {
         CastFirewallStatus {
             state: "unknown".into(),
-            detail: "Could not query the Windows firewall.".into(),
+            detail: firewall_query_failure_detail(text).into(),
         }
     } else {
         CastFirewallStatus {
@@ -2460,6 +2464,15 @@ pub fn parse_firewall_report(text: &str, exe: &str) -> CastFirewallStatus {
                 "No Private inbound rule for slideshowpro.exe. Cast needs TCP {CAST_PORT_LO}-{CAST_PORT_HI} and UDP 5353 on private networks. Re-run the installer and accept the Windows prompt."
             ),
         }
+    }
+}
+
+fn firewall_query_failure_detail(text: &str) -> &'static str {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("cast-fw-check.ps1") && lower.contains("not installed") {
+        FW_SCRIPT_MISSING
+    } else {
+        "Could not query the Windows firewall."
     }
 }
 
@@ -3155,6 +3168,16 @@ mod tests {
             parse_firewall_script_output("query failed: denied").state,
             "unknown"
         );
+        assert_eq!(
+            parse_firewall_script_output("query failed: denied").detail,
+            "Could not query the Windows firewall."
+        );
+        let missing = parse_firewall_script_output(FW_SCRIPT_MISSING_QUERY);
+        assert_eq!(missing.state, "unknown");
+        assert_eq!(missing.detail, FW_SCRIPT_MISSING);
+        assert!(missing.detail.contains("cast-fw-check.ps1"));
+        assert!(!missing.detail.contains('\\'));
+        assert!(!missing.detail.contains("device"));
         let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("windows")
             .join("cast-fw-check.ps1");
