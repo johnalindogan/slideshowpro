@@ -266,12 +266,19 @@ function powershellArgs(commandLine) {
 
 function runPrecheck(commandLine, extraArgs = []) {
   const { exe, args } = powershellArgs(commandLine);
-  const result = spawnSync(exe, [...args, ...extraArgs], { encoding: 'utf8' });
+  const result = spawnSync(exe, [...args, ...extraArgs].map(quoteCmd), {
+    encoding: 'utf8',
+    windowsVerbatimArguments: true,
+  });
   return {
     status: result.status,
     text: `${result.stdout || ''}\n${result.stderr || ''}`,
     error: result.error,
   };
+}
+
+function quoteCmd(arg) {
+  return `"${String(arg).replace(/"/g, '""')}"`;
 }
 
 function runFixture(sysDir, exePath, records) {
@@ -300,8 +307,8 @@ function runFixture(sysDir, exePath, records) {
         '5353',
         '-Fixture',
         file,
-      ],
-      { encoding: 'utf8' },
+      ].map(quoteCmd),
+      { encoding: 'utf8', windowsVerbatimArguments: true },
     );
     if (result.error) fail(result.error.message);
     return `${result.stdout || ''}\n${result.stderr || ''}`;

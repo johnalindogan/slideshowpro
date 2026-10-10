@@ -2289,6 +2289,16 @@ fn windows_dir_from_env() -> String {
         .unwrap_or_else(|_| r"C:\Windows".to_string())
 }
 
+/// Quote one PowerShell `-File` argument. Apostrophes stay inside double quotes
+/// so a folder named O'Brien is not treated as a string delimiter.
+pub fn quote_powershell_arg(arg: &str) -> String {
+    if arg.is_empty() || arg.chars().any(|c| matches!(c, ' ' | '\t' | '"' | '\'')) {
+        format!("\"{}\"", arg.replace('"', "\"\""))
+    } else {
+        arg.to_string()
+    }
+}
+
 /// Args for `powershell.exe -File cast-fw-check.ps1`. The exe path is its own
 /// argument, never interpolated into a quoted script string.
 pub fn firewall_powershell_file_args(script: &Path, exe: &str) -> Vec<String> {
@@ -2354,9 +2364,14 @@ fn query_firewall_text() -> String {
         return format!("query failed: {} is not installed", script.display());
     }
     let program = powershell_exe_under_windows_dir(&windows_dir_from_env());
-    match std::process::Command::new(&program)
-        .args(firewall_powershell_file_args(&script, &exe))
-        .output()
+    let mut cmd = std::process::Command::new(&program);
+    {
+        use std::os::windows::process::CommandExt;
+        for arg in firewall_powershell_file_args(&script, &exe) {
+            cmd.raw_arg(quote_powershell_arg(&arg));
+        }
+    }
+    match cmd.output()
     {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -3124,6 +3139,10 @@ mod tests {
         );
         assert_eq!(args[6], "-ExePath");
         assert_eq!(args[7], program);
+        assert_eq!(
+            quote_powershell_arg(program),
+            "\"C:\\O'Brien\\slideshowpro.exe\""
+        );
         assert!(!args.iter().any(|arg| arg == "-Command"));
         assert!(!args.iter().any(|arg| arg.contains("'$") || arg.contains(&format!("'{program}'"))));
         let joined = args.join(" ");
