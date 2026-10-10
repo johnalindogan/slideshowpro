@@ -439,6 +439,9 @@ for (const piece of [
 ]) {
   if (!ps1.includes(piece)) fail(`cast-fw-check.ps1 missing ${piece}`);
 }
+if (!ps1.includes('return @((Get-Content -Raw -LiteralPath $Fixture | ConvertFrom-Json))')) {
+  fail('cast-fw-check.ps1 must enumerate ConvertFrom-Json arrays for Windows PowerShell 5.1');
+}
 if (!loaded.skipsElevation) {
   fail('CastFirewallInstall does not return before ExecShell when the pre-check reports status=match');
 }

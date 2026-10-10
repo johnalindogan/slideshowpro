@@ -92,7 +92,9 @@ function ConvertTo-LiveRecord($Rule, [string]$Name) {
 
 function Get-CastRecords([string]$MediaName, [string]$MdnsName, [string]$Fixture) {
   if (-not [string]::IsNullOrWhiteSpace($Fixture)) {
-    return @(Get-Content -Raw -LiteralPath $Fixture | ConvertFrom-Json)
+    # Windows PowerShell 5.1 sends a JSON array through the pipeline as one
+    # object. The parentheses enumerate it into one record per element.
+    return @((Get-Content -Raw -LiteralPath $Fixture | ConvertFrom-Json))
   }
   $records = @()
   foreach ($name in @($MediaName, $MdnsName)) {
