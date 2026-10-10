@@ -99,13 +99,14 @@ function loadCommands(instDir, sysDir) {
     extractQuoted(functionBody(text, 'Function un.CastFirewallUninstall'), 'uninstall'),
     vars,
   );
-  const installBody = functionBody(text, 'Function CastFirewallInstall');
+  const installBody = functionBody(text, 'Function CastFirewallInstall').replace(/\r\n/g, '\n');
   const prechecks = [...installBody.matchAll(/nsExec::ExecToStack '([^']*)'/g)].map((match) =>
     nsisRuntime(match[1], vars),
   );
   const matchAt = installBody.indexOf('status=match');
-  const returnAt = installBody.indexOf('\n Return\n');
   const runasAt = installBody.indexOf('ExecShell "runas"');
+  const between = matchAt >= 0 && runasAt > matchAt ? installBody.slice(matchAt, runasAt) : '';
+  const returnAt = between.search(/\bReturn\b/);
   return {
     defs,
     binary,
@@ -114,7 +115,7 @@ function loadCommands(instDir, sysDir) {
     prechecks,
     sysDir,
     instDir,
-    skipsElevation: matchAt >= 0 && returnAt > matchAt && runasAt > returnAt,
+    skipsElevation: matchAt >= 0 && runasAt > matchAt && returnAt >= 0,
   };
 }
 
