@@ -3942,6 +3942,58 @@ async function ensureReadPermission(handle) {
     return null;
   }
 }
+async function restoreTauriSession(entries) {
+  const core = window.SlideXCore;
+  const paths = [];
+  (entries || []).forEach(it => {
+    if (it && it.type !== 'folder' && it.path) paths.push(it.path);
+  });
+  let flags = [];
+  try { flags = await tauriInvoke('paths_exist', { paths }); }
+  catch (_) { flags = paths.map(() => false); }
+  const exists = new Map();
+  paths.forEach((p, i) => exists.set(p, !!flags[i]));
+  const plan = core.planSessionRestore(entries, p => exists.get(p) === true);
+  const foundPaths = paths.filter(p => exists.get(p));
+  const gen = bumpFolderIngestGen();
+  if (foundPaths.length) {
+    try { await tauriInvoke('register_allowed_paths', { paths: foundPaths }); } catch (_) {}
+  }
+  const byPath = new Map();
+  for (let i = 0; i < foundPaths.length; i++) {
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    showLoadStatus(i + 1, foundPaths.length);
+    let loaded = [];
+    try { loaded = await itemsFromMediaPaths([foundPaths[i]]); }
+    catch (e) { console.warn(e); }
+    if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+    const hit = loaded && loaded[0];
+    if (hit && hit.path && !byPath.has(hit.path)) byPath.set(hit.path, hit);
+    await yieldToMain();
+  }
+  if (gen !== folderIngestGen) { clearLoadStatus(); return; }
+  const next = plan.items.map(entry => {
+    if (!entry || entry.type === 'folder' || entry.missing || !entry.path) return entry;
+    const hit = byPath.get(entry.path);
+    if (!hit) return Object.assign({}, entry, { url: '', unavailable: true });
+    const fields = core.restoreItemFields(entry);
+    Object.assign(hit, {
+      id: fields.id || hit.id || makeItemId(),
+      name: fields.name || hit.name,
+      path: entry.path,
+      missing: false,
+      unavailable: false,
+      imageUpdates: entry.imageUpdates
+    });
+    return hit;
+  });
+  dz.style.display = 'none';
+  viewer.style.display = 'flex';
+  build(next);
+  clearLoadStatus();
+  if (typeof updateLocateButton === 'function') updateLocateButton();
+  if (plan.missing > 0) showToast(core.missingFilesNotice(plan.missing), 6000);
+}
 async function restoreFromSnapshot(snap) {
   snap = migrateSnapshot(snap);
   if (!snap?.items?.length) return;
@@ -3956,6 +4008,10 @@ async function restoreFromSnapshot(snap) {
   // Tauri has no IDB File System Access handles, so requiring 100% paths used to
   // fail the whole playlist when savePlaylist omitted path.
   const pathEntries = mediaEntries.filter(e => e.path && (/^(content:|file:|https?:)/i.test(e.path) || sspIsTauri() || sspIsAndroid()));
+  if (pathEntries.length && sspIsTauri() && window.SlideXCore && SlideXCore.planSessionRestore) {
+    await restoreTauriSession(entries);
+    return;
+  }
   if (pathEntries.length) {
     const paths = pathEntries.map(e => e.path);
     await openMediaPaths(paths, { append: false });

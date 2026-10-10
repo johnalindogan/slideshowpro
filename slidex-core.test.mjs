@@ -162,6 +162,52 @@ test('legacy SlideX and SlideShowX playlist JSON loads', () => {
   assert.throws(() => C.normalizePlaylist({ name: 'nope' }));
 });
 
+test('session restore counts one file missing from disk and ignores entries with no path', () => {
+  const items = [
+    { type: 'folder', name: 'F' },
+    { id: 'a', type: 'image', name: 'here.jpg', path: 'D:\\here.jpg' },
+    { id: 'b', type: 'image', name: 'gone.jpg', path: '\\\\AX03\\share\\gone.jpg' },
+    { id: 'c', type: 'image', name: 'nopath.jpg' }
+  ];
+  const plan = C.planSessionRestore(items, (p) => p === 'D:\\here.jpg');
+  assert.equal(plan.missing, 1);
+  assert.equal(C.missingFilesNotice(plan.missing), "1 file couldn't be found");
+  assert.equal(plan.items.length, 4);
+  assert.equal(plan.items[1].missing, false);
+  assert.equal(plan.items[2].missing, true);
+  assert.equal(plan.items[2].unavailable, true);
+  assert.equal(plan.items[2].path, '\\\\AX03\\share\\gone.jpg');
+  assert.ok(!plan.items[3].missing);
+  assert.equal(items[2].missing, undefined);
+});
+
+test('session restore counts every file missing from disk', () => {
+  const items = [
+    { id: 'a', type: 'image', name: 'a.jpg', path: '\\\\AX03\\share\\a.jpg' },
+    { id: 'b', type: 'video', name: 'b.mp4', path: '\\\\AX03\\share\\b.mp4' }
+  ];
+  const plan = C.planSessionRestore(items, () => false);
+  assert.equal(plan.missing, 2);
+  assert.equal(C.missingFilesNotice(plan.missing), "2 files couldn't be found");
+  assert.equal(plan.items.length, 2);
+  assert.equal(plan.items[0].missing, true);
+  assert.equal(plan.items[1].missing, true);
+});
+
+test('session restore keeps missing entries so the next save still has their paths', () => {
+  const items = [
+    { id: 'keep', type: 'image', name: 'keep.jpg', path: 'D:\\keep.jpg', imageUpdates: { customDur: 4000 } },
+    { id: 'gone', type: 'image', name: 'gone.jpg', path: '\\\\AX03\\share\\gone.jpg', imageUpdates: { customDur: 8000 } }
+  ];
+  const plan = C.planSessionRestore(items, (p) => p === 'D:\\keep.jpg');
+  const doc = C.buildPlaylistDocument({ items: plan.items, savedAt: 1 });
+  assert.equal(doc.items.length, 2);
+  assert.equal(doc.items[0].path, 'D:\\keep.jpg');
+  assert.equal(doc.items[1].path, '\\\\AX03\\share\\gone.jpg');
+  assert.equal(plan.items[1].imageUpdates.customDur, 8000);
+  assert.equal(items[1].path, '\\\\AX03\\share\\gone.jpg');
+});
+
 test('missing items are marked and skipped without dropping the playlist', () => {
   const items = [
     { type: 'folder', name: 'F' },
@@ -400,17 +446,17 @@ test('default image duration is 10 seconds and a saved per-item duration wins', 
   assert.match(html, /\[10000,'10s'\]/);
 });
 
-test('0.1.8 versions match and the welcome screen reads getVersion()', () => {
+test('0.1.9 versions match and the welcome screen reads getVersion()', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
   const tauri = JSON.parse(fs.readFileSync(new URL('./src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
   const cargo = fs.readFileSync(new URL('./src-tauri/Cargo.toml', import.meta.url), 'utf8');
   const lock = fs.readFileSync(new URL('./package-lock.json', import.meta.url), 'utf8');
   const lib = fs.readFileSync(new URL('./src-tauri/src/lib.rs', import.meta.url), 'utf8');
-  assert.equal(pkg.version, '0.1.8');
-  assert.equal(tauri.version, '0.1.8');
+  assert.equal(pkg.version, '0.1.9');
+  assert.equal(tauri.version, '0.1.9');
   assert.equal(tauri.identifier, 'com.johnalindogan.slideshowpro');
-  assert.match(cargo, /^version = "0\.1\.8"/m);
-  assert.match(lock, /"version": "0\.1\.8"/);
+  assert.match(cargo, /^version = "0\.1\.9"/m);
+  assert.match(lock, /"version": "0\.1\.9"/);
   assert.equal(
     tauri.app.windows[0].additionalBrowserArgs,
     '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force_high_performance_gpu'
@@ -814,5 +860,7 @@ test('HTML and JS have no bare confirm() and the four prompts await a dialog', (
   assert.match(caps, /dialog:allow-ask/);
   assert.match(caps, /dialog:allow-confirm/);
   assert.match(html, /missingFilesNotice/);
+  assert.match(html, /planSessionRestore/);
+  assert.match(html, /async function restoreTauriSession/);
   assert.match(html, /toggleTimer/);
 });
